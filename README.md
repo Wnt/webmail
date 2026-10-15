@@ -1,3 +1,20 @@
+> [!NOTE]
+> **This is `Wnt/webmail`, a fork of [bulwarkmail/webmail](https://github.com/bulwarkmail/webmail).**
+> It runs as a self-hosted, passkey-only webmail in front of Gandi mail, behind legacy-proxy and
+> [Wnt/webmail-gateway](https://github.com/Wnt/webmail-gateway) (OAuth/passkeys, JMAP proxy, Web Push).
+>
+> - `main` is an upstream **release tag** plus our patches (currently upstream `1.14.2`). Upstream is merged in only at release tags.
+> - Our image: `ghcr.io/wnt/webmail:sha-<commit>` and `:main`, built by `.github/workflows/fork-image.yml`.
+>   Upstream's deploy/publish workflows are disabled in this fork.
+>
+> **Changes compared with upstream** (keep this list current):
+>
+> 1. `public/sw.js`: when `/api/push/preview` fails (e.g. 401 after the session expired) and the push payload
+>    carries an `email: { from, subject, preview }` summary (sent by webmail-gateway), the notification shows
+>    `from` as the title and the subject plus the preview (≤ 200 chars) as the body instead of a generic "New mail".
+>    Tests: `lib/__tests__/sw-push-payload-email.test.ts`.
+> 2. `.github/workflows/fork-image.yml`: builds and pushes the fork's image to GHCR.
+
 <p>
   <a href="https://bulwarkmail.org"><img src="https://raw.githubusercontent.com/bulwarkmail/.github/main/profile/banner.png" alt="Bulwark: webmail for Stalwart Mail Server. Mail, calendar, contacts and files in one browser client." width="100%" /></a>
 </p>

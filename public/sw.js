@@ -202,8 +202,16 @@ async function handlePush(event) {
       data = { kind: "email", emailId: email.id, threadId: email.threadId, slot };
     }
   } else {
-    title = accountLabel ? `New mail (${accountLabel})` : "New mail";
-    body = unreadTotal > 1 ? `${unreadTotal} unread messages` : "You have new mail";
+    const fallback = !previewOk ? buildPayloadEmailContent(payload && payload.email) : null;
+    if (fallback) {
+      // Fork patch (Wnt/webmail): the preview API failed (e.g. 401 after the
+      // session expired) but the push itself carried the email summary.
+      title = fallback.title;
+      body = fallback.body;
+    } else {
+      title = accountLabel ? `New mail (${accountLabel})` : "New mail";
+      body = unreadTotal > 1 ? `${unreadTotal} unread messages` : "You have new mail";
+    }
   }
 
   const quiet = await withinQuietWindow(accountId);
@@ -227,6 +235,25 @@ async function handlePush(event) {
   if (announced.length > 0) {
     await writeNotifiedIds(accountId, notified.concat(announced));
   }
+}
+
+// Fork patch (Wnt/webmail): our push gateway may include an optional
+// `email: { from, subject, preview }` summary in the payload. Used only when
+// the preview API cannot be reached, so the toast is still informative.
+// Returns { title, body } or null when the payload has no usable summary.
+const PAYLOAD_PREVIEW_MAX = 200;
+
+function buildPayloadEmailContent(email) {
+  if (!email || typeof email !== "object") return null;
+  const str = (v) => (typeof v === "string" ? v.trim() : "");
+  const from = str(email.from);
+  const subject = str(email.subject);
+  const preview = str(email.preview).slice(0, PAYLOAD_PREVIEW_MAX);
+  if (!from && !subject && !preview) return null;
+  return {
+    title: from || "New mail",
+    body: [subject, preview].filter(Boolean).join("\n") || "(no subject)",
+  };
 }
 
 // One message often lands in several of the user's accounts at once - a list,
