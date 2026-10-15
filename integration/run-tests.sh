@@ -22,7 +22,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INTEGRATION_DIR="${REPO_ROOT}/integration"
-PW_IMAGE="mcr.microsoft.com/playwright:v1.59.1-noble"
+# Pinned as tag@sha256:<index digest>; bump tag and digest together
+# (docker buildx imagetools inspect <image>:<tag>).
+PW_IMAGE="mcr.microsoft.com/playwright:v1.59.1-noble@sha256:b0ab6f3cb99aa7803adbc14d9027ec1785fc6e433b97e134e0f8fe61683b6b53"
 
 cd "${INTEGRATION_DIR}"
 [ -f .env ] || cp .env.example .env
