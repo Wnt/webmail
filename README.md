@@ -48,6 +48,11 @@
 >      sender domains but never the user's IP or browser.
 >    Tests: `lib/__tests__/translate-route.test.ts`, `lib/__tests__/version-check-upgrade.test.ts`,
 >    `lib/__tests__/csp-connect-src.test.ts`, `lib/__tests__/proxy-security-headers.test.ts`.
+> 5. Security audit fixes (`audit/reports/bulwark.md`):
+>    - bulwark-3: `undici` 7.30.1 (GHSA-xjj6-f33q-929c, GHSA-qrxm-fqhp-jwvm), still forced on every nested copy
+>      by the `overrides` entry. Node's own bundled undici (global `fetch`) is still 7.29.1 in every Node 24
+>      release up to 24.22.0; bump the base image once a Node 24 release ships ≥ 7.30.1.
+>      Test: `lib/__tests__/undici-response-error.test.ts`.
 
 <p>
   <a href="https://bulwarkmail.org"><img src="https://raw.githubusercontent.com/bulwarkmail/.github/main/profile/banner.png" alt="Bulwark: webmail for Stalwart Mail Server. Mail, calendar, contacts and files in one browser client." width="100%" /></a>
