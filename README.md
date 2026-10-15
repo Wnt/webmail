@@ -74,6 +74,12 @@
 >      content stays blocked under "block", and under "ask" until "Load images" is clicked for that preview.
 >      Trusted senders are not consulted (the preview does not know the sender).
 >      Test: `components/files/__tests__/html-preview-remote-block.test.tsx`.
+>    - bulwark-4, the session context needs a live credential (`lib/stalwart/auth-context.ts`,
+>      `lib/stalwart/credentials.ts`, `app/api/fetch-ical/route.ts`): the sealed context carries an expiry
+>      (12 h for a Bearer token, 7 days for Basic; live clients re-seal it on every sign-in, restore, switch
+>      and renewal); an envelope without one is refused. The calendar fetch proxy checks the credential with
+>      the mail server first (successes cached for 60 s). Push without a session is unaffected.
+>      Tests: `lib/__tests__/stale-context-proxy.test.ts`, `lib/__tests__/fetch-ical-route.test.ts`.
 
 <p>
   <a href="https://bulwarkmail.org"><img src="https://raw.githubusercontent.com/bulwarkmail/.github/main/profile/banner.png" alt="Bulwark: webmail for Stalwart Mail Server. Mail, calendar, contacts and files in one browser client." width="100%" /></a>

@@ -18,7 +18,11 @@ vi.mock('next/server', () => {
   }
   return { NextResponse, NextRequest: class {} };
 });
-vi.mock('@/lib/stalwart/credentials', () => ({ getStalwartCredentials: vi.fn() }));
+// Fork (Wnt/webmail): the route asks for verified credentials (audit bulwark-4).
+vi.mock('@/lib/stalwart/credentials', () => {
+  const getStalwartCredentials = vi.fn();
+  return { getStalwartCredentials, getVerifiedStalwartCredentials: getStalwartCredentials };
+});
 
 const guardedFetch = vi.fn();
 vi.mock('@/lib/security/url-guard', async (importOriginal) => {

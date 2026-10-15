@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rejectCrossOriginRequest } from '@/lib/security/same-origin';
-import { getStalwartCredentials } from '@/lib/stalwart/credentials';
+import { getVerifiedStalwartCredentials } from '@/lib/stalwart/credentials';
 import { DisallowedUrlError, fetchPublicUrl, type PublicFetchResponse } from '@/lib/security/url-guard';
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024; // 25MB
@@ -62,7 +62,9 @@ export async function POST(request: NextRequest) {
   // session cookie, which SameSite=Lax still sends from a same-site page.
   const crossOrigin = rejectCrossOriginRequest(request);
   if (crossOrigin) return crossOrigin;
-  const creds = await getStalwartCredentials(request);
+  // Fork (Wnt/webmail), audit bulwark-4: a live credential, not just a
+  // context cookie that decrypts.
+  const creds = await getVerifiedStalwartCredentials(request);
   if (!creds) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }

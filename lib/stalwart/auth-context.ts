@@ -42,6 +42,32 @@ function isValidContext(payload: unknown): payload is StalwartAuthContext {
     && (candidate.accountName === undefined || typeof candidate.accountName === 'string');
 }
 
+// Fork (Wnt/webmail), audit bulwark-4: the envelope carries its own expiry.
+// The cookie is a browser-session cookie, but a copied value used to stay
+// valid for ever: decrypting it was all the server checked. A live client
+// re-seals the context on every sign-in, session restore, account switch and
+// token renewal, so these bounds only cut off copies that nobody renews. A
+// Bearer context is renewed with its access token; a Basic one only on
+// page loads, hence the longer bound.
+const BEARER_CONTEXT_TTL_MS = 12 * 60 * 60 * 1000;
+const BASIC_CONTEXT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function contextTtlMs(authHeader: string): number {
+  return /^Bearer\s/i.test(authHeader) ? BEARER_CONTEXT_TTL_MS : BASIC_CONTEXT_TTL_MS;
+}
+
+/**
+ * True while the envelope's expiry lies ahead (and no further out than its
+ * kind allows). An envelope without one predates the bound and is refused:
+ * the client re-seals it on its next session restore.
+ */
+function isUnexpired(payload: Record<string, unknown>, authHeader: string): boolean {
+  const exp = payload.exp;
+  if (typeof exp !== 'number' || !Number.isFinite(exp)) return false;
+  const now = Date.now();
+  return exp > now && exp <= now + contextTtlMs(authHeader);
+}
+
 function getSessionCookieOptions() {
   const { maxAge: _maxAge, ...cookieOptions } = getCookieOptions();
   return cookieOptions;
@@ -56,6 +82,7 @@ export function readStalwartAuthContextFromStore(
 
   const payload = decryptPayload(token, 'session-context');
   if (!isValidContext(payload)) return null;
+  if (!isUnexpired(payload as unknown as Record<string, unknown>, payload.authHeader)) return null;
 
   // Hand back exactly the declared shape: the envelope's own bookkeeping
   // stays in the envelope rather than riding along into the credentials.
@@ -75,7 +102,10 @@ export function setStalwartAuthContextInStore(
 ): void {
   cookieStore.set(
     stalwartAuthContextCookieName(slot),
-    encryptPayload(context as unknown as Record<string, unknown>, 'session-context'),
+    encryptPayload(
+      { ...context, exp: Date.now() + contextTtlMs(context.authHeader) } as unknown as Record<string, unknown>,
+      'session-context',
+    ),
     getSessionCookieOptions(),
   );
 }
