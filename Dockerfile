@@ -1,4 +1,6 @@
-FROM node:24-alpine AS builder
+# Base images are pinned as tag@sha256:<multi-arch index digest>. To bump, change
+# the tag and digest together: docker buildx imagetools inspect <image>:<tag>
+FROM node:24.21.0-alpine3.24@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -37,7 +39,7 @@ RUN rm -rf "app/api/dev-jmap" && \
       -prune -exec rm -rf {} \; && \
     npx next build --webpack
 
-FROM node:24-alpine AS runner
+FROM node:24.21.0-alpine3.24@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS runner
 
 LABEL org.opencontainers.image.title="Bulwark Webmail"
 LABEL org.opencontainers.image.description="Modern webmail client built with Next.js and the JMAP protocol"
