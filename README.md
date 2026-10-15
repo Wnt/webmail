@@ -53,6 +53,21 @@
 >      by the `overrides` entry. Node's own bundled undici (global `fetch`) is still 7.29.1 in every Node 24
 >      release up to 24.22.0; bump the base image once a Node 24 release ships ≥ 7.30.1.
 >      Test: `lib/__tests__/undici-response-error.test.ts`.
+>    - bulwark-1, explicit sign-out ends Web Push (`lib/push-signout.ts`, `lib/push-signout-state.ts`,
+>      `stores/auth-store.ts`, `lib/web-push.ts`, `public/sw.js`): a sign-out the user asked for (sign out,
+>      sign out of all, removing an account) first runs `disableWebPush` against the locked relay while the
+>      client and token still work, closes the account's notifications, forgets the local opt-in and, when no
+>      account stays, unsubscribes the browser. A Cache Storage marker makes the service worker drop pushes for
+>      that account (and with no account left, drop the browser subscription) if the teardown could not reach
+>      the network. Enabling push clears the marker; a deliberate sign-in clears the device-wide one.
+>      Sign-outs nobody asked for (rejected or unrenewable token, failed session restore, account switching)
+>      leave push alone, so notifications keep arriving after a session expires.
+>      Tests: `stores/__tests__/auth-store-logout-push.test.ts`,
+>      `stores/__tests__/auth-store-remove-account-push.test.ts`, `lib/__tests__/web-push.test.ts`.
+>    - bulwark-5 (`public/sw.js`, extends change 1): every mail notification records its account and headline
+>      message id; the quiet summary push replaces it only when both match the summary's account and newest id,
+>      and is dropped otherwise. Pushes are handled one at a time per account, so a summary cannot interleave
+>      with a newer message's notification. Test: `lib/__tests__/sw-summary-association.test.ts`.
 
 <p>
   <a href="https://bulwarkmail.org"><img src="https://raw.githubusercontent.com/bulwarkmail/.github/main/profile/banner.png" alt="Bulwark: webmail for Stalwart Mail Server. Mail, calendar, contacts and files in one browser client." width="100%" /></a>

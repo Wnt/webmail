@@ -44,6 +44,7 @@ import {
   saveLiteRefreshToken,
 } from '@/lib/auth/lite-tokens';
 import { clearLiteOAuthFlow, readLiteOAuthFlow } from '@/lib/auth/lite-oauth';
+import { clearPushSignedOut, teardownPushOnSignOut } from '@/lib/push-signout';
 
 /** Logins restored at once after the one on screen: enough to overlap round trips, few enough not to crowd the server. */
 const RESTORE_CONCURRENCY = 4;
@@ -109,7 +110,12 @@ interface AuthState {
    * see {@link pickEndSessionSlot}.
    */
   logoutAll: () => Promise<void>;
-  removeAccount: (accountId: string) => void;
+  /**
+   * Sign out of one (typically non-active) account. `options` as for
+   * {@link logout}: `endProviderSession: false` marks a sign-out the user
+   * did not ask for, which leaves Web Push alone.
+   */
+  removeAccount: (accountId: string, options?: LogoutOptions) => void;
   switchAccount: (accountId: string) => Promise<void>;
   checkAuth: () => Promise<void>;
   clearError: () => void;
@@ -1422,6 +1428,8 @@ export const useAuthStore = create<AuthState>()(
           initializeFeatureStores(client);
 
           // Store client in multi-account map
+          // Fork (Wnt/webmail): a deliberate sign-in lifts the device-wide push sign-out marker.
+          void clearPushSignedOut(null);
           clients.set(accountId, client);
           bindClientStatusHandlers(client, set, get, accountId);
 
@@ -1562,6 +1570,8 @@ export const useAuthStore = create<AuthState>()(
           const { identities, primaryIdentity } = loadIdentities(rawIdentities, username);
           initializeFeatureStores(client);
 
+          // Fork (Wnt/webmail): a deliberate sign-in lifts the device-wide push sign-out marker.
+          void clearPushSignedOut(null);
           clients.set(accountId, client);
           bindClientStatusHandlers(client, set, get, accountId);
 
@@ -1755,6 +1765,8 @@ export const useAuthStore = create<AuthState>()(
             clearAllStores();
           }
 
+          // Fork (Wnt/webmail): a deliberate sign-in lifts the device-wide push sign-out marker.
+          void clearPushSignedOut(null);
           clients.set(accountId, client);
           bindClientStatusHandlers(client, set, get, accountId);
 
@@ -1900,6 +1912,8 @@ export const useAuthStore = create<AuthState>()(
             clearAllStores();
           }
 
+          // Fork (Wnt/webmail): a deliberate sign-in lifts the device-wide push sign-out marker.
+          void clearPushSignedOut(null);
           clients.set(accountId, client);
           bindClientStatusHandlers(client, set, get, accountId);
 
@@ -2019,7 +2033,7 @@ export const useAuthStore = create<AuthState>()(
                 notifyParent('sso:session-expired');
                 markSessionExpired();
                 // removeAccount() on the active account would sign out as if the user asked to.
-                if (accountId && accountId !== get().activeAccountId) get().removeAccount(accountId);
+                if (accountId && accountId !== get().activeAccountId) get().removeAccount(accountId, { endProviderSession: false });
                 else get().logout({ endProviderSession: false });
                 return null;
               }
@@ -2099,6 +2113,20 @@ export const useAuthStore = create<AuthState>()(
         // below reopens it once the credentials are gone.
         if (!wasDemoMode) closingSlots.add(slot);
         clearRefreshTimer(accountId ?? undefined);
+
+        // Fork (Wnt/webmail), audit bulwark-1: a sign-out the user asked for
+        // ends Web Push for the account first, while its client and token
+        // still work. Only then are they torn down. An expired session
+        // (endProviderSession: false) keeps push.
+        if (userInitiated && !wasDemoMode) {
+          const others = accountStore.accounts.filter((a) => a.id !== accountId);
+          const next = others.find((a) => clients.has(a.id)) ?? others[0];
+          await teardownPushOnSignOut({
+            clients: state.client ? [state.client] : [],
+            // No signed-in account stays: the sign-out below drops them all.
+            everyAccount: !next || !clients.has(next.id),
+          });
+        }
 
         // Disconnect and null out the client BEFORE clearing stores so the
         // page doesn't fire data-loading effects with the stale client.
@@ -2217,22 +2245,33 @@ export const useAuthStore = create<AuthState>()(
       // drop it from the registry, and clear its per-slot cookies. If asked to
       // remove the active account, defer to logout() which handles switching
       // away or redirecting.
-      removeAccount: (accountId: string) => {
-        if (accountId === get().activeAccountId) { void get().logout(); return; }
+      removeAccount: (accountId: string, options?: LogoutOptions) => {
+        if (accountId === get().activeAccountId) { void get().logout(options); return; }
         const accountStore = useAccountStore.getState();
         const account = accountStore.getAccountById(accountId);
         if (!account) return;
         const slot = account.cookieSlot ?? 0;
         const wasOAuth = account.authMode === 'oauth';
-
-        // Started first: the cleanup marks the slot closing right away, so a
-        // renewal in flight cannot bring the session back.
-        void clearSlotCredentials(slot, wasOAuth);
-        clearRefreshTimer(accountId);
         const client = clients.get(accountId);
+        // Fork (Wnt/webmail), audit bulwark-1: as in logout(), a removal the
+        // user asked for ends the account's Web Push before its client and
+        // token go. `options` can be a click event when wired to onClick.
+        const userInitiated = options?.endProviderSession !== false;
+        const pushTeardown = userInitiated && client
+          ? teardownPushOnSignOut({ clients: [client], everyAccount: false })
+          : null;
+
+        // Marked closing right away, so a renewal in flight cannot bring the
+        // session back; the cleanup itself waits for the push teardown.
+        closingSlots.add(slot);
+        if (pushTeardown) void pushTeardown.then(() => clearSlotCredentials(slot, wasOAuth));
+        else void clearSlotCredentials(slot, wasOAuth);
+        clearRefreshTimer(accountId);
         if (client) {
           forgetCalendarSubscriptions(client);
-          try { client.disconnect(); } catch { /* noop */ }
+          const disconnect = () => { try { client.disconnect(); } catch { /* noop */ } };
+          if (pushTeardown) void pushTeardown.then(disconnect);
+          else disconnect();
         }
         clients.delete(accountId);
         evictAccount(accountId);
@@ -2252,6 +2291,18 @@ export const useAuthStore = create<AuthState>()(
         const accountStore = useAccountStore.getState();
         const allAccounts = [...accountStore.accounts];
         const endSessionSlot = get().isDemoMode ? null : pickEndSessionSlot(allAccounts, get().activeAccountId);
+
+        // Fork (Wnt/webmail), audit bulwark-1: end Web Push on this device
+        // while every client and token still works - see logout().
+        if (!get().isDemoMode) {
+          // Nothing may renew a session meanwhile; the cleanup below clears this.
+          for (let slot = 0; slot < MAX_ACCOUNT_SLOTS; slot++) closingSlots.add(slot);
+          clearAllRefreshTimers();
+          const signedIn = new Set<IJMAPClient>(clients.values());
+          const active = get().client;
+          if (active) signedIn.add(active);
+          await teardownPushOnSignOut({ clients: [...signedIn], everyAccount: true });
+        }
 
         // Starts by marking every slot closing, so nothing renews a session
         // while the clients are torn down.

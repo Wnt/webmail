@@ -167,7 +167,7 @@ describe('service worker AI summary replacement', () => {
     await push(payload({ email: summary }));
     await push(payload({ email: withSummary, renotify: false }));
     expect(shown).toHaveLength(2);
-    expect(shown[1].options.data).toEqual({ kind: 'email', emailId: 'e1', threadId: 't1', slot: 2 });
+    expect(shown[1].options.data).toEqual({ kind: 'email', emailId: 'e1', threadId: 't1', slot: 2, accountId: 'acc1', headlineEmailId: 'e1' });
     expect(shown[1].options.silent).toBe(true);
   });
 

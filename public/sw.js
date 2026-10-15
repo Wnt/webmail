@@ -36,7 +36,7 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", () => {});
 
 self.addEventListener("push", (event) => {
-  event.waitUntil(handlePush(event));
+  event.waitUntil(handlePushInOrder(event));
 });
 
 self.addEventListener("notificationclick", (event) => {
@@ -86,6 +86,35 @@ self.addEventListener("message", (event) => {
   event.waitUntil(focusExistingWindowClient(event.source && event.source.id));
 });
 
+// Fork patch (Wnt/webmail), audit bulwark-5: a quiet summary replacement
+// reads the account's notification and then replaces it. Two push handlers
+// for one account running at once could interleave those steps with a newer
+// message's notification, so pushes are handled one at a time per account.
+const PUSH_QUEUES = new Map();
+
+function pushAccountKey(event) {
+  try {
+    const payload = event.data ? event.data.json() : null;
+    if (payload && typeof payload.accountId === "string" && payload.accountId) return payload.accountId;
+    const changed = payload && payload.changed && typeof payload.changed === "object" ? payload.changed : null;
+    return (changed && Object.keys(changed)[0]) || "default";
+  } catch (_) {
+    return "default";
+  }
+}
+
+function handlePushInOrder(event) {
+  const key = pushAccountKey(event);
+  const previous = PUSH_QUEUES.get(key) || Promise.resolve();
+  const run = previous.then(() => handlePush(event));
+  const settled = run.catch(() => undefined);
+  PUSH_QUEUES.set(key, settled);
+  settled.then(() => {
+    if (PUSH_QUEUES.get(key) === settled) PUSH_QUEUES.delete(key);
+  });
+  return run;
+}
+
 async function handlePush(event) {
   let payload = null;
   try {
@@ -115,6 +144,12 @@ async function handlePush(event) {
     ? payload.emailIds.filter((id) => typeof id === "string" && id)
     : [];
 
+  // Fork patch (Wnt/webmail), audit bulwark-1: the user signed this account
+  // (or every account) out on purpose. Teardown normally stops these pushes
+  // at the source; this covers a teardown that could not reach the network.
+  // An expired session sets no marker and keeps notifying.
+  if (await pushSignedOut(accountId)) return;
+
   // Never notify twice for the same message. A push can be redelivered (relay
   // retry, browser replay after coming back online) and, on the older
   // state-change path, a junk delivery wakes us while an unread message we
@@ -132,7 +167,11 @@ async function handlePush(event) {
     const content = payload.email && typeof payload.email.summary === "string" && payload.email.summary.trim()
       ? buildPayloadEmailContent(payload.email)
       : null;
-    if (content) await replaceWithSummary("bulwark-mail:" + (accountId || "default"), content);
+    // The summary is for the newest of its ids (the gateway summarises the
+    // headline message); it only replaces a notification that shows that one.
+    if (content) {
+      await replaceWithSummary("bulwark-mail:" + (accountId || "default"), content, accountId, emailIds[emailIds.length - 1]);
+    }
     return;
   }
 
@@ -200,7 +239,11 @@ async function handlePush(event) {
   const groupTag = "bulwark-mail:" + (accountId || "default");
   let title;
   let body;
-  let data = { kind: "mail-list", accountId, slot };
+  // Fork patch (Wnt/webmail), audit bulwark-5: the message this notification
+  // headlines, so a later summary can tell whether it belongs here.
+  const headlineEmailId = (email && typeof email.id === "string" && email.id)
+    || (freshIds.length > 0 ? freshIds[freshIds.length - 1] : "");
+  let data = { kind: "mail-list", accountId, slot, headlineEmailId };
 
   if (email) {
     const sender = email.from && email.from[0];
@@ -214,7 +257,7 @@ async function handlePush(event) {
       body += "\n" + (more === 1 ? "+1 more message" : `+${more} more messages`);
     } else {
       // Exactly one unread: deep-link straight to that message on click.
-      data = { kind: "email", emailId: email.id, threadId: email.threadId, slot };
+      data = { kind: "email", emailId: email.id, threadId: email.threadId, slot, accountId, headlineEmailId };
     }
   } else {
     const fallback = !previewOk ? buildPayloadEmailContent(payload && payload.email) : null;
@@ -274,24 +317,56 @@ function buildPayloadEmailContent(email) {
 
 // Fork patch (Wnt/webmail): replace the account's notification (same tag) with
 // the summary, silently, keeping its click data. A notification the user has
-// dismissed or opened in the meantime is not brought back.
-async function replaceWithSummary(tag, content) {
+// dismissed or opened in the meantime is not brought back, and one that now
+// headlines another message (a newer mail arrived, or the summary is a late
+// or replayed push) keeps its text: the summary is dropped (audit bulwark-5).
+async function replaceWithSummary(tag, content, accountId, headlineEmailId) {
   let existing = [];
   try {
     existing = await self.registration.getNotifications({ tag });
   } catch (_) {
     existing = [];
   }
-  if (!existing || existing.length === 0) return;
+  const current = existing && existing.length > 0 ? existing[existing.length - 1] : null;
+  const data = current && current.data;
+  if (!data || !headlineEmailId || data.headlineEmailId !== headlineEmailId
+    || (data.accountId || "") !== (accountId || "")) return;
   await self.registration.showNotification(content.title, {
     body: content.body,
     tag,
     icon: `${BASE_PATH}/api/pwa-icon/192`,
     badge: `${BASE_PATH}/api/pwa-icon/192`,
-    data: existing[existing.length - 1].data,
+    data,
     renotify: false,
     silent: true,
   });
+}
+
+// Fork patch (Wnt/webmail), audit bulwark-1: markers the page writes on an
+// explicit sign-out (lib/push-signout-state.ts, same cache and keys). After a
+// sign-out of every account the browser subscription is dropped here too, in
+// case the page could not do it.
+function signedOutKey(path) {
+  return `${self.location.origin}${BASE_PATH}/__push-state/${path}`;
+}
+
+async function pushSignedOut(accountId) {
+  try {
+    const cache = await caches.open(PUSH_STATE_CACHE);
+    if (await cache.match(signedOutKey("signed-out-all"))) {
+      try {
+        const subscription = await self.registration.pushManager.getSubscription();
+        if (subscription) await subscription.unsubscribe();
+      } catch (_) {
+        // Dropped on the next push instead.
+      }
+      return true;
+    }
+    return !!(accountId && await cache.match(signedOutKey(`signed-out/${encodeURIComponent(accountId)}`)));
+  } catch (_) {
+    // No store: no marker can have been written either.
+    return false;
+  }
 }
 
 // One message often lands in several of the user's accounts at once - a list,

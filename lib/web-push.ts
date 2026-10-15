@@ -8,6 +8,7 @@ import type { IJMAPClient } from '@/lib/jmap/client-interface';
 import type { EmailPushConfig, Mailbox } from '@/lib/jmap/types';
 import { DEFAULT_RELAY_BASE_URL } from '@/lib/push-relays';
 import { IS_LITE } from '@/lib/lite';
+import { clearPushSignedOut } from '@/lib/push-signout-state';
 
 // Per-account keys: a single browser may be signed in to multiple accounts,
 // each with its own JMAP PushSubscription and its own relay record. Scoping
@@ -538,7 +539,10 @@ export async function enableWebPush(
     if (match) {
       if (!params.forceRecreate && !relayChanged) {
         const refreshed = await refreshSubscriptionExpires(params.client, match, emailPush);
-        if (refreshed) return { subscriptionId: storedServerId };
+        if (refreshed) {
+          await clearPushSignedOut(accountId);
+          return { subscriptionId: storedServerId };
+        }
       }
       await params.client.destroyPushSubscription(storedServerId).catch(() => undefined);
     }
@@ -584,8 +588,25 @@ export async function enableWebPush(
   await params.client.verifyPushSubscription(serverAssignedId, verificationCode);
   localStorage.setItem(subIdKey, serverAssignedId);
   localStorage.setItem(relayKey, relayBaseUrl);
+  // Fork (Wnt/webmail): push is on again for this account - lift the marker
+  // an explicit sign-out left for the service worker (lib/push-signout.ts).
+  await clearPushSignedOut(accountId);
 
   return { subscriptionId: serverAssignedId };
+}
+
+/**
+ * Fork (Wnt/webmail): drop this browser's record of the account's push
+ * opt-in, so nothing (resyncWebPush on the next session restore) brings push
+ * back. Used by an explicit sign-out (lib/push-signout.ts).
+ */
+export function forgetWebPushRegistration(accountId: string): void {
+  try {
+    localStorage.removeItem(subscriptionIdKey(accountId));
+    localStorage.removeItem(subscriptionRelayKey(accountId));
+  } catch {
+    // No storage, nothing recorded.
+  }
 }
 
 export interface DisableWebPushParams {

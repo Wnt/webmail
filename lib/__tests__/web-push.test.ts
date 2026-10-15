@@ -753,3 +753,44 @@ describe('enableWebPushForAccounts', () => {
     expect(second.createPushSubscription).not.toHaveBeenCalled();
   });
 });
+
+// Fork (Wnt/webmail), audit bulwark-1: enabling push again is the deliberate
+// opt-in that lifts the markers an explicit sign-out left for the worker.
+describe('explicit sign-out markers', () => {
+  function stubCaches() {
+    const store = new Map<string, string>();
+    vi.stubGlobal('caches', {
+      open: async () => ({
+        put: async (key: string, res: Response) => { store.set(key, await res.text()); },
+        delete: async (key: string) => store.delete(key),
+      }),
+    });
+    return store;
+  }
+
+  it('enabling push lifts the account and device markers, and only those', async () => {
+    const store = stubCaches();
+    const { markPushSignedOut } = await import('@/lib/push-signout-state');
+    await markPushSignedOut([ACCOUNT_ID, 'other-account'], true);
+    expect(store.size).toBe(3);
+    installFetch({});
+
+    await enableWebPush({ client: makeClient([]), relayBaseUrl: RELAY, inboxOnly: false });
+
+    expect([...store.keys()]).toEqual([`${window.location.origin}/__push-state/signed-out/other-account`]);
+  });
+
+  it('a refreshed existing subscription lifts them too', async () => {
+    const store = stubCaches();
+    const { markPushSignedOut } = await import('@/lib/push-signout-state');
+    await markPushSignedOut([ACCOUNT_ID], false);
+    localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
+    localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
+    installFetch({});
+
+    await enableWebPush({ client: makeClient([sub('push-old', THIS_DEVICE)]), relayBaseUrl: RELAY, inboxOnly: false });
+
+    expect(store.size).toBe(0);
+  });
+});
