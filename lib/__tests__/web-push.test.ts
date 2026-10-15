@@ -794,3 +794,23 @@ describe('explicit sign-out markers', () => {
     expect(store.size).toBe(0);
   });
 });
+
+describe('enable racing an explicit sign-out', () => {
+  it('an enable still running when the account is signed out undoes itself', async () => {
+    const { noteExplicitSignOut } = await import('@/lib/push-signout-state');
+    localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
+    const client = makeClient([]);
+    installFetch({});
+    // The sign-out lands while the enable waits for the server's verification.
+    client.createPushSubscription.mockImplementation(async () => {
+      noteExplicitSignOut(ACCOUNT_ID);
+      return 'push-new';
+    });
+
+    await expect(enableWebPush({ client, relayBaseUrl: RELAY, inboxOnly: false })).rejects.toThrow('Signed out');
+
+    expect(client.destroyed).toContain('push-new');
+    expect(client.verifyPushSubscription).not.toHaveBeenCalled();
+    expect(localStorage.getItem(SUB_KEY)).toBeNull();
+  });
+});

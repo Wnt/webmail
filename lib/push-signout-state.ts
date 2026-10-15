@@ -47,3 +47,17 @@ export async function clearPushSignedOut(accountId: string | null): Promise<void
   if (accountId) urls.push(accountMarkerUrl(accountId));
   await Promise.all(urls.map((url) => cache.delete(url).catch(() => false)));
 }
+
+// An enable that was already running when the user signed the account out
+// must not finish afterwards: it would recreate the subscription the
+// sign-out just removed and lift the marker. Each explicit sign-out bumps
+// the account's epoch; enableWebPush compares the epoch it started with.
+const signOutEpochs = new Map<string, number>();
+
+export function noteExplicitSignOut(accountId: string): void {
+  signOutEpochs.set(accountId, (signOutEpochs.get(accountId) ?? 0) + 1);
+}
+
+export function signOutEpoch(accountId: string): number {
+  return signOutEpochs.get(accountId) ?? 0;
+}

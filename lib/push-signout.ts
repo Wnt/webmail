@@ -13,7 +13,7 @@
 import type { IJMAPClient } from '@/lib/jmap/client-interface';
 import { disableWebPush, forgetWebPushRegistration } from '@/lib/web-push';
 import { currentRelayUrl } from '@/lib/push-relay-current';
-import { markPushSignedOut } from '@/lib/push-signout-state';
+import { markPushSignedOut, noteExplicitSignOut } from '@/lib/push-signout-state';
 
 export { clearPushSignedOut } from '@/lib/push-signout-state';
 
@@ -93,6 +93,7 @@ export async function teardownPushOnSignOut(params: {
   const accountIds = targets.map((t) => t.accountId);
 
   // Local and quick, and enough on its own to silence this device.
+  for (const accountId of accountIds) noteExplicitSignOut(accountId);
   await markPushSignedOut(accountIds, params.everyAccount);
   await closeNotifications(accountIds, params.everyAccount);
   if (params.everyAccount) await withTimeout(unsubscribeBrowser(), TEARDOWN_TIMEOUT_MS);

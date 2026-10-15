@@ -8,7 +8,7 @@ import type { IJMAPClient } from '@/lib/jmap/client-interface';
 import type { EmailPushConfig, Mailbox } from '@/lib/jmap/types';
 import { DEFAULT_RELAY_BASE_URL } from '@/lib/push-relays';
 import { IS_LITE } from '@/lib/lite';
-import { clearPushSignedOut } from '@/lib/push-signout-state';
+import { clearPushSignedOut, signOutEpoch } from '@/lib/push-signout-state';
 
 // Per-account keys: a single browser may be signed in to multiple accounts,
 // each with its own JMAP PushSubscription and its own relay record. Scoping
@@ -204,6 +204,14 @@ export class WebPushUnsupportedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'WebPushUnsupportedError';
+  }
+}
+
+/** Fork (Wnt/webmail): the account was signed out on purpose while push was being enabled. */
+export class PushSignedOutError extends Error {
+  constructor() {
+    super('Signed out while enabling push');
+    this.name = 'PushSignedOutError';
   }
 }
 
@@ -464,6 +472,9 @@ export async function enableWebPush(
 
   const relayBaseUrl = (params.relayBaseUrl ?? DEFAULT_RELAY_BASE_URL).replace(/\/+$/, '');
   if (!relayBaseUrl) throw new Error('No push relay is configured on this server');
+  // Fork (Wnt/webmail), audit bulwark-1: see signOutEpoch.
+  const signOutAccountId = params.client.getAccountId();
+  const startedAtEpoch = signOutEpoch(signOutAccountId);
 
   await ensurePermission();
   const registration = await ensureServiceWorker();
@@ -540,6 +551,7 @@ export async function enableWebPush(
       if (!params.forceRecreate && !relayChanged) {
         const refreshed = await refreshSubscriptionExpires(params.client, match, emailPush);
         if (refreshed) {
+          if (signOutEpoch(signOutAccountId) !== startedAtEpoch) throw new PushSignedOutError();
           await clearPushSignedOut(accountId);
           return { subscriptionId: storedServerId };
         }
@@ -585,6 +597,11 @@ export async function enableWebPush(
   });
 
   const verificationCode = await pollVerificationCode(relayBaseUrl, deviceClientId);
+  if (signOutEpoch(signOutAccountId) !== startedAtEpoch) {
+    // Signed out on purpose while this ran: undo instead of recording it.
+    await params.client.destroyPushSubscription(serverAssignedId).catch(() => undefined);
+    throw new PushSignedOutError();
+  }
   await params.client.verifyPushSubscription(serverAssignedId, verificationCode);
   localStorage.setItem(subIdKey, serverAssignedId);
   localStorage.setItem(relayKey, relayBaseUrl);
