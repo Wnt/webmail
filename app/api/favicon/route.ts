@@ -15,6 +15,25 @@ interface NegativeCacheEntry {
 }
 
 const cache = new Map<string, CacheEntry>();
+
+// Fork (Wnt/webmail), audit bulwark-6: bound what a cache miss can cost.
+// Sender icons are a few KiB; a response over FAVICON_MAX_BYTES is refused
+// while it streams in (and up front when its declared length says so), the
+// positive cache holds at most CACHE_MAX_BYTES in all, identical misses share
+// one upstream request, and only FILL_CONCURRENCY upstream requests run at
+// once (the rest wait their turn).
+const FAVICON_MAX_BYTES = 512 * 1024;
+const CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const FILL_CONCURRENCY = 8;
+let cacheBytes = 0;
+const inflight = new Map<string, Promise<FillResult>>();
+let activeFills = 0;
+const fillQueue: Array<() => void> = [];
+
+type FillResult =
+  | { kind: 'icon'; data: ArrayBuffer; contentType: string }
+  | { kind: 'missing' }
+  | { kind: 'error' };
 const negativeCache = new Map<string, NegativeCacheEntry>();
 const NEGATIVE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 const NEGATIVE_CACHE_MAX_SIZE = 2000;
@@ -429,7 +448,123 @@ function evictOldest() {
       oldestKey = key;
     }
   }
-  if (oldestKey) cache.delete(oldestKey);
+  if (oldestKey) deleteCached(oldestKey);
+}
+
+function deleteCached(key: string) {
+  const entry = cache.get(key);
+  if (!entry) return;
+  cacheBytes -= entry.data.byteLength;
+  cache.delete(key);
+}
+
+/** Cache an icon, evicting the oldest ones until both the entry and the byte budget allow it. */
+function storeCached(key: string, entry: CacheEntry) {
+  deleteCached(key);
+  evictOldest();
+  // Map iteration order is insertion order, i.e. oldest first.
+  for (const oldest of cache.keys()) {
+    if (cacheBytes + entry.data.byteLength <= CACHE_MAX_BYTES) break;
+    deleteCached(oldest);
+  }
+  cache.set(key, entry);
+  cacheBytes += entry.data.byteLength;
+}
+
+async function withFillSlot<T>(run: () => Promise<T>): Promise<T> {
+  if (activeFills >= FILL_CONCURRENCY) {
+    await new Promise<void>((resolve) => fillQueue.push(resolve));
+  }
+  activeFills++;
+  try {
+    return await run();
+  } finally {
+    activeFills--;
+    fillQueue.shift()?.();
+  }
+}
+
+/** The body, or null as soon as it turns out larger than `limit` bytes. */
+async function readLimited(res: Response, limit: number): Promise<ArrayBuffer | null> {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > limit) {
+    await res.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  if (!res.body) return new ArrayBuffer(0);
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out.buffer;
+}
+
+/** One upstream lookup for `domain`, shared by every request that misses on it meanwhile. */
+function fillFavicon(domain: string): Promise<FillResult> {
+  const pending = inflight.get(domain);
+  if (pending) return pending;
+  const fill = withFillSlot(() => fetchFavicon(domain)).finally(() => inflight.delete(domain));
+  inflight.set(domain, fill);
+  return fill;
+}
+
+async function fetchFavicon(normalizedDomain: string): Promise<FillResult> {
+  try {
+    const upstream = await fetch(
+      `https://icons.duckduckgo.com/ip3/${encodeURIComponent(normalizedDomain)}.ico`,
+      // A fixed provider URL: a redirect elsewhere is not followed.
+      { signal: AbortSignal.timeout(5000), redirect: 'error' }
+    );
+
+    if (!upstream.ok) {
+      await upstream.body?.cancel().catch(() => undefined);
+      rememberMissing(normalizedDomain);
+      return { kind: 'missing' };
+    }
+
+    // Served inline on the webmail origin, so only raster image types pass:
+    // an image/svg+xml or text/html favicon opened on its own would run
+    // script as the webmail.
+    const contentType = rasterFaviconType(upstream.headers.get('content-type'));
+    if (!contentType) {
+      await upstream.body?.cancel().catch(() => undefined);
+      rememberMissing(normalizedDomain);
+      return { kind: 'missing' };
+    }
+    const data = await readLimited(upstream, FAVICON_MAX_BYTES);
+
+    // Don't cache empty/tiny responses (likely no real favicon), nor
+    // oversized ones (not a favicon either).
+    if (!data || data.byteLength < 10) {
+      rememberMissing(normalizedDomain);
+      return { kind: 'missing' };
+    }
+
+    storeCached(normalizedDomain, { data, contentType, fetchedAt: Date.now() });
+    return { kind: 'icon', data, contentType };
+  } catch {
+    return { kind: 'error' };
+  }
+}
+
+function rememberMissing(domain: string) {
+  evictNegativeOldest();
+  negativeCache.set(domain, { fetchedAt: Date.now() });
 }
 
 export async function GET(request: NextRequest) {
@@ -459,49 +594,19 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  try {
-    const upstream = await fetch(
-      `https://icons.duckduckgo.com/ip3/${encodeURIComponent(normalizedDomain)}.ico`,
-      { signal: AbortSignal.timeout(5000) }
-    );
-
-    if (!upstream.ok) {
-      evictNegativeOldest();
-      negativeCache.set(normalizedDomain, { fetchedAt: Date.now() });
-      return new NextResponse(TRANSPARENT_PNG, { headers: MISSING_FAVICON_HEADERS });
-    }
-
-    // Served inline on the webmail origin, so only raster image types pass:
-    // an image/svg+xml or text/html favicon opened on its own would run
-    // script as the webmail.
-    const contentType = rasterFaviconType(upstream.headers.get('content-type'));
-    if (!contentType) {
-      evictNegativeOldest();
-      negativeCache.set(normalizedDomain, { fetchedAt: Date.now() });
-      return new NextResponse(TRANSPARENT_PNG, { headers: MISSING_FAVICON_HEADERS });
-    }
-    const data = await upstream.arrayBuffer();
-
-    // Don't cache empty/tiny responses (likely no real favicon)
-    if (data.byteLength < 10) {
-      evictNegativeOldest();
-      negativeCache.set(normalizedDomain, { fetchedAt: Date.now() });
-      return new NextResponse(TRANSPARENT_PNG, { headers: MISSING_FAVICON_HEADERS });
-    }
-
-    // Cache the result
-    evictOldest();
-    cache.set(normalizedDomain, { data, contentType, fetchedAt: Date.now() });
-
-    return new NextResponse(data, {
-      headers: faviconHeaders(contentType),
-    });
-  } catch {
-    return new NextResponse(null, {
-      status: 502,
-      headers: { 'Cache-Control': 'public, max-age=300' }, // 5 min
+  const result = await fillFavicon(normalizedDomain);
+  if (result.kind === 'icon') {
+    return new NextResponse(result.data, {
+      headers: faviconHeaders(result.contentType),
     });
   }
+  if (result.kind === 'missing') {
+    return new NextResponse(TRANSPARENT_PNG, { headers: MISSING_FAVICON_HEADERS });
+  }
+  return new NextResponse(null, {
+    status: 502,
+    headers: { 'Cache-Control': 'public, max-age=300' }, // 5 min
+  });
 }
 
 const RASTER_FAVICON_TYPES = new Set([

@@ -80,6 +80,10 @@
 >      and renewal); an envelope without one is refused. The calendar fetch proxy checks the credential with
 >      the mail server first (successes cached for 60 s). Push without a session is unaffected.
 >      Tests: `lib/__tests__/stale-context-proxy.test.ts`, `lib/__tests__/fetch-ical-route.test.ts`.
+>    - bulwark-6, favicon proxy bounds (`app/api/favicon/route.ts`): icons over 512 KiB are refused while
+>      streaming (or up front by Content-Length), the cache holds at most 32 MiB, identical misses share one
+>      upstream request, at most 8 run at once, and redirects are not followed. Sender icons stay on.
+>      Test: `lib/__tests__/favicon-bounds.test.ts`.
 
 <p>
   <a href="https://bulwarkmail.org"><img src="https://raw.githubusercontent.com/bulwarkmail/.github/main/profile/banner.png" alt="Bulwark: webmail for Stalwart Mail Server. Mail, calendar, contacts and files in one browser client." width="100%" /></a>
