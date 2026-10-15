@@ -55,17 +55,17 @@ export default async function manifest(): Promise<ExtendedManifest> {
   const themeColor = branded<string>("pwaThemeColor", "") || "#ffffff";
   const backgroundColor = branded<string>("pwaBackgroundColor", "") || "#ffffff";
 
-  // If pwaIconUrl or faviconUrl was explicitly configured (admin override,
-  // env var, or per-domain override), serve dynamically resized PNGs via
-  // /api/pwa-icon/[size]. Otherwise fall back to the static Bulwark PNGs -
-  // sources marked "default" are the built-in placeholder paths and not
-  // real custom icons.
+  // If pwaIconUrl was explicitly configured (admin override, env var, or
+  // per-domain override), serve dynamically resized PNGs via
+  // /api/pwa-icon/[size]. Otherwise fall back to the static PNGs in public/,
+  // which carry proper maskable variants with a safe zone - sources marked
+  // "default" are the built-in placeholder paths and not real custom icons.
+  // Fork: a configured favicon alone no longer replaces them (upstream did),
+  // so this fork's own icon set in public/ stays in use next to FAVICON_URL.
   const sources = configManager.getAllWithSources();
   const hasCustomIcon =
     !!domainOverrides.pwaIconUrl ||
-    !!domainOverrides.faviconUrl ||
-    sources.pwaIconUrl?.source !== "default" ||
-    sources.faviconUrl?.source !== "default";
+    sources.pwaIconUrl?.source !== "default";
 
   const icons: MetadataRoute.Manifest["icons"] = hasCustomIcon
     ? [
