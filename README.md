@@ -68,6 +68,12 @@
 >      message id; the quiet summary push replaces it only when both match the summary's account and newest id,
 >      and is dropped otherwise. Pushes are handled one at a time per account, so a summary cannot interleave
 >      with a newer message's notification. Test: `lib/__tests__/sw-summary-association.test.ts`.
+>    - bulwark-2, HTML attachment previews follow the remote-content policy (`components/files/html-attachment-preview.tsx`,
+>      `components/files/file-preview-modal.tsx`): the attachment is decoded by its charset, sanitized like a
+>      mail body and shown in a sandboxed srcdoc with the mail body's resource CSP and no referrer. Remote
+>      content stays blocked under "block", and under "ask" until "Load images" is clicked for that preview.
+>      Trusted senders are not consulted (the preview does not know the sender).
+>      Test: `components/files/__tests__/html-preview-remote-block.test.tsx`.
 
 <p>
   <a href="https://bulwarkmail.org"><img src="https://raw.githubusercontent.com/bulwarkmail/.github/main/profile/banner.png" alt="Bulwark: webmail for Stalwart Mail Server. Mail, calendar, contacts and files in one browser client." width="100%" /></a>

@@ -8,6 +8,7 @@ import { ZoomableImage } from "@/components/files/zoomable-image";
 import { getFilePreviewKind, imageBlobUrl, isMimeTypeSafeForInlinePreview, previewBlobType } from "@/lib/file-preview";
 import dynamic from "next/dynamic";
 import { EmlPreview, type ParsedEml } from "@/components/files/eml-preview";
+import { decodeHtmlAttachment, HtmlAttachmentPreview } from "@/components/files/html-attachment-preview";
 
 // pdf.js-based inline viewer for mobile (no native inline PDF viewer). Loaded
 // only on the mobile PDF path so pdfjs-dist + its worker never reach the
@@ -203,6 +204,12 @@ export function FilePreviewModal({ name, onClose, onDownload, getFileContent }: 
         if (previewType === "text" || previewType === "markdown") {
           const text = await blob.text();
           if (!cancelled) setContent(text);
+        } else if (previewType === "html") {
+          // Fork (Wnt/webmail), audit bulwark-2: HTML is rendered from its
+          // text by HtmlAttachmentPreview under the remote-content policy,
+          // never from the sender's original bytes.
+          const text = await decodeHtmlAttachment(blob, contentType || blob.type);
+          if (!cancelled) setContent(text);
         } else if (previewType === "eml") {
           // Parse the embedded message (postal-mime, dynamic-imported so it
           // stays off the bundle) and render it like an email via EmlPreview.
@@ -330,14 +337,8 @@ export function FilePreviewModal({ name, onClose, onDownload, getFileContent }: 
           </div>
         )}
 
-        {!loading && !error && fileType === "html" && objectUrl && (
-          <iframe
-            src={objectUrl}
-            sandbox=""
-            className="w-full max-w-5xl h-full rounded-lg bg-white"
-            title={name}
-            onClick={(e) => e.stopPropagation()}
-          />
+        {!loading && !error && fileType === "html" && content !== null && (
+          <HtmlAttachmentPreview html={content} title={name} />
         )}
 
         {!loading && !error && fileType === "pdf" && objectUrl && pdfInlineSupported && (
