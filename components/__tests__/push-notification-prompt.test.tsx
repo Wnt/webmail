@@ -26,8 +26,9 @@ const mocks = vi.hoisted(() => ({
   settingsState: { emailNotificationsEnabled: true, pushRelayUrl: "" },
   policyState: {
     loaded: true,
+    partial: false,
     policy: {
-      pushRelayUrl: "https://notifications.relay.bulwarkmail.org",
+      pushRelayUrl: "https://mail.example.com/relay",
       pushRelays: [] as { label: string; url: string }[],
       pushRelayUrlLocked: false,
     },
@@ -51,18 +52,30 @@ vi.mock("@/stores/account-store", () => ({
 }));
 
 vi.mock("@/stores/settings-store", () => ({
-  useSettingsStore: (
-    selector: (state: typeof mocks.settingsState) => unknown,
-  ) => selector(mocks.settingsState),
+  useSettingsStore: Object.assign(
+    (selector: (state: typeof mocks.settingsState) => unknown) =>
+      selector(mocks.settingsState),
+    { getState: () => mocks.settingsState },
+  ),
 }));
 
 vi.mock("@/stores/policy-store", () => ({
-  usePolicyStore: (selector: (state: typeof mocks.policyState) => unknown) =>
-    selector(mocks.policyState),
+  usePolicyStore: Object.assign(
+    (selector: (state: typeof mocks.policyState) => unknown) =>
+      selector(mocks.policyState),
+    {
+      getState: () => ({
+        ...mocks.policyState,
+        refreshIfPartial: async () => {
+          mocks.policyState.partial = false;
+        },
+      }),
+    },
+  ),
 }));
 
 vi.mock("@/lib/web-push", () => ({
-  DEFAULT_RELAY_BASE_URL: "https://notifications.relay.bulwarkmail.org",
+  DEFAULT_RELAY_BASE_URL: "https://mail.example.com/relay",
   enableWebPush: mocks.enableWebPush,
   isWebPushSupported: () => mocks.supported,
   isWebPushEnabled: mocks.isWebPushEnabled,
@@ -103,8 +116,9 @@ describe("PushNotificationPrompt", () => {
     mocks.settingsState.emailNotificationsEnabled = true;
     mocks.settingsState.pushRelayUrl = "";
     mocks.policyState.loaded = true;
+    mocks.policyState.partial = false;
     mocks.policyState.policy.pushRelayUrl =
-      "https://notifications.relay.bulwarkmail.org";
+      "https://mail.example.com/relay";
     mocks.policyState.policy.pushRelays = [];
     mocks.policyState.policy.pushRelayUrlLocked = false;
     mocks.enableWebPush.mockReset().mockResolvedValue({ subscriptionId: "sub-1" });
@@ -133,11 +147,13 @@ describe("PushNotificationPrompt", () => {
     await act(async () => {
       fireEvent.click(screen.getByText("enable"));
       await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     expect(mocks.enableWebPush).toHaveBeenCalledWith({
       client: mocks.authState.client,
-      relayBaseUrl: "https://notifications.relay.bulwarkmail.org",
+      relayBaseUrl: "https://mail.example.com/relay",
       accountLabel: "alice@example.com",
     });
     expect(screen.queryByText("title")).not.toBeInTheDocument();
@@ -155,6 +171,8 @@ describe("PushNotificationPrompt", () => {
     await act(async () => {
       fireEvent.click(screen.getByText("enable"));
       await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     expect(mocks.enableWebPush).toHaveBeenCalledWith(
@@ -171,12 +189,47 @@ describe("PushNotificationPrompt", () => {
     await act(async () => {
       fireEvent.click(screen.getByText("enable"));
       await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     expect(mocks.enableWebPush).toHaveBeenCalledWith(
       expect.objectContaining({
-        relayBaseUrl: "https://notifications.relay.bulwarkmail.org",
+        relayBaseUrl: "https://mail.example.com/relay",
       }),
+    );
+  });
+
+  it("waits for the full policy before re-syncing against any relay", async () => {
+    // Fork (Wnt/webmail): the public policy subset has no relay and no lock.
+    mocks.enabled = true;
+    mocks.policyState.partial = true;
+    render(<PushNotificationPrompt />);
+    await advancePromptDelay();
+
+    expect(mocks.resyncWebPush).not.toHaveBeenCalled();
+    expect(mocks.enableWebPush).not.toHaveBeenCalled();
+  });
+
+  it("registers with the locked admin relay even if the user picked another", async () => {
+    mocks.policyState.policy.pushRelays = [
+      { label: "Company", url: "https://push.company.example" },
+    ];
+    mocks.policyState.policy.pushRelayUrlLocked = true;
+    mocks.settingsState.pushRelayUrl = "https://push.company.example";
+
+    render(<PushNotificationPrompt />);
+    await advancePromptDelay();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("enable"));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.enableWebPush).toHaveBeenCalledWith(
+      expect.objectContaining({ relayBaseUrl: "https://mail.example.com/relay" }),
     );
   });
 
@@ -196,7 +249,7 @@ describe("PushNotificationPrompt", () => {
     expect(mocks.resyncWebPush).toHaveBeenCalledTimes(1);
     expect(mocks.resyncWebPush).toHaveBeenCalledWith(
       expect.objectContaining({
-        relayBaseUrl: "https://notifications.relay.bulwarkmail.org",
+        relayBaseUrl: "https://mail.example.com/relay",
       }),
     );
     // Only the explicit Enable button may start the interactive flow.
@@ -222,7 +275,7 @@ describe("PushNotificationPrompt", () => {
     expect(mocks.resyncWebPush.mock.calls[1][0]).toMatchObject({
       client: bob,
       accountLabel: "bob@example.com",
-      relayBaseUrl: "https://notifications.relay.bulwarkmail.org",
+      relayBaseUrl: "https://mail.example.com/relay",
     });
   });
 

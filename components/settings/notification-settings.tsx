@@ -29,6 +29,7 @@ import {
   resolveActiveRelayUrl,
   resolvePushRelayOptions,
 } from '@/lib/push-relays';
+import { currentRelayUrl } from '@/lib/push-relay-current';
 
 type PushStatus =
   | { kind: 'idle' }
@@ -82,6 +83,12 @@ export function NotificationSettings() {
     relayOptions.find((option) => option.url === activeRelayUrl)?.label ?? activeRelayUrl;
 
   const busy = pushStatus.kind === 'busy';
+
+  // Fork (Wnt/webmail): show and use the admin's relay, not the public-subset
+  // fallback, when the page opened before the full policy arrived.
+  useEffect(() => {
+    void usePolicyStore.getState().refreshIfPartial();
+  }, []);
 
   useEffect(() => {
     if (!supported) return;
@@ -153,7 +160,7 @@ export function NotificationSettings() {
     try {
       await enableWebPush({
         client,
-        relayBaseUrl: activeRelayUrl,
+        relayBaseUrl: await currentRelayUrl(),
         accountLabel: username ?? undefined,
         forceRecreate,
         inboxOnly: pushNotifyInboxOnly,
@@ -188,12 +195,12 @@ export function NotificationSettings() {
 
     let cancelled = false;
     setPushStatus({ kind: 'busy' });
-    void enableWebPush({
+    void currentRelayUrl().then((relayBaseUrl) => enableWebPush({
       client,
-      relayBaseUrl: activeRelayUrl,
+      relayBaseUrl,
       accountLabel: username ?? undefined,
       inboxOnly: pushNotifyInboxOnly,
-    })
+    }))
       .then(() => { if (!cancelled) setPushStatus({ kind: 'enabled' }); })
       .catch((err) => {
         if (cancelled) return;

@@ -13,7 +13,20 @@
 >    carries an `email: { from, subject, preview }` summary (sent by webmail-gateway), the notification shows
 >    `from` as the title and the subject plus the preview (≤ 200 chars) as the body instead of a generic "New mail".
 >    Tests: `lib/__tests__/sw-push-payload-email.test.ts`.
-> 2. `.github/workflows/fork-image.yml`: builds and pushes the fork's image to GHCR.
+> 2. `.github/workflows/fork-image.yml`: builds and pushes the fork's image to GHCR, baking in
+>    `NEXT_PUBLIC_PUSH_RELAY_URL=https://mail.madekivi.fi/relay` (new `Dockerfile` build arg).
+> 3. Push relay, no hosted fallback (`lib/push-relays.ts`, `lib/web-push.ts`, `lib/push-relay-current.ts`,
+>    `stores/auth-store.ts`, `components/push-notification-prompt.tsx`, `components/settings/notification-settings.tsx`,
+>    admin policy tab):
+>    - The built-in relay is only `NEXT_PUBLIC_PUSH_RELAY_URL`; upstream's `notifications.relay.bulwarkmail.org`
+>      default is gone. With neither a build-time nor an admin relay, push is unavailable.
+>    - Push never resolves its relay from the public policy subset (served before the server sees a session, with
+>      no relay and no lock): the full policy is refetched after the sign-in context is stored, and enabling or
+>      re-syncing waits for it. This was why a PWA cold start ignored the locked `pushRelayUrl`.
+>    - The relay a JMAP PushSubscription was made for is recorded per account; a record for another relay (or an
+>      unrecorded one) is destroyed and recreated instead of refreshed.
+>    Tests: `lib/__tests__/push-relays.test.ts`, `lib/__tests__/web-push.test.ts`,
+>    `components/__tests__/push-notification-prompt.test.tsx`.
 
 <p>
   <a href="https://bulwarkmail.org"><img src="https://raw.githubusercontent.com/bulwarkmail/.github/main/profile/banner.png" alt="Bulwark: webmail for Stalwart Mail Server. Mail, calendar, contacts and files in one browser client." width="100%" /></a>

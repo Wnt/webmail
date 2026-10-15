@@ -360,6 +360,13 @@ async function syncStalwartAuthContext(
     } else {
       setServerAuthIssue(data.warning ?? null);
       if (data.warning) console.warn(`[auth] ${data.warning}`);
+      // Fork (Wnt/webmail): the server only hands out the full policy (push
+      // relay, lock) once it can see this context. isAuthenticated may flip
+      // before this write lands - always on a PWA cold start, where the
+      // session cookie is gone and the session is restored from the refresh
+      // token - so the refetch on that transition still got the public
+      // subset and push fell back to the built-in relay. Retry it now.
+      void usePolicyStore.getState().refreshIfPartial();
     }
   } catch (error) {
     debug.warn('auth', 'Failed to sync Stalwart auth context:', error);

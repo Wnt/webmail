@@ -25,6 +25,18 @@ function subscriptionIdKey(accountId: string): string {
   return SUBSCRIPTION_ID_PREFIX + accountId;
 }
 
+// Fork (Wnt/webmail): the relay the recorded server-side subscription points
+// at. JMAP servers hide a subscription's URL, so this is the only way to tell
+// that a registration made against another relay (e.g. before an admin locked
+// the relay, or with an older build's hosted default) must be replaced rather
+// than refreshed. Deliberately not under SUBSCRIPTION_ID_PREFIX, which
+// anyOtherAccountHasSubscription scans.
+const SUBSCRIPTION_RELAY_PREFIX = 'bulwark.push.subscriptionRelay.v1.';
+
+function subscriptionRelayKey(accountId: string): string {
+  return SUBSCRIPTION_RELAY_PREFIX + accountId;
+}
+
 const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, '');
 const SW_SCOPE = `${BASE_PATH}/`;
 const SW_URL = `${BASE_PATH}/sw.js`;
@@ -450,7 +462,7 @@ export async function enableWebPush(
   }
 
   const relayBaseUrl = (params.relayBaseUrl ?? DEFAULT_RELAY_BASE_URL).replace(/\/+$/, '');
-  if (!relayBaseUrl) throw new Error('relayBaseUrl is required');
+  if (!relayBaseUrl) throw new Error('No push relay is configured on this server');
 
   await ensurePermission();
   const registration = await ensureServiceWorker();
@@ -516,11 +528,15 @@ export async function enableWebPush(
     ? await buildEmailPushConfig(params.client, params.inboxOnly)
     : null;
   const subIdKey = subscriptionIdKey(accountId);
+  const relayKey = subscriptionRelayKey(accountId);
   const storedServerId = localStorage.getItem(subIdKey);
+  // A record made against a different relay (or before the relay was
+  // recorded) would keep pointing the server at that relay: replace it.
+  const relayChanged = localStorage.getItem(relayKey) !== relayBaseUrl;
   if (storedServerId) {
     const match = existingSubs.find((s) => s.id === storedServerId);
     if (match) {
-      if (!params.forceRecreate) {
+      if (!params.forceRecreate && !relayChanged) {
         const refreshed = await refreshSubscriptionExpires(params.client, match, emailPush);
         if (refreshed) return { subscriptionId: storedServerId };
       }
@@ -567,6 +583,7 @@ export async function enableWebPush(
   const verificationCode = await pollVerificationCode(relayBaseUrl, deviceClientId);
   await params.client.verifyPushSubscription(serverAssignedId, verificationCode);
   localStorage.setItem(subIdKey, serverAssignedId);
+  localStorage.setItem(relayKey, relayBaseUrl);
 
   return { subscriptionId: serverAssignedId };
 }
@@ -607,6 +624,7 @@ export async function disableWebPush(params: DisableWebPushParams): Promise<void
     await params.client.destroyPushSubscription(id).catch(() => undefined);
   }
   localStorage.removeItem(subIdKey);
+  localStorage.removeItem(subscriptionRelayKey(accountId));
 
   if (deviceClientId && relayBaseUrl) {
     await fetch(

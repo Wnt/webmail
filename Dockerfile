@@ -17,6 +17,11 @@ ENV NEXT_PUBLIC_LOCALE_PREFIX=$NEXT_PUBLIC_LOCALE_PREFIX
 # build time because next-intl wires it into client-side routing too.
 ARG NEXT_PUBLIC_DEFAULT_LOCALE=
 ENV NEXT_PUBLIC_DEFAULT_LOCALE=$NEXT_PUBLIC_DEFAULT_LOCALE
+# Fork (Wnt/webmail): the push relay, baked into the client bundle. Empty =
+# no built-in relay at all (upstream's hosted relay fallback is removed); an
+# admin-configured relay is then the only way to enable push.
+ARG NEXT_PUBLIC_PUSH_RELAY_URL=
+ENV NEXT_PUBLIC_PUSH_RELAY_URL=$NEXT_PUBLIC_PUSH_RELAY_URL
 # Commit SHA shown in the About screen. .dockerignore excludes .git, so
 # `git rev-parse` inside the build can't find it - CI must pass it in.
 ARG GIT_COMMIT=unknown

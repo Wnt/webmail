@@ -15,6 +15,7 @@ import {
   resyncWebPush,
 } from "@/lib/web-push";
 import { resolveActiveRelayUrl } from "@/lib/push-relays";
+import { currentRelayUrl } from "@/lib/push-relay-current";
 import {
   isPWAInstallPromptVisible,
   PWA_INSTALL_PROMPT_VISIBILITY_EVENT,
@@ -101,7 +102,9 @@ export function PushNotificationPrompt() {
   const pushNotifyInboxOnly = useSettingsStore(
     (state) => state.pushNotifyInboxOnly,
   );
-  const policyLoaded = usePolicyStore((state) => state.loaded);
+  // Fork (Wnt/webmail): the public policy subset served before the server sees
+  // a session has no push relay and no lock; never resolve a relay from it.
+  const policyLoaded = usePolicyStore((state) => state.loaded && !state.partial);
   const policy = usePolicyStore((state) => state.policy);
   const userPushRelayUrl = useSettingsStore((state) => state.pushRelayUrl);
 
@@ -241,7 +244,7 @@ export function PushNotificationPrompt() {
     try {
       await enableWebPush({
         client,
-        relayBaseUrl,
+        relayBaseUrl: await currentRelayUrl(),
         accountLabel: username ?? undefined,
         inboxOnly: pushNotifyInboxOnly,
       });

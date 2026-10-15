@@ -20,6 +20,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/wnt/webmail
+  # Our gateway's relay endpoints; baked into the bundle (no hosted fallback).
+  PUSH_RELAY_URL: https://mail.madekivi.fi/relay
 
 jobs:
   build:
@@ -48,6 +50,7 @@ jobs:
           push: true
           build-args: |
             GIT_COMMIT=${{ github.sha }}
+            NEXT_PUBLIC_PUSH_RELAY_URL=${{ env.PUSH_RELAY_URL }}
           tags: |
             ${{ env.IMAGE }}:sha-${{ github.sha }}
             ${{ env.IMAGE }}:main

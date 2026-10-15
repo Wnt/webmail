@@ -20,6 +20,7 @@ const OTHER_DEVICE = '11111111222222223333333344444444';
 
 const DEVICE_KEY = `bulwark.push.deviceClientId.v1.${ACCOUNT_ID}`;
 const SUB_KEY = `bulwark.push.subscriptionId.v1.${ACCOUNT_ID}`;
+const RELAY_KEY = `bulwark.push.subscriptionRelay.v1.${ACCOUNT_ID}`;
 
 function sub(
   id: string,
@@ -173,6 +174,7 @@ describe('enableWebPush', () => {
   it('reuses the recorded subscription by default', async () => {
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
     const client = makeClient([sub('push-old', THIS_DEVICE)]);
     installFetch({});
 
@@ -183,9 +185,47 @@ describe('enableWebPush', () => {
     expect(client.destroyed).toEqual([]);
   });
 
+  it('replaces a recorded subscription made against another relay', async () => {
+    localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
+    localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, 'https://notifications.relay.bulwarkmail.org');
+    const client = makeClient([sub('push-old', THIS_DEVICE)]);
+    installFetch({});
+
+    const result = await enableWebPush({ client, relayBaseUrl: RELAY, inboxOnly: false });
+
+    expect(client.destroyed).toContain('push-old');
+    expect(client.createPushSubscription).toHaveBeenCalledWith(
+      expect.objectContaining({ url: `${RELAY}/api/push/jmap/${THIS_DEVICE}` }),
+    );
+    expect(result.subscriptionId).toBe('push-new');
+    expect(localStorage.getItem(RELAY_KEY)).toBe(RELAY);
+  });
+
+  it('replaces a recorded subscription whose relay was never recorded', async () => {
+    localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
+    localStorage.setItem(SUB_KEY, 'push-old');
+    const client = makeClient([sub('push-old', THIS_DEVICE)]);
+    installFetch({});
+
+    const result = await enableWebPush({ client, relayBaseUrl: RELAY, inboxOnly: false });
+
+    expect(client.destroyed).toContain('push-old');
+    expect(result.subscriptionId).toBe('push-new');
+    expect(localStorage.getItem(RELAY_KEY)).toBe(RELAY);
+  });
+
+  it('refuses to enable without any relay instead of using a hosted one', async () => {
+    installFetch({});
+    await expect(
+      enableWebPush({ client: makeClient([]), relayBaseUrl: '', inboxOnly: false }),
+    ).rejects.toThrow('No push relay is configured');
+  });
+
   it('destroys and recreates the recorded subscription with forceRecreate', async () => {
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
     const client = makeClient([sub('push-old', THIS_DEVICE)]);
     installFetch({});
 
@@ -279,6 +319,7 @@ describe('resyncWebPush', () => {
   it('repairs a lost browser subscription for an account that previously opted in', async () => {
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
     const { registration } = installPushBrowser();
     registration.pushManager.getSubscription.mockResolvedValue(null as never);
     const client = makeClient([sub('push-old', THIS_DEVICE)]);
@@ -292,6 +333,7 @@ describe('resyncWebPush', () => {
 
   it.each(['default', 'denied'])('does not resubscribe or prompt with %s permission', async (permission) => {
     localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
     const { registration } = installPushBrowser();
     vi.stubGlobal('Notification', { permission, requestPermission: vi.fn() });
     const client = makeClient([sub('push-old', THIS_DEVICE)]);
@@ -302,6 +344,7 @@ describe('resyncWebPush', () => {
 
   it('allows retry after a transient relay failure', async () => {
     localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     const client = makeClient([sub('push-old', THIS_DEVICE)]);
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
@@ -321,6 +364,7 @@ describe('resyncWebPush', () => {
 
   it('keeps the opt-in when recreating the subscription fails', async () => {
     localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     // The server lost the old subscription, and creating a new one fails.
     const client = makeClient([]);
@@ -333,6 +377,7 @@ describe('resyncWebPush', () => {
   it('re-syncs an enabled registration and installs the missing filter', async () => {
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
     const client = makeClient([sub('push-old', THIS_DEVICE)], { emailPushCapability: true });
     installFetch({});
 
@@ -359,6 +404,7 @@ describe('resyncWebPush', () => {
   it('runs at most once a day per account', async () => {
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
     const client = makeClient([sub('push-old', THIS_DEVICE)], { emailPushCapability: true });
     installFetch({});
     const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
@@ -377,6 +423,7 @@ describe('resyncWebPush', () => {
   it('swallows failures instead of surfacing them to the app', async () => {
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
     const client = makeClient([sub('push-old', THIS_DEVICE)]);
     client.listPushSubscriptions = vi.fn(async () => {
       throw new Error('server down');
@@ -422,6 +469,7 @@ describe('enableWebPush delivery filter (emailPush)', () => {
   it('adds the filter to an existing subscription that predates it', async () => {
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
     const client = makeClient([sub('push-old', THIS_DEVICE)], { emailPushCapability: true });
     installFetch({});
 
@@ -438,6 +486,7 @@ describe('enableWebPush delivery filter (emailPush)', () => {
   it('re-syncs a filter whose Junk mailbox id went stale', async () => {
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
     const stale = {
       ...EXPECTED_EMAIL_PUSH,
       [ACCOUNT_ID]: {
@@ -465,6 +514,7 @@ describe('enableWebPush delivery filter (emailPush)', () => {
   it('leaves a fresh subscription alone when its filter already matches', async () => {
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
     // Key order differs from what we build - must still compare equal.
     const stored = JSON.parse(JSON.stringify(EXPECTED_EMAIL_PUSH));
     stored[ACCOUNT_ID] = {
@@ -568,6 +618,7 @@ describe('disableWebPush', () => {
   it('destroys every subscription this device owns, not just the recorded id', async () => {
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     localStorage.setItem(SUB_KEY, 'push-tracked');
+    localStorage.setItem(RELAY_KEY, RELAY);
     const client = makeClient([
       sub('push-tracked', THIS_DEVICE),
       // Left behind by an earlier enable whose destroy never landed.
@@ -580,6 +631,7 @@ describe('disableWebPush', () => {
 
     expect(client.destroyed.sort()).toEqual(['push-orphan', 'push-tracked']);
     expect(localStorage.getItem(SUB_KEY)).toBeNull();
+    expect(localStorage.getItem(RELAY_KEY)).toBeNull();
     // The deviceClientId survives so a later enable reuses the relay record.
     expect(localStorage.getItem(DEVICE_KEY)).toBe(THIS_DEVICE);
   });
@@ -628,6 +680,7 @@ describe('revokePushDevice', () => {
   it('destroys another device and frees its relay registration', async () => {
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     localStorage.setItem(SUB_KEY, 'push-mine');
+    localStorage.setItem(RELAY_KEY, RELAY);
     const client = makeClient([sub('push-mine', THIS_DEVICE), sub('push-other', OTHER_DEVICE)]);
     const calls = installFetch({});
 
@@ -649,6 +702,7 @@ describe('revokePushDevice', () => {
   it('runs the full local teardown when revoking this device', async () => {
     localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
     localStorage.setItem(SUB_KEY, 'push-mine');
+    localStorage.setItem(RELAY_KEY, RELAY);
     const client = makeClient([sub('push-mine', THIS_DEVICE)]);
     installFetch({});
 

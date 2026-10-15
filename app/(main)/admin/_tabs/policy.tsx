@@ -336,11 +336,13 @@ export function PolicyTab() {
             </button>
           </div>
 
+          {/* Fork (Wnt/webmail): only a build-time relay is built in; none = no entry. */}
+          {DEFAULT_RELAY_BASE_URL && (
           <div className="rounded-md border border-border bg-muted/20 p-3">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm text-foreground">Bulwark relay</span>
+                  <span className="text-sm text-foreground">Built-in relay</span>
                   <span className="text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
                     built-in
                   </span>
@@ -359,6 +361,7 @@ export function PolicyTab() {
               </label>
             </div>
           </div>
+          )}
 
           {(policy.pushRelays ?? []).map((relay, index) => (
             <div key={index} className="rounded-md border border-border bg-muted/20 p-3 space-y-2">

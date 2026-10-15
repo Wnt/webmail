@@ -4,10 +4,18 @@
 
 import type { PushRelayOption, SettingsPolicy } from '@/lib/admin/types';
 
-// Hosted relay so self-hosters don't need their own VAPID + Firebase setup.
-// The built-in entry can be repointed at build time via NEXT_PUBLIC_PUSH_RELAY_URL.
-export const DEFAULT_RELAY_BASE_URL =
-  process.env.NEXT_PUBLIC_PUSH_RELAY_URL || 'https://notifications.relay.bulwarkmail.org';
+// Fork (Wnt/webmail): no hosted fallback. Upstream offered
+// notifications.relay.bulwarkmail.org whenever NEXT_PUBLIC_PUSH_RELAY_URL was
+// unset; here the built-in entry exists only when the build bakes a relay in,
+// so no code path can ever register a device with a third-party relay. Without
+// one (and without an admin-configured relay) push is simply unavailable.
+export const DEFAULT_RELAY_BASE_URL = builtInRelayUrl(process.env.NEXT_PUBLIC_PUSH_RELAY_URL);
+
+/** The build-time relay, or '' when the build did not set a valid one. */
+export function builtInRelayUrl(raw: string | null | undefined): string {
+  const url = normalizeRelayUrl(raw);
+  return isValidRelayUrl(url) ? url : '';
+}
 
 export type PushRelayPolicy = Partial<
   Pick<SettingsPolicy, 'pushRelays' | 'pushRelayUrl' | 'pushRelayUrlLocked'>
