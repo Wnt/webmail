@@ -1298,7 +1298,7 @@
       "push": {
         "confirm_disable_message": "Toto zařízení přestane přijímat upozornění, když je web zavřený.",
         "confirm_disable_title": "Zakázat oznámení na pozadí?",
-        "description": "Přijímat systémová oznámení o nové poště, když je tento web zavřený. Doručováno přes push relay Bulwark; relay nikdy nevidí obsah pošty.",
+        "description": "Přijímat systémová oznámení o nové poště, když je tento web zavřený. Doručuje je váš poštovní server přes push službu vašeho zařízení (Apple, Google nebo Mozilla), šifrovaně, takže je push služba nemůže číst.",
         "disable": "Zakázat",
         "enable": "Povolit",
         "dismiss_aria": "Zavřít výzvu k oznámením",

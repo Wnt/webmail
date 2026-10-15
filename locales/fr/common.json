@@ -1298,7 +1298,7 @@
       "push": {
         "confirm_disable_message": "Cet appareil cessera de recevoir des alertes lorsque le site est fermé.",
         "confirm_disable_title": "Désactiver les notifications en arrière-plan ?",
-        "description": "Recevez des notifications système pour les nouveaux courriers quand ce site est fermé. Livré via le relais push Bulwark ; le relais ne voit jamais le contenu des courriers.",
+        "description": "Recevez des notifications système pour les nouveaux courriers quand ce site est fermé. Elles sont envoyées par votre serveur de messagerie via le service push de votre appareil (Apple, Google ou Mozilla), chiffrées pour que ce service ne puisse pas les lire.",
         "disable": "Désactiver",
         "enable": "Activer",
         "dismiss_aria": "Fermer l'invite de notifications",

@@ -44,4 +44,7 @@ export interface TelemetryStateFile {
   nextScheduledAt: string | null;
 }
 
-export const DEFAULT_ENDPOINT = 'https://telemetry.bulwarkmail.org/v1/heartbeat';
+// Fork (Wnt/webmail): no built-in endpoint (upstream:
+// https://telemetry.bulwarkmail.org/v1/heartbeat). Consent is off by default
+// too; even an opted-in instance sends nothing until an endpoint is set.
+export const DEFAULT_ENDPOINT = '';

@@ -1298,7 +1298,7 @@
       "push": {
         "confirm_disable_message": "Bu cihaz, site kapalıyken uyarı almayı durduracak.",
         "confirm_disable_title": "Arka plan bildirimleri devre dışı bırakılsın mı?",
-        "description": "Bu site kapalıyken yeni postalar için sistem bildirimleri alın. Bulwark push röle aracılığıyla iletilir; röle posta içeriğini asla görmez.",
+        "description": "Bu site kapalıyken yeni postalar için sistem bildirimleri alın. Bildirimleri posta sunucunuz, cihazınızın push hizmeti (Apple, Google veya Mozilla) üzerinden şifreli olarak iletir; push hizmeti bunları okuyamaz.",
         "disable": "Devre dışı bırak",
         "enable": "Etkinleştir",
         "dismiss_aria": "Bildirim istemini kapat",

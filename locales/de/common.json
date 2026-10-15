@@ -1298,7 +1298,7 @@
       "push": {
         "confirm_disable_message": "Dieses Gerät erhält keine Benachrichtigungen mehr, wenn die Seite geschlossen ist.",
         "confirm_disable_title": "Hintergrundbenachrichtigungen deaktivieren?",
-        "description": "Systembenachrichtigungen für neue E-Mails empfangen, wenn diese Seite geschlossen ist. Zustellung über das Bulwark Push-Relay; das Relay sieht niemals E-Mail-Inhalte.",
+        "description": "Systembenachrichtigungen für neue E-Mails empfangen, wenn diese Seite geschlossen ist. Ihr Mailserver stellt sie über den Push-Dienst Ihres Geräts (Apple, Google oder Mozilla) zu, verschlüsselt, sodass der Push-Dienst sie nicht lesen kann.",
         "disable": "Deaktivieren",
         "enable": "Aktivieren",
         "dismiss_aria": "Benachrichtigungshinweis schließen",

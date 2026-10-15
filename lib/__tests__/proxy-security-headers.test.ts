@@ -64,6 +64,14 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+describe('content security policy (fork privacy hardening)', () => {
+  it('does not let the page connect to arbitrary https origins', async () => {
+    const csp = (await load('/en/mail/folder/inbox')).headers.get('content-security-policy') ?? '';
+    const connect = csp.split(';').map((d) => d.trim()).find((d) => d.startsWith('connect-src')) ?? '';
+    expect(connect).toBe(`connect-src 'self'`);
+  });
+});
+
 describe('security headers on dotted app paths (GHSA-xvjh-v9c6-qcvc)', () => {
   it.each(DOTTED_APP_PATHS)('serves %s with the full security header set', async (path) => {
     const response = await load(path);

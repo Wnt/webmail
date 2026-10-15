@@ -1262,7 +1262,7 @@
       },
       "push": {
         "title": "Notificări în fundal",
-        "description": "Primiți notificări de sistem pentru e-mailuri noi chiar și atunci când acest site este închis. Notificările sunt transmise prin intermediul serverului de push Bulwark; serverul nu vede niciodată conținutul e-mailurilor.",
+        "description": "Primiți notificări de sistem pentru e-mailuri noi chiar și atunci când acest site este închis. Serverul dvs. de e-mail le trimite prin serviciul push al dispozitivului (Apple, Google sau Mozilla), criptate, astfel încât serviciul push nu le poate citi.",
         "relay_label": "Relay push",
         "relay_desc": "Implicit este setat serverul de retransmitere găzduit Bulwark. Modificați această setare numai dacă utilizați un server propriu.",
         "relay_locked": "Configurat de administrator",

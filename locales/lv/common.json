@@ -1298,7 +1298,7 @@
       "push": {
         "confirm_disable_message": "Šī ierīce vairs nesaņems brīdinājumus, kad vietne būs aizvērta.",
         "confirm_disable_title": "Atspējot fona paziņojumus?",
-        "description": "Saņem sistēmas paziņojumus par jaunu pastu, kad šī vietne ir aizvērta. Piegādāts caur Bulwark push releju; relejs nekad neredz pasta saturu.",
+        "description": "Saņem sistēmas paziņojumus par jaunu pastu, kad šī vietne ir aizvērta. Tos piegādā tavs pasta serveris caur ierīces push pakalpojumu (Apple, Google vai Mozilla) šifrētā veidā, tāpēc push pakalpojums tos nevar izlasīt.",
         "disable": "Atspējot",
         "enable": "Iespējot",
         "dismiss_aria": "Aizvērt paziņojumu uzaicinājumu",

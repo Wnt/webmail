@@ -59,6 +59,8 @@ export function NotificationSettings() {
   } = useSettingsStore();
   const { isSettingLocked, isSettingHidden } = usePolicyStore();
   const policy = usePolicyStore((s) => s.policy);
+  // Fork (Wnt/webmail): no relay lookups from the public policy subset.
+  const policyFull = usePolicyStore((s) => s.loaded && !s.partial);
   const pushRelayLocked = policy.pushRelayUrlLocked === true;
   const client = useAuthStore((s) => s.client);
   const username = useAuthStore((s) => s.username);
@@ -124,14 +126,14 @@ export function NotificationSettings() {
   // revoking a stale registration left on another device is exactly what you
   // come here for.
   const refreshDevices = useCallback(async () => {
-    if (!client) return;
+    if (!client || !policyFull) return;
     setDevices({ kind: 'loading' });
     try {
       setDevices({ kind: 'loaded', devices: await listPushDevices({ client, relayBaseUrl: activeRelayUrl }) });
     } catch {
       setDevices({ kind: 'error' });
     }
-  }, [client, activeRelayUrl]);
+  }, [client, activeRelayUrl, policyFull]);
 
   useEffect(() => {
     void refreshDevices();

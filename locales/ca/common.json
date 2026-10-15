@@ -1262,7 +1262,7 @@
       },
       "push": {
         "title": "Notificacions en segon pla",
-        "description": "Rebeu notificacions del sistema per al correu nou quan aquest lloc estigui tancat. S'entreguen mitjançant el repetidor push del Bulwark; el repetidor mai no veu el contingut del correu.",
+        "description": "Rebeu notificacions del sistema per al correu nou quan aquest lloc estigui tancat. Les envia el vostre servidor de correu a través del servei push del dispositiu (Apple, Google o Mozilla), xifrades perquè el servei push no les pugui llegir.",
         "relay_label": "Repetidor push",
         "relay_desc": "Per defecte utilitza el repetidor allotjat del Bulwark. Canvieu-ho només si allotgeu el vostre propi servidor.",
         "relay_locked": "Establert per l'administrador",

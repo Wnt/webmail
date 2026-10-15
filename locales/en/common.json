@@ -1262,7 +1262,7 @@
       },
       "push": {
         "title": "Background Notifications",
-        "description": "Receive system notifications for new mail when this site is closed. Delivered via the Bulwark push relay; the relay never sees mail content.",
+        "description": "Receive system notifications for new mail when this site is closed. Delivered by your mail server through your device's push service (Apple, Google or Mozilla), encrypted so the push service cannot read them.",
         "relay_label": "Push relay",
         "relay_desc": "The server that delivers your notifications. Choose from the relays your administrator offers.",
         "relay_locked": "Set by administrator",

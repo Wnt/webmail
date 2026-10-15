@@ -288,7 +288,9 @@ export const CONFIG_ENV_MAP: Record<string, { envVar: string; fileEnvVar?: strin
   logFormat: { envVar: 'LOG_FORMAT', type: 'enum', defaultValue: 'text', enumValues: ['text', 'json'] },
   logLevel: { envVar: 'LOG_LEVEL', type: 'enum', defaultValue: 'info', enumValues: ['error', 'warn', 'info', 'debug'] },
   sessionSecret: { envVar: 'SESSION_SECRET', fileEnvVar: 'SESSION_SECRET_FILE', fileKey: "sessionSecretFile", type: 'string', defaultValue: '' },
-  extensionDirectoryUrl: { envVar: 'EXTENSION_DIRECTORY_URL', type: 'url', defaultValue: 'https://extensions.bulwarkmail.org' },
+  // Fork (Wnt/webmail): no default directory (upstream: https://extensions.bulwarkmail.org);
+  // the marketplace is off until EXTENSION_DIRECTORY_URL is set.
+  extensionDirectoryUrl: { envVar: 'EXTENSION_DIRECTORY_URL', type: 'url', defaultValue: '' },
   // Connector links (connector.bulwarkmail.org): docs and the extension
   // directory link to a destination, and the reader's own browser resolves it
   // to their instance. `connectorEnabled` covers both halves - the
@@ -296,8 +298,10 @@ export const CONFIG_ENV_MAP: Record<string, { envVar: string; fileEnvVar?: strin
   // instance" links the app offers - so a deployment that wants no third-party
   // hostname anywhere can switch the whole thing off. `connectorUrl` points a
   // white-label or self-hosted deployment at its own connector.
-  connectorEnabled: { envVar: 'CONNECTOR_ENABLED', type: 'boolean', defaultValue: true },
-  connectorUrl: { envVar: 'CONNECTOR_URL', type: 'url', defaultValue: 'https://connector.bulwarkmail.org' },
+  // Fork (Wnt/webmail): off and no default connector host (upstream: true,
+  // https://connector.bulwarkmail.org).
+  connectorEnabled: { envVar: 'CONNECTOR_ENABLED', type: 'boolean', defaultValue: false },
+  connectorUrl: { envVar: 'CONNECTOR_URL', type: 'url', defaultValue: '' },
   // WOPI document editing (#425). `wopiClientUrl` is the editor's base URL
   // (Collabora Online / OnlyOffice / EuroOffice, ...); discovery is fetched
   // from `<url>/hosting/discovery` unless the URL already carries a path.

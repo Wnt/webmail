@@ -47,10 +47,12 @@ export async function saveState(state: VersionCheckStateFile): Promise<void> {
   await rename(tmp, statePath());
 }
 
+// Fork (Wnt/webmail): opt-in. Upstream checks version.telemetry.bulwarkmail.org
+// hourly unless BULWARK_UPDATE_CHECK=off; here nothing is contacted unless the
+// operator sets BULWARK_UPDATE_CHECK=on.
 export function disabledByEnv(): boolean {
   const v = (process.env.BULWARK_UPDATE_CHECK ?? '').toLowerCase();
-  if (v === 'off' || v === 'false' || v === '0' || v === 'no') return true;
-  return false;
+  return !(v === 'on' || v === 'true' || v === '1' || v === 'yes');
 }
 
 export function effectiveEndpoint(state: VersionCheckStateFile): string {

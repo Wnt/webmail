@@ -1298,7 +1298,7 @@
       "push": {
         "confirm_disable_message": "Dit apparaat ontvangt geen meldingen meer als de site is gesloten.",
         "confirm_disable_title": "Achtergrondmeldingen uitschakelen?",
-        "description": "Ontvang systeemmeldingen voor nieuwe e-mail wanneer deze site gesloten is. Geleverd via de Bulwark-pushrelay; de relay ziet nooit e-mailinhoud.",
+        "description": "Ontvang systeemmeldingen voor nieuwe e-mail wanneer deze site gesloten is. Je mailserver levert ze via de pushdienst van je apparaat (Apple, Google of Mozilla), versleuteld zodat de pushdienst ze niet kan lezen.",
         "disable": "Uitschakelen",
         "enable": "Inschakelen",
         "dismiss_aria": "Meldingsvenster sluiten",

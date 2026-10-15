@@ -27,7 +27,7 @@ import { TARGET_NAMES } from '@/lib/connector/registry';
 export async function GET() {
   await configManager.ensureLoaded();
 
-  if (!configManager.get<boolean>('connectorEnabled', true)) {
+  if (!configManager.get<boolean>('connectorEnabled', false)) {
     return new NextResponse(null, { status: 404 });
   }
 

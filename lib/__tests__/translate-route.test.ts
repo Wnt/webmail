@@ -41,6 +41,7 @@ describe('translate route authentication (#903)', () => {
 
   afterEach(() => {
     fetchSpy.mockRestore();
+    vi.unstubAllEnvs();
   });
 
   it('returns 401 without a session and never contacts a backend', async () => {
@@ -61,7 +62,18 @@ describe('translate route authentication (#903)', () => {
     expect(status).toBe(400);
   });
 
+  it('refuses MyMemory unless the operator opted in (fork default)', async () => {
+    getStalwartCredentials.mockResolvedValue({ serverUrl: 'https://mail.example.com', authHeader: 'Basic x' });
+
+    const { status, body } = await callRoute({ text: 'Hallo Welt', target: 'en', source: 'de' });
+
+    expect(status).toBe(403);
+    expect(String(body.error)).toContain('TRANSLATE_MYMEMORY_ENABLED');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('translates through MyMemory for an authenticated caller', async () => {
+    vi.stubEnv('TRANSLATE_MYMEMORY_ENABLED', 'true');
     getStalwartCredentials.mockResolvedValue({ serverUrl: 'https://mail.example.com', authHeader: 'Basic x' });
     fetchSpy.mockResolvedValue(
       new Response(

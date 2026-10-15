@@ -1262,7 +1262,7 @@
       },
       "push": {
         "title": "Háttérértesítések",
-        "description": "Rendszerértesítések fogadása új levelekről, amikor ez az oldal be van zárva. A Bulwark push relén keresztül kézbesítve; a relay soha nem látja a levél tartalmát.",
+        "description": "Rendszerértesítések fogadása új levelekről, amikor ez az oldal be van zárva. A levelezőszervered az eszközöd push-szolgáltatásán (Apple, Google vagy Mozilla) keresztül küldi őket, titkosítva, így a push-szolgáltatás nem tudja elolvasni őket.",
         "relay_label": "Push relé",
         "relay_desc": "Alapértelmezés szerint a tárolt Bulwark relay. Csak akkor módosítsd, ha sajátot üzemeltetsz.",
         "relay_locked": "Rendszergazda által beállítva",

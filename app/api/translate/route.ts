@@ -25,6 +25,13 @@ const TIMEOUT_MS = 25000;
 
 type Provider = 'mymemory' | 'libretranslate';
 
+// Fork (Wnt/webmail): MyMemory is a third-party service that would receive the
+// message text, so it is off unless the operator opts in. LibreTranslate is
+// only ever the operator's own LIBRETRANSLATE_URL.
+function myMemoryEnabled(): boolean {
+  return /^(1|true|yes|on)$/i.test((process.env.TRANSLATE_MYMEMORY_ENABLED ?? '').trim());
+}
+
 interface TranslateBody {
   text?: unknown;
   target?: unknown;
@@ -287,6 +294,12 @@ export async function POST(request: NextRequest) {
 
   if (!text) {
     return NextResponse.json({ error: 'No text to translate' }, { status: 400 });
+  }
+  if (provider === 'mymemory' && !myMemoryEnabled()) {
+    return NextResponse.json(
+      { error: 'MyMemory translation is disabled on this server (TRANSLATE_MYMEMORY_ENABLED)' },
+      { status: 403 },
+    );
   }
   if (text.length > MAX_CHARS) {
     return NextResponse.json(

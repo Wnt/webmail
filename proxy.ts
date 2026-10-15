@@ -11,6 +11,9 @@ import {
 } from "./lib/security/app-frame-origins";
 import { configManager } from "./lib/admin/config-manager";
 import { getWopiEditorOrigins } from "./lib/wopi/discovery";
+import { buildConnectSrc } from "./lib/security/csp-connect-src";
+import { parseJmapServers } from "./lib/admin/jmap-servers";
+import { DEFAULT_RELAY_BASE_URL } from "./lib/push-relays";
 import { detectSetupState } from "./lib/setup/state";
 
 const intlMiddleware = createIntlMiddleware(routing);
@@ -261,7 +264,23 @@ export async function proxy(request: NextRequest) {
     ? `'self' 'nonce-${nonce}' 'unsafe-eval'`
     : `'self' 'nonce-${nonce}'`;
 
-  const connectSrc = isDev ? `'self' http: https: ws: wss:` : `'self' https:`;
+  // Fork (Wnt/webmail): only the origins this deployment uses (upstream:
+  // `'self' https:`). See lib/security/csp-connect-src.ts.
+  const connectPolicy = configManager.getPolicy();
+  const jmapServers = parseJmapServers(configManager.get<unknown>("jmapServers", []));
+  const connectSrc = buildConnectSrc({
+    isDev,
+    allowCustomJmapEndpoint: configManager.get<boolean>("allowCustomJmapEndpoint", false) === true,
+    pluginsEnabled: connectPolicy.features?.pluginsEnabled === true,
+    urls: [
+      configManager.get<string>("jmapServerUrl", "") || process.env.JMAP_SERVER_URL || process.env.NEXT_PUBLIC_JMAP_SERVER_URL,
+      ...jmapServers.map((server) => server.url),
+      DEFAULT_RELAY_BASE_URL,
+      connectPolicy.pushRelayUrl,
+      ...(connectPolicy.pushRelays ?? []).map((relay) => relay?.url),
+    ],
+    extra: process.env.CSP_CONNECT_SRC_EXTRA,
+  });
 
   // The admin dashboard and the setup wizard are never framed. The embedding
   // allowance is for the mail UI a portal wraps; a framed admin page is a

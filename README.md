@@ -27,6 +27,27 @@
 >      unrecorded one) is destroyed and recreated instead of refreshed.
 >    Tests: `lib/__tests__/push-relays.test.ts`, `lib/__tests__/web-push.test.ts`,
 >    `components/__tests__/push-notification-prompt.test.tsx`.
+> 4. Privacy defaults (the browser talks only to our origin; Bulwark's server contacts no third party by default):
+>    - Translate plugin backend `app/api/translate/route.ts`: MyMemory (`api.mymemory.translated.net`) answers 403
+>      unless `TRANSLATE_MYMEMORY_ENABLED=true`; LibreTranslate is only the operator's own `LIBRETRANSLATE_URL`.
+>    - Update check `lib/version-check/state.ts`: opt-in with `BULWARK_UPDATE_CHECK=on` (upstream: on unless `off`).
+>    - Telemetry `lib/telemetry/types.ts`: consent was already off; the built-in endpoint
+>      (`telemetry.bulwarkmail.org`) is now empty, so nothing is sent until an endpoint is configured.
+>    - Extension marketplace (`lib/admin/types.ts`, `app/api/admin/marketplace/**`): no default
+>      `EXTENSION_DIRECTORY_URL`; the routes answer 404 until one is set.
+>    - Connector: `CONNECTOR_ENABLED` defaults to false and `CONNECTOR_URL` to empty.
+>    - CSP `proxy.ts` + `lib/security/csp-connect-src.ts`: `connect-src` lists `'self'` plus the configured JMAP
+>      server(s) and push relay(s) instead of `'self' https:`; `https:` returns only with
+>      `ALLOW_CUSTOM_JMAP_ENDPOINT` or plugins on. `CSP_CONNECT_SRC_EXTRA` adds origins. `img-src`/`font-src`
+>      keep `https:` because opened mail renders in a srcdoc iframe that inherits the page CSP, and remote images
+>      load only after the user allows them (`externalContentPolicy` stays `ask`).
+>    - Push wording (`settings.notifications.push.description`, all 27 locales): "Delivered by your mail server
+>      through your device's push service (Apple, Google or Mozilla), encrypted so the push service cannot read them."
+>    - **Kept on purpose (user decision):** sender favicons. The browser loads them from our own `/api/favicon`,
+>      which asks `icons.duckduckgo.com` server-side and caches the answer in memory (2 weeks, misses 1 day), so DuckDuckGo learns
+>      sender domains but never the user's IP or browser.
+>    Tests: `lib/__tests__/translate-route.test.ts`, `lib/__tests__/version-check-upgrade.test.ts`,
+>    `lib/__tests__/csp-connect-src.test.ts`, `lib/__tests__/proxy-security-headers.test.ts`.
 
 <p>
   <a href="https://bulwarkmail.org"><img src="https://raw.githubusercontent.com/bulwarkmail/.github/main/profile/banner.png" alt="Bulwark: webmail for Stalwart Mail Server. Mail, calendar, contacts and files in one browser client." width="100%" /></a>

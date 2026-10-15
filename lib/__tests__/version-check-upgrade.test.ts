@@ -34,7 +34,7 @@ describe('version-check across an upgrade (#913)', () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'bulwark-version-check-'));
     process.env.VERSION_CHECK_DATA_DIR = dir;
     process.env.NEXT_PUBLIC_APP_VERSION = '1.9.0';
-    delete process.env.BULWARK_UPDATE_CHECK;
+    process.env.BULWARK_UPDATE_CHECK = 'on'; // fork: the check is opt-in
     process.env.BULWARK_UPDATE_CHECK_URL = 'https://version.invalid/';
   });
 

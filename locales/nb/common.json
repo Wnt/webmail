@@ -1262,7 +1262,7 @@
       },
       "push": {
         "title": "Bakgrunnsvarsler",
-        "description": "Motta systemvarsler om ny e-post selv når denne siden ikke er åpen. Varslene leveres via Bulwarks push-relé, som aldri ser innholdet i e-posten.",
+        "description": "Motta systemvarsler om ny e-post selv når denne siden ikke er åpen. E-postserveren din leverer dem via enhetens push-tjeneste (Apple, Google eller Mozilla), kryptert slik at push-tjenesten ikke kan lese dem.",
         "relay_label": "Push-relé",
         "relay_desc": "Reléet som driftes av Bulwark, brukes som standard. Endre dette bare hvis du drifter et eget relé.",
         "relay_locked": "Angitt av administrator",

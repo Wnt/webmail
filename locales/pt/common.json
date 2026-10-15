@@ -1298,7 +1298,7 @@
       "push": {
         "confirm_disable_message": "Este dispositivo deixará de receber alertas quando o site estiver fechado.",
         "confirm_disable_title": "Desativar notificações em segundo plano?",
-        "description": "Receba notificações do sistema para novas mensagens quando este site estiver fechado. Entregue através do relay push do Bulwark; o relay nunca vê o conteúdo da mensagem.",
+        "description": "Receba notificações do sistema para novas mensagens quando este site estiver fechado. São enviadas pelo seu servidor de e-mail através do serviço push do seu dispositivo (Apple, Google ou Mozilla), cifradas para que o serviço push não as possa ler.",
         "disable": "Desativar",
         "enable": "Ativar",
         "dismiss_aria": "Dispensar aviso de notificações",

@@ -1298,7 +1298,7 @@
       "push": {
         "confirm_disable_message": "当网站关闭时，此设备将停止接收提醒。",
         "confirm_disable_title": "禁用后台通知？",
-        "description": "在此网站关闭时接收新邮件的系统通知。通过 Bulwark 推送中继传送；中继永远不会看到邮件内容。",
+        "description": "在此网站关闭时接收新邮件的系统通知。通知由你的邮件服务器经设备的推送服务（Apple、Google 或 Mozilla）加密传送，推送服务无法读取其内容。",
         "disable": "禁用",
         "enable": "启用",
         "dismiss_aria": "关闭通知提示",

@@ -1262,7 +1262,7 @@
       },
       "push": {
         "title": "Baggrundsnotifikationer",
-        "description": "Modtag systemnotifikationer for ny mail, når dette site er lukket. Leveres via Bulwark push-relæet; relæet ser aldrig mail-indhold.",
+        "description": "Modtag systemnotifikationer for ny mail, når dette site er lukket. Din mailserver leverer dem via din enheds push-tjeneste (Apple, Google eller Mozilla), krypteret, så push-tjenesten ikke kan læse dem.",
         "relay_label": "Push-relæ",
         "relay_desc": "Som standard det hosted Bulwark-relæ. Ændr kun, hvis du selv-host'er.",
         "relay_locked": "Indstillet af administrator",

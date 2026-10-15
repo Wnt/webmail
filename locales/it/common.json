@@ -1298,7 +1298,7 @@
       "push": {
         "confirm_disable_message": "Questo dispositivo non riceverà più avvisi quando il sito è chiuso.",
         "confirm_disable_title": "Disabilitare le notifiche in background?",
-        "description": "Ricevi notifiche di sistema per la nuova posta quando questo sito è chiuso. Consegnato tramite il relay push Bulwark; il relay non vede mai il contenuto della posta.",
+        "description": "Ricevi notifiche di sistema per la nuova posta quando questo sito è chiuso. Le invia il tuo server di posta tramite il servizio push del dispositivo (Apple, Google o Mozilla), cifrate in modo che il servizio push non possa leggerle.",
         "disable": "Disabilita",
         "enable": "Abilita",
         "dismiss_aria": "Chiudi avviso di notifiche",

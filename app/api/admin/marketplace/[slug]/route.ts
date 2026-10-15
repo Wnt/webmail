@@ -11,7 +11,8 @@ import { configManager } from '@/lib/admin/config-manager';
 
 async function getDirectoryUrl(): Promise<string> {
   await configManager.ensureLoaded();
-  return configManager.get<string>('extensionDirectoryUrl') || 'https://extensions.bulwarkmail.org';
+  // Fork (Wnt/webmail): no hosted fallback; empty = marketplace disabled.
+  return configManager.get<string>('extensionDirectoryUrl') || '';
 }
 
 const MAX_PREVIEW_SOURCE_LEN = 100_000;
@@ -32,6 +33,9 @@ export async function GET(
 
     const { slug } = await params;
     const directoryUrl = await getDirectoryUrl();
+    if (!directoryUrl) {
+      return NextResponse.json({ error: 'Extension directory is not configured (EXTENSION_DIRECTORY_URL)' }, { status: 404 });
+    }
 
     // 1. Extension metadata + screenshots + theme previews from the directory
     const detailUrl = new URL(`/api/v1/extension/${encodeURIComponent(slug)}`, directoryUrl);

@@ -1298,7 +1298,7 @@
       "push": {
         "confirm_disable_message": "To urządzenie przestanie otrzymywać powiadomienia, gdy strona jest zamknięta.",
         "confirm_disable_title": "Wyłączyć powiadomienia w tle?",
-        "description": "Otrzymuj powiadomienia systemowe o nowych wiadomościach, gdy ta strona jest zamknięta. Dostarczane przez przekaźnik push Bulwark; przekaźnik nigdy nie widzi treści wiadomości.",
+        "description": "Otrzymuj powiadomienia systemowe o nowych wiadomościach, gdy ta strona jest zamknięta. Dostarcza je Twój serwer poczty przez usługę push Twojego urządzenia (Apple, Google lub Mozilla) w postaci zaszyfrowanej, więc usługa push nie może ich odczytać.",
         "disable": "Wyłącz",
         "enable": "Włącz",
         "dismiss_aria": "Zamknij monit powiadomień",

@@ -1300,7 +1300,7 @@
       },
       "push": {
         "title": "Oznámenia na pozadí",
-        "description": "Prijímať systémové oznámenia o novej pošte, keď je táto stránka zatvorená. Doručované cez push relay Bulwark.",
+        "description": "Prijímať systémové oznámenia o novej pošte, keď je táto stránka zatvorená. Doručuje ich váš poštový server cez push službu vášho zariadenia (Apple, Google alebo Mozilla), šifrovane, takže ich push služba nemôže čítať.",
         "relay_label": "Push relay",
         "relay_desc": "Predvolený je hostovaný relay Bulwark. Zmeňte iba ak používate vlastný hosting.",
         "relay_locked": "Nastavené administrátorom",
