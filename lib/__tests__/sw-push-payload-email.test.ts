@@ -14,6 +14,8 @@ type PreviewResponse = { ok: boolean; status?: number; body?: unknown } | 'throw
 function loadWorker(preview: PreviewResponse) {
   const listeners = new Map<string, (event: unknown) => void>();
   const shown: Shown[] = [];
+  // Notifications currently on screen, by tag (a new one with the same tag replaces the old).
+  const active = new Map<string, Shown>();
   const cacheStore = new Map<string, string>();
 
   const self = {
@@ -24,8 +26,12 @@ function loadWorker(preview: PreviewResponse) {
     registration: {
       showNotification: async (title: string, options: Record<string, unknown>) => {
         shown.push({ title, options });
+        active.set(String(options.tag), { title, options });
       },
-      getNotifications: async () => [],
+      getNotifications: async (filter?: { tag?: string }) =>
+        [...active.values()]
+          .filter((n) => !filter?.tag || n.options.tag === filter.tag)
+          .map((n) => ({ title: n.title, body: n.options.body, tag: n.options.tag, data: n.options.data })),
     },
   };
   const caches = {
@@ -55,7 +61,7 @@ function loadWorker(preview: PreviewResponse) {
     });
     await Promise.all(waits);
   }
-  return { push, shown, context };
+  return { push, shown, active, fetchMock, context };
 }
 
 const payload = (extra: Record<string, unknown> = {}) => ({
@@ -129,5 +135,84 @@ describe('service worker push payload email fallback', () => {
     expect(build({ from: 1, subject: null })).toBeNull();
     expect(build({ subject: 'Only subject' })).toEqual({ title: 'New mail', body: 'Only subject' });
     expect(build({ from: 'A' })).toEqual({ title: 'A', body: '(no subject)' });
+  });
+});
+
+describe('service worker AI summary replacement', () => {
+  const withSummary = { ...summary, summary: 'Alice asks if you are free for lunch at noon.' };
+
+  it('replaces the announced notification in place, silently, keeping its tag and click data', async () => {
+    const { push, shown, fetchMock } = loadWorker({ ok: false, status: 401 });
+    await push(payload({ email: summary }));
+    await push(payload({ email: withSummary, renotify: false }));
+
+    expect(shown).toHaveLength(2);
+    expect(shown[1].title).toBe('Alice <alice@example.com>');
+    expect(shown[1].options).toMatchObject({
+      body: 'Lunch?\nAlice asks if you are free for lunch at noon.',
+      tag: 'bulwark-mail:acc1',
+      data: shown[0].options.data,
+      renotify: false,
+      silent: true,
+    });
+    // the replacement needs no preview lookup
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the deep link of a notification built from the preview API', async () => {
+    const { push, shown } = loadWorker({
+      ok: true,
+      body: { unreadTotal: 1, slot: 2, email: { id: 'e1', threadId: 't1', from: [{ name: 'Alice' }], subject: 'Lunch?' } },
+    });
+    await push(payload({ email: summary }));
+    await push(payload({ email: withSummary, renotify: false }));
+    expect(shown).toHaveLength(2);
+    expect(shown[1].options.data).toEqual({ kind: 'email', emailId: 'e1', threadId: 't1', slot: 2 });
+    expect(shown[1].options.silent).toBe(true);
+  });
+
+  it('does not bring back a notification that was dismissed or opened', async () => {
+    const { push, shown, active } = loadWorker({ ok: false, status: 401 });
+    await push(payload({ email: summary }));
+    active.clear();
+    await push(payload({ email: withSummary, renotify: false }));
+    expect(shown).toHaveLength(1);
+  });
+
+  it('announces normally, with the summary, when the first push never arrived', async () => {
+    const { push, shown } = loadWorker({ ok: false, status: 401 });
+    await push(payload({ email: withSummary, renotify: false }));
+    expect(shown).toHaveLength(1);
+    expect(shown[0].title).toBe('Alice <alice@example.com>');
+    expect(shown[0].options).toMatchObject({
+      body: 'Lunch?\nAlice asks if you are free for lunch at noon.',
+      renotify: true,
+      silent: false,
+    });
+    // a redelivery only re-renders it silently
+    await push(payload({ email: withSummary, renotify: false }));
+    expect(shown).toHaveLength(2);
+    expect(shown[1].options).toMatchObject({ body: shown[0].options.body, renotify: false, silent: true });
+  });
+
+  it('ignores a summary without the renotify:false flag (redelivery is deduped)', async () => {
+    const { push, shown } = loadWorker({ ok: false, status: 401 });
+    await push(payload({ email: summary }));
+    await push(payload({ email: withSummary }));
+    expect(shown).toHaveLength(1);
+  });
+
+  it('replaces nothing when the replacement has no usable summary', async () => {
+    const { push, shown } = loadWorker({ ok: false, status: 401 });
+    await push(payload({ email: summary }));
+    await push(payload({ email: { ...summary, summary: '   ' }, renotify: false }));
+    expect(shown).toHaveLength(1);
+  });
+
+  it('trims the summary to 200 characters', async () => {
+    const { push, shown } = loadWorker({ ok: false, status: 401 });
+    await push(payload({ email: summary }));
+    await push(payload({ email: { ...summary, summary: 'y'.repeat(500) }, renotify: false }));
+    expect(shown[1].options.body).toBe('Lunch?\n' + 'y'.repeat(200));
   });
 });

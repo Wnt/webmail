@@ -121,6 +121,21 @@ async function handlePush(event) {
   // already announced is still sitting in the Inbox - without this we would
   // re-buzz for that old message.
   const notified = await readNotifiedIds(accountId);
+
+  // Fork patch (Wnt/webmail): our gateway follows a new-mail push with a quiet
+  // replacement that carries an AI summary (`email.summary`, `renotify: false`).
+  // When we already announced that message, swap the text of its notification
+  // in place without alerting again. If the first push never arrived, fall
+  // through and announce it normally.
+  if (payload && payload.renotify === false && emailIds.length > 0
+    && notified.includes(emailIds[emailIds.length - 1])) {
+    const content = payload.email && typeof payload.email.summary === "string" && payload.email.summary.trim()
+      ? buildPayloadEmailContent(payload.email)
+      : null;
+    if (content) await replaceWithSummary("bulwark-mail:" + (accountId || "default"), content);
+    return;
+  }
+
   const freshIds = emailIds.filter((id) => !notified.includes(id));
   if (emailIds.length > 0 && freshIds.length === 0) {
     return;
@@ -238,9 +253,10 @@ async function handlePush(event) {
 }
 
 // Fork patch (Wnt/webmail): our push gateway may include an optional
-// `email: { from, subject, preview }` summary in the payload. Used only when
-// the preview API cannot be reached, so the toast is still informative.
-// Returns { title, body } or null when the payload has no usable summary.
+// `email: { from, subject, preview, summary? }` in the payload. Used when the
+// preview API cannot be reached, so the toast is still informative, and for
+// the quiet AI-summary replacement. The summary, when present, takes the
+// preview's place. Returns { title, body } or null when there is nothing usable.
 const PAYLOAD_PREVIEW_MAX = 200;
 
 function buildPayloadEmailContent(email) {
@@ -248,12 +264,34 @@ function buildPayloadEmailContent(email) {
   const str = (v) => (typeof v === "string" ? v.trim() : "");
   const from = str(email.from);
   const subject = str(email.subject);
-  const preview = str(email.preview).slice(0, PAYLOAD_PREVIEW_MAX);
+  const preview = (str(email.summary) || str(email.preview)).slice(0, PAYLOAD_PREVIEW_MAX);
   if (!from && !subject && !preview) return null;
   return {
     title: from || "New mail",
     body: [subject, preview].filter(Boolean).join("\n") || "(no subject)",
   };
+}
+
+// Fork patch (Wnt/webmail): replace the account's notification (same tag) with
+// the summary, silently, keeping its click data. A notification the user has
+// dismissed or opened in the meantime is not brought back.
+async function replaceWithSummary(tag, content) {
+  let existing = [];
+  try {
+    existing = await self.registration.getNotifications({ tag });
+  } catch (_) {
+    existing = [];
+  }
+  if (!existing || existing.length === 0) return;
+  await self.registration.showNotification(content.title, {
+    body: content.body,
+    tag,
+    icon: `${BASE_PATH}/api/pwa-icon/192`,
+    badge: `${BASE_PATH}/api/pwa-icon/192`,
+    data: existing[existing.length - 1].data,
+    renotify: false,
+    silent: true,
+  });
 }
 
 // One message often lands in several of the user's accounts at once - a list,
