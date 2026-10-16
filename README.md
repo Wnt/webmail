@@ -61,8 +61,9 @@
 >      1. Cache Storage markers for the accounts (and with no account left, the device) are written under a
 >         cross-tab Web Lock; the service worker drops pushes for marked accounts (with no account left, it
 >         also drops the browser subscription), reading the marker right before and after showing.
->      2. The worker is asked to settle: it aborts pending preview lookups for those accounts, drains their
->         push queues, closes their notifications and answers; the sign-out waits for that answer.
+>      2. The worker is asked to settle: it stops any display not yet handed to the browser, aborts pending
+>         preview lookups for those accounts, drains their push queues, closes their notifications and
+>         answers; the sign-out waits for that answer (alongside step 3).
 >      3. `disableWebPush` against the locked relay while the client and token still work; for an account
 >         without a connected client, its relay record is deleted (login → push-account mapping recorded when
 >         a client connects; a login that cannot be mapped turns off every local opt-in no remaining account

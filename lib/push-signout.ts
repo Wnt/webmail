@@ -142,9 +142,11 @@ export async function teardownPushOnSignOut(params: {
     for (const accountId of accountIds) noteExplicitSignOut(accountId);
     await markPushSignedOut(accountIds, params.everyAccount);
   });
-  // Pushes the worker is already handling settle before the sign-out goes on.
-  await settleWorker(accountIds, params.everyAccount).catch(() => undefined);
-  await closeNotifications(accountIds, params.everyAccount);
+  // Pushes the worker is already handling settle before the sign-out goes on
+  // (alongside the network work below, which it does not depend on).
+  const settled = settleWorker(accountIds, params.everyAccount)
+    .catch(() => undefined)
+    .then(() => closeNotifications(accountIds, params.everyAccount));
 
   // One deadline for all of the network work.
   const network = (async () => {
@@ -160,7 +162,7 @@ export async function teardownPushOnSignOut(params: {
       await unsubscribeBrowser();
     }
   })();
-  await withTimeout(network, TEARDOWN_TIMEOUT_MS);
+  await Promise.all([settled, withTimeout(network, TEARDOWN_TIMEOUT_MS)]);
 
   // Even when the server side is still running: the opt-in is over, so no
   // later session restore may re-enable push for these accounts.

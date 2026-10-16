@@ -53,9 +53,24 @@ function loadWorker(preview: PreviewResponse, { timers = false } = {}) {
       pushManager: { getSubscription: async () => ({ unsubscribe }) },
     },
   };
+  let markerReadHold: Promise<void> | null = null;
+  let markerReadsToPass = 0;
+  let markerReadHeld: () => void = () => {};
+  /** Hold account-marker reads after the first `pass` ones; resolves `held` when one is held. */
+  const holdMarkerReads = (pass: number) => {
+    let release!: () => void;
+    markerReadsToPass = pass;
+    markerReadHold = new Promise<void>((resolve) => { release = resolve; });
+    const held = new Promise<void>((resolve) => { markerReadHeld = resolve; });
+    return { held, release: () => { markerReadHold = null; release(); } };
+  };
   const caches = {
     open: async () => ({
       match: async (key: string) => {
+        if (markerReadHold && key.includes('/signed-out/')) {
+          if (markerReadsToPass > 0) markerReadsToPass--;
+          else { markerReadHeld(); await markerReadHold; }
+        }
         const value = cacheStore.get(key);
         return value === undefined ? undefined : { json: async () => JSON.parse(value) };
       },
@@ -98,7 +113,7 @@ function loadWorker(preview: PreviewResponse, { timers = false } = {}) {
     });
   }
   const marker = (path: string) => cacheStore.set(`https://mail.example.com/__push-state/${path}`, '{"at":1}');
-  return { push, startPush, shown, active, fetchMock, context, marker, unsubscribe, holdNotificationLookups, whenShown, signOut };
+  return { push, startPush, shown, active, fetchMock, context, marker, unsubscribe, holdNotificationLookups, whenShown, signOut, holdMarkerReads };
 }
 
 const payload = (extra: Record<string, unknown> = {}) => ({
@@ -216,6 +231,18 @@ describe('push security boundaries', () => {
     expect(await answer).toEqual({ done: true });
     await pending;
     expect(active.size).toBe(0);
+  });
+  it('a sign-out arriving while a handler reads the marker stops that display outright', async () => {
+    const { startPush, shown, signOut, holdMarkerReads } = loadWorker({ ok: false, status: 401 }, { timers: true });
+    // The first read is the handler's check on arrival; the second, its check right before showing.
+    const { held, release } = holdMarkerReads(1);
+    const pending = startPush(payload({ email: { from: 'Doctor', subject: 'Private', preview: 'Confidential' } }));
+    await held;
+    const answer = signOut(['acc1']);
+    release();
+    await answer;
+    await pending;
+    expect(shown).toHaveLength(0);
   });
   it('the sign-out cuts a pending preview lookup short instead of waiting for it', async () => {
     const { startPush, shown, marker, signOut, fetchMock } = loadWorker({ ok: false, status: 401 }, { timers: true });

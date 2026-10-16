@@ -373,6 +373,9 @@ function signedOutKey(path) {
 const PREVIEW_TIMEOUT_MS = 10_000;
 const SIGNOUT_DRAIN_MS = 5_000;
 
+// Accounts ("*": all) whose explicit sign-out the worker is settling right now.
+const SIGNOUTS_IN_PROGRESS = new Set();
+
 // Preview lookups in flight, per account, so a sign-out can cut them short.
 const PREVIEW_LOOKUPS = new Map();
 
@@ -401,6 +404,8 @@ async function handlePushSignOut(event) {
     ? data.accountIds.filter((id) => typeof id === "string" && id)
     : [];
   const affected = (key) => everyAccount || accountIds.includes(key);
+  const keys = everyAccount ? ["*"] : accountIds;
+  for (const key of keys) SIGNOUTS_IN_PROGRESS.add(key);
   try {
     for (const [key, lookups] of PREVIEW_LOOKUPS) {
       if (affected(key)) for (const controller of lookups) controller.abort();
@@ -417,6 +422,10 @@ async function handlePushSignOut(event) {
     }
   } catch (_) {
     // Answer anyway; the markers already silence these accounts.
+  } finally {
+    // From here on the persisted markers (written before this message) are
+    // what every later push reads.
+    for (const key of keys) SIGNOUTS_IN_PROGRESS.delete(key);
   }
   if (port) port.postMessage({ done: true });
 }
@@ -427,6 +436,9 @@ async function handlePushSignOut(event) {
 // screen before this one appeared, so this one closes itself.
 async function showMailNotification(accountId, title, options) {
   if (await pushSignedOut(accountId)) return false;
+  // Checked with no await before the show: a sign-out message that arrived
+  // while the marker was being read stops this display outright.
+  if (SIGNOUTS_IN_PROGRESS.has("*") || SIGNOUTS_IN_PROGRESS.has(accountId || "default")) return false;
   await self.registration.showNotification(title, options);
   if (await pushSignedOut(accountId)) {
     try {
