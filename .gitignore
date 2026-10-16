@@ -51,3 +51,7 @@ next-env.d.ts
 
 # Sibling repos
 /repos/
+
+# Python bytecode (fork: .github/scripts tests)
+__pycache__/
+*.pyc
