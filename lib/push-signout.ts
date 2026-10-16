@@ -29,6 +29,8 @@ const NOTIFICATION_TAG_PREFIX = 'bulwark-mail:';
 const TEARDOWN_TIMEOUT_MS = 8000;
 // How long the sign-out waits for the worker to confirm (see settleWorker).
 const WORKER_SETTLE_TIMEOUT_MS = 6000;
+// No single step holds the cross-tab push lock longer than this.
+const LOCKED_STEP_TIMEOUT_MS = 10000;
 
 async function swRegistration(): Promise<ServiceWorkerRegistration | null> {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return null;
@@ -61,13 +63,16 @@ async function closeNotifications(accountIds: string[], everyAccount: boolean): 
   }
 }
 
-async function unsubscribeBrowser(): Promise<void> {
+async function unsubscribeBrowser(stillOk: () => boolean = () => true): Promise<boolean> {
   const registration = await swRegistration();
   try {
     const subscription = await registration?.pushManager?.getSubscription();
+    if (!stillOk()) return false;
     if (subscription) await subscription.unsubscribe();
+    return true;
   } catch {
     // The service worker drops the subscription on the next push instead.
+    return false;
   }
 }
 
@@ -78,40 +83,67 @@ function withTimeout(work: Promise<unknown>, ms: number): Promise<void> {
     .finally(() => clearTimeout(timer));
 }
 
-/**
- * Ask the service worker to settle the pushes it is handling for these
- * accounts (see handlePushSignOut in public/sw.js) and wait for its answer:
- * once it comes, no notification for them can still be on its way.
- */
-async function settleWorker(accountIds: string[], everyAccount: boolean): Promise<WorkerSettlement> {
-  const registration = await swRegistration();
-  const worker = registration?.active;
-  if (!worker || typeof MessageChannel === 'undefined') return 'no-worker';
-  const channel = new MessageChannel();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const answer = new Promise<WorkerSettlement>((resolve) => {
-    channel.port1.onmessage = (e: MessageEvent) => resolve((e.data as { done?: unknown })?.done === true ? 'settled' : 'pending');
-    timer = setTimeout(() => resolve('pending'), WORKER_SETTLE_TIMEOUT_MS);
-  });
-  try {
-    worker.postMessage({ type: 'push-signout', accountIds, everyAccount }, [channel.port2]);
-    return await answer;
-  } catch {
-    return 'pending';
-  } finally {
-    clearTimeout(timer);
-    channel.port1.close();
-  }
+/** Run `work` holding the push lock, but never hold the lock longer than `ms`. */
+function underLock(work: () => Promise<unknown>, ms = LOCKED_STEP_TIMEOUT_MS): Promise<void> {
+  return withPushLock(() => withTimeout(work(), ms));
 }
 
 /**
  * 'settled': the worker drained every push it was handling for these
- * accounts and closed their notifications. 'pending': it did not confirm in
- * time; it keeps suppressing them (markers, in-progress flag) and settles on
- * its own, but the sign-out goes on without that guarantee. 'no-worker':
- * nothing was being handled.
+ * accounts and closed their notifications. 'pending': it did not confirm (in
+ * time, or at all); it keeps suppressing them and settles on its own.
+ * 'no-worker': nothing was being handled.
  */
 export type WorkerSettlement = 'settled' | 'pending' | 'no-worker';
+
+export interface PushSignOutResult {
+  /** The sign-out markers the service worker reads were written. */
+  suppressed: boolean;
+  worker: WorkerSettlement;
+  /**
+   * Suppression could not be confirmed (markers not written, or the worker
+   * not settled in time), so the browser's push subscription was dropped as
+   * a safe fallback - for every account on this device until the app is
+   * opened again (a re-sync re-subscribes accounts that kept push).
+   */
+  browserUnsubscribed: boolean;
+}
+
+/**
+ * Ask the service worker to settle the pushes it is handling for these
+ * accounts (see handlePushSignOut in public/sw.js). `bounded` resolves with
+ * its answer, or 'pending' after WORKER_SETTLE_TIMEOUT_MS; `final` with the
+ * answer whenever it comes (the reply port stays open for it).
+ */
+function settleWorker(
+  accountIds: string[],
+  everyAccount: boolean,
+  persisted: boolean,
+): { bounded: Promise<WorkerSettlement>; final: Promise<WorkerSettlement> } {
+  const final = (async (): Promise<WorkerSettlement> => {
+    const registration = await swRegistration();
+    const worker = registration?.active;
+    if (!worker || typeof MessageChannel === 'undefined') return 'no-worker';
+    const channel = new MessageChannel();
+    try {
+      return await new Promise<WorkerSettlement>((resolve) => {
+        channel.port1.onmessage = (e: MessageEvent) =>
+          resolve((e.data as { done?: unknown })?.done === true ? 'settled' : 'pending');
+        worker.postMessage({ type: 'push-signout', accountIds, everyAccount, persisted }, [channel.port2]);
+      });
+    } catch {
+      return 'pending';
+    } finally {
+      channel.port1.close();
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bounded = Promise.race([
+    final,
+    new Promise<WorkerSettlement>((resolve) => { timer = setTimeout(() => resolve('pending'), WORKER_SETTLE_TIMEOUT_MS); }),
+  ]).finally(() => clearTimeout(timer));
+  return { bounded, final };
+}
 
 /**
  * Turn Web Push off for the accounts being signed out on purpose. Call it
@@ -127,14 +159,21 @@ export type WorkerSettlement = 'settled' | 'pending' | 'no-worker';
  * keep notifying. Those accounts need a fresh opt-in.
  * `everyAccount`: nobody stays signed in on this device, so every account
  * with a push opt-in here and the browser's push subscription go too.
+ *
+ * Resolves within about TEARDOWN_TIMEOUT_MS; the server-side cleanup may go
+ * on after that, but it never touches an opt-in the user made again meanwhile
+ * (commit generation, checked under the push lock before every step), and
+ * an enable started in this tab waits for it.
  */
 export function teardownPushOnSignOut(params: {
   clients: IJMAPClient[];
   loginIds?: string[];
   unmappedFallback?: { keep: string[] };
   everyAccount: boolean;
-}): Promise<{ worker: WorkerSettlement }> {
-  if (typeof window === 'undefined') return Promise.resolve({ worker: 'no-worker' });
+}): Promise<PushSignOutResult> {
+  if (typeof window === 'undefined') {
+    return Promise.resolve({ suppressed: true, worker: 'no-worker', browserUnsubscribed: false });
+  }
   const targets = new Map<string, IJMAPClient | null>();
   for (const client of params.clients) {
     const accountId = accountIdOf(client);
@@ -152,56 +191,71 @@ export function teardownPushOnSignOut(params: {
   }
   const accountIds = [...targets.keys()];
   // First, synchronously: from now on no enable that started earlier, in any
-  // tab, can commit for these accounts (lib/push-signout-state.ts), and one
-  // starting in this tab waits until this teardown is over.
+  // tab, can commit for these accounts (lib/push-signout-state.ts).
   bumpSignOutGeneration(accountIds, params.everyAccount);
   const commitsAtStart = new Map(accountIds.map((id) => [id, commitGeneration(id)]));
-  const work = runTeardown(params, targets, accountIds, commitsAtStart);
-  trackTeardown(accountIds, work);
-  return work;
-}
+  // Still ours: nobody has enabled push for the account again since.
+  const owned = (id: string) => commitGeneration(id) === commitsAtStart.get(id);
+  const allOwned = () => accountIds.every(owned);
 
-async function runTeardown(
-  params: { everyAccount: boolean },
-  targets: Map<string, IJMAPClient | null>,
-  accountIds: string[],
-  commitsAtStart: Map<string, number>,
-): Promise<{ worker: WorkerSettlement }> {
-  // Local and quick, and enough on its own to silence this device.
-  await withPushLock(() => markPushSignedOutLocked(accountIds, params.everyAccount));
-  // Pushes the worker is already handling settle before the sign-out goes on
-  // (alongside the network work below, which it does not depend on).
-  const settled = settleWorker(accountIds, params.everyAccount)
-    .catch((): WorkerSettlement => 'pending')
-    .then(async (worker) => {
-      await closeNotifications(accountIds, params.everyAccount);
-      if (worker === 'pending') console.warn('[push] The service worker has not confirmed the sign-out yet; it settles on its own');
-      return worker;
+  // An enable started in this tab from now on waits for all of it, network
+  // steps that outlive the bounded wait included.
+  let finishTracking!: () => void;
+  trackTeardown(accountIds, new Promise<void>((resolve) => { finishTracking = resolve; }));
+  const result = (async (): Promise<PushSignOutResult> => {
+    // Local and quick, and enough on its own to silence this device.
+    let suppressed = false;
+    await underLock(async () => {
+      suppressed = await markPushSignedOutLocked(accountIds, params.everyAccount);
     });
+    // Pushes the worker is already handling settle (alongside the network work).
+    const worker = settleWorker(accountIds, params.everyAccount, suppressed);
+    const network = (async () => {
+      if (params.everyAccount) await underLock(() => unsubscribeBrowser(allOwned));
+      // The locked/configured relay, the same one push was enabled against.
+      const relayBaseUrl = await currentRelayUrl().catch(() => undefined);
+      for (const [accountId, client] of targets) {
+        await underLock(async () => {
+          if (!owned(accountId)) return;
+          if (client) await disableWebPush({ client, relayBaseUrl, stillOwned: () => owned(accountId) }).catch(() => undefined);
+          else if (owned(accountId)) await dropRelayRegistration(accountId, relayBaseUrl).catch(() => undefined);
+        });
+      }
+      // The browser subscription is shared: it goes once no other account here uses it.
+      if (!params.everyAccount) {
+        await underLock(async () => {
+          await unsubscribeBrowser(() => allOwned() && !locallyOptedInAccounts().some((id) => !targets.has(id)));
+        });
+      }
+    })();
+    void Promise.allSettled([network, worker.final]).then(() => finishTracking());
 
-  // One deadline for all of the network work.
-  const network = (async () => {
-    if (params.everyAccount) await unsubscribeBrowser();
-    // The locked/configured relay, the same one push was enabled against.
-    const relayBaseUrl = await currentRelayUrl().catch(() => undefined);
-    for (const [accountId, client] of targets) {
-      if (client) await disableWebPush({ client, relayBaseUrl }).catch(() => undefined);
-      else await dropRelayRegistration(accountId, relayBaseUrl).catch(() => undefined);
+    const [settlement] = await Promise.all([
+      worker.bounded.then(async (w) => {
+        await closeNotifications(accountIds, params.everyAccount);
+        return w;
+      }),
+      withTimeout(network, TEARDOWN_TIMEOUT_MS),
+    ]);
+
+    // Suppression that cannot be confirmed falls back to dropping the
+    // browser's push subscription: then nothing can arrive at all.
+    let browserUnsubscribed = false;
+    if (!suppressed || settlement === 'pending') {
+      await underLock(async () => {
+        browserUnsubscribed = await unsubscribeBrowser(allOwned);
+      });
+      console.warn(`[push] Sign-out ${!suppressed ? 'could not store its marker' : 'is still being settled by the service worker'}; this browser's push subscription was dropped`);
     }
-    // The browser subscription is shared: it goes once no other account here uses it.
-    if (!params.everyAccount && !locallyOptedInAccounts().some((id) => !targets.has(id))) {
-      await unsubscribeBrowser();
-    }
+
+    // Even when the server side is still running: the opt-in is over, so no
+    // later session restore may re-enable push for these accounts - unless the
+    // user has enabled it again since (in any tab), which stays.
+    await underLock(async () => {
+      for (const accountId of accountIds) if (owned(accountId)) forgetWebPushRegistration(accountId);
+    });
+    return { suppressed, worker: settlement, browserUnsubscribed };
   })();
-  const [worker] = await Promise.all([settled, withTimeout(network, TEARDOWN_TIMEOUT_MS)]);
-
-  // Even when the server side is still running: the opt-in is over, so no
-  // later session restore may re-enable push for these accounts - unless the
-  // user has enabled it again since (in another tab), which stays.
-  await withPushLock(async () => {
-    for (const accountId of accountIds) {
-      if (commitGeneration(accountId) === commitsAtStart.get(accountId)) forgetWebPushRegistration(accountId);
-    }
-  });
-  return { worker };
+  result.catch(() => finishTracking());
+  return result;
 }

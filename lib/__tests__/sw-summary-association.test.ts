@@ -53,6 +53,8 @@ function loadWorker(preview: PreviewResponse, { timers = false } = {}) {
       pushManager: { getSubscription: async () => ({ unsubscribe }) },
     },
   };
+  let unreadableMarkers = false;
+  const breakMarkerReads = () => { unreadableMarkers = true; };
   let markerReadHold: Promise<void> | null = null;
   let markerReadsToPass = 0;
   let markerReadHeld: () => void = () => {};
@@ -67,6 +69,7 @@ function loadWorker(preview: PreviewResponse, { timers = false } = {}) {
   const caches = {
     open: async () => ({
       match: async (key: string) => {
+        if (unreadableMarkers && key.includes('/signed-out')) throw new Error('storage broken');
         if (markerReadHold && key.includes('/signed-out/')) {
           if (markerReadsToPass > 0) markerReadsToPass--;
           else { markerReadHeld(); await markerReadHold; }
@@ -102,18 +105,18 @@ function loadWorker(preview: PreviewResponse, { timers = false } = {}) {
     await startPush(payload);
   }
   /** The page's explicit sign-out asking the worker to settle; resolves with its answer. */
-  function signOut(accountIds: string[], everyAccount = false): Promise<unknown> {
+  function signOut(accountIds: string[], everyAccount = false, persisted = true): Promise<unknown> {
     return new Promise((resolve) => {
       const waits: Promise<unknown>[] = [];
       listeners.get('message')?.({
-        data: { type: 'push-signout', accountIds, everyAccount },
+        data: { type: 'push-signout', accountIds, everyAccount, persisted },
         ports: [{ postMessage: (msg: unknown) => resolve(msg) }],
         waitUntil: (p: Promise<unknown>) => waits.push(p),
       });
     });
   }
   const marker = (path: string) => cacheStore.set(`https://mail.example.com/__push-state/${path}`, '{"at":1}');
-  return { push, startPush, shown, active, fetchMock, context, marker, unsubscribe, holdNotificationLookups, whenShown, signOut, holdMarkerReads };
+  return { push, startPush, shown, active, fetchMock, context, marker, unsubscribe, holdNotificationLookups, whenShown, signOut, holdMarkerReads, breakMarkerReads };
 }
 
 const payload = (extra: Record<string, unknown> = {}) => ({
@@ -265,6 +268,23 @@ describe('push security boundaries', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+  it('when the page could not store the markers, the worker keeps suppressing the account', async () => {
+    const { push, shown, signOut } = loadWorker({ ok: false, status: 401 }, { timers: true });
+    // No marker in Cache Storage: the page reported persisted: false.
+    expect(await signOut(['acc1'], false, false)).toEqual({ done: true });
+    await push(payload({ email: { from: 'Doctor', subject: 'Private', preview: 'Confidential' } }));
+    expect(shown).toHaveLength(0);
+    await push(payload({ accountId: 'acc2', changed: { acc2: {} }, emailIds: ['x1'], email: summary }));
+    expect(shown.map((n) => n.options.tag)).toEqual(['bulwark-mail:acc2']);
+  });
+  it('an unreadable sign-out state shows nothing private', async () => {
+    const { push, shown, breakMarkerReads } = loadWorker({ ok: false, status: 401 }, { timers: true });
+    breakMarkerReads();
+    await push(payload({ email: { from: 'Doctor', subject: 'Private result', preview: 'Confidential detail' } }));
+    expect(shown).toHaveLength(1);
+    expect(shown[0].title).toBe('New mail');
+    expect(JSON.stringify(shown[0].options)).not.toMatch(/Doctor|Private|Confidential/);
   });
   it('the sign-out cuts a pending preview lookup short instead of waiting for it', async () => {
     const { startPush, shown, marker, signOut, fetchMock } = loadWorker({ ok: false, status: 401 }, { timers: true });

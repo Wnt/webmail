@@ -61,25 +61,36 @@
 >      1. Synchronously, the accounts' (and with no account left, the device's) sign-out generation in
 >         localStorage is bumped; then Cache Storage markers are written under a cross-tab Web Lock. The
 >         service worker drops pushes for marked accounts (with no account left, it also drops the browser
->         subscription), reading the marker right before and after showing.
+>         subscription), reading the marker right before and after showing; if the state cannot be read it
+>         shows only a content-free "New mail".
 >      2. The worker is asked to settle: it stops any display not yet handed to the browser, aborts pending
 >         preview lookups, drains the accounts' push queues, closes their notifications and answers whether
 >         the drain finished (up to 30 s; if not, it keeps suppressing and closes once it has). The page
->         waits up to 6 s alongside step 3 and reports `pending` rather than assuming success.
+>         waits up to 6 s alongside step 3.
 >      3. `disableWebPush` against the locked relay while the client and token still work; for an account
 >         without a connected client, its relay record is deleted (login → push-account mapping recorded when
 >         a client connects; a login that cannot be mapped turns off every local opt-in no remaining account
->         claims). With no account left the browser is unsubscribed. Network part bounded to 8 s.
->      4. The local opt-in is forgotten (unless push was enabled again meanwhile).
+>         claims). With no account left the browser is unsubscribed. The sign-out waits at most 8 s; every
+>         step runs under the lock and is skipped once push was enabled again for the account, so cleanup
+>         that outlives the wait never touches a newer opt-in.
+>      4. If suppression is not confirmed (a marker could not be stored - the worker then keeps suppressing
+>         for its lifetime - or the worker did not confirm in time), the browser's push subscription is
+>         dropped as a fallback; accounts that keep push re-subscribe on the next app start.
+>      5. The local opt-in is forgotten (unless push was enabled again meanwhile).
+>      The gateway also revokes a grant's push subscriptions when its refresh token is revoked at logout
+>      (`Wnt/webmail-gateway` `3b80b4a`), so this client teardown is defence in depth.
 >      An enable notes the sign-out generation when it starts (at the click) and commits (records the opt-in,
 >      lifts markers) under the lock only if it is unchanged, so an enable or re-sync racing a sign-out in any
 >      tab undoes what it created; its rollback never removes a newer enable's record, and in this tab it
 >      waits for a teardown of the same account to finish. A background re-sync never commits for a marked
 >      account. Only a user-initiated enable lifts an account's marker, a deliberate sign-in (under the lock)
 >      the device-wide one, so push needs a fresh opt-in after an explicit sign-out.
->      The cookie slot of a signed-out or removed login stays reserved (`stores/account-store.ts`, shared by
->      tabs, at most 2 min) until its credential DELETEs have answered, so a new sign-in - the same login
->      included - lands in another slot and the old answers cannot clear its cookies.
+>      Every credential cleanup keeps the cookie slots it can clear reserved (`stores/account-store.ts`,
+>      shared by tabs; renewed while the page waits, lapsing 2 min after the page goes away) until its
+>      DELETE answers are in - all slots for sign-out of all, the login's slot otherwise, and a removed
+>      login's slot from the start of its push teardown. New sessions never take a reserved slot (an existing
+>      login's or an OAuth redirect's saved slot included), and signing a login in again waits for its
+>      sign-out still running in the tab.
 >      Tests: `stores/__tests__/auth-store-logout-push.test.ts`,
 >      `stores/__tests__/auth-store-remove-account-push.test.ts`, `lib/__tests__/web-push.test.ts`,
 >      `lib/__tests__/push-signout.test.ts`, `lib/__tests__/sw-summary-association.test.ts`.
@@ -96,8 +107,9 @@
 >      Test: `components/files/__tests__/html-preview-remote-block.test.tsx`.
 >    - bulwark-4, local capabilities need a live credential (`lib/stalwart/auth-context.ts`,
 >      `lib/stalwart/credentials.ts`): the sealed context carries an expiry (12 h for a Bearer token, 7 days
->      for Basic; live clients re-seal it on every sign-in, restore, switch and renewal); an envelope without
->      one is refused. Routes that use a session only as a local gate check the credential with the mail
+>      for Basic). It rolls: a live client re-seals it on every sign-in, restore, switch and (hourly) token
+>      renewal, from the refresh token, so it never causes a sign-in prompt; it only cuts off copies nobody
+>      renews. An envelope without an expiry is refused. Routes that use a session only as a local gate check the credential with the mail
 >      server first (successes cached for 60 s, failures answer 401; the first slot whose credential is live
 >      wins): `fetch-ical`, instance details (`lib/auth/instance-details.ts`, health), `wopi/status`,
 >      `plugin-approval-status`, plugin config for mailbox users, settings sync and `translate` (one-line

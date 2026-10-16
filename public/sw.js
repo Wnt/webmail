@@ -153,7 +153,7 @@ async function handlePush(event) {
   // (or every account) out on purpose. Teardown normally stops these pushes
   // at the source; this covers a teardown that could not reach the network.
   // An expired session sets no marker and keeps notifying.
-  if (await pushSignedOut(accountId)) return;
+  if (await pushSignedOut(accountId) === true) return;
 
   // Never notify twice for the same message. A push can be redelivered (relay
   // retry, browser replay after coming back online) and, on the older
@@ -406,6 +406,10 @@ async function handlePushSignOut(event) {
     : [];
   const affected = (key) => everyAccount || accountIds.includes(key);
   const keys = everyAccount ? ["*"] : accountIds;
+  // The page could not store the markers: nothing persisted protects these
+  // accounts, so this worker keeps suppressing them for as long as it runs
+  // (the page also drops the browser's push subscription).
+  const persisted = data.persisted !== false;
   for (const key of keys) SIGNOUTS_IN_PROGRESS.set(key, (SIGNOUTS_IN_PROGRESS.get(key) || 0) + 1);
   const closeShown = async () => {
     try {
@@ -445,7 +449,7 @@ async function handlePushSignOut(event) {
     await drain;
     await closeShown();
   }
-  release();
+  if (persisted) release();
 }
 
 // Every mail notification goes through here. The marker is read again right
@@ -453,12 +457,18 @@ async function handlePushSignOut(event) {
 // handler was busy (its preview lookup, the show itself) closed what was on
 // screen before this one appeared, so this one closes itself.
 async function showMailNotification(accountId, title, options) {
-  if (await pushSignedOut(accountId)) return false;
+  const signedOut = await pushSignedOut(accountId);
+  if (signedOut === true) return false;
+  if (signedOut === null) {
+    // The sign-out state cannot be read: no sender, subject or preview.
+    title = "New mail";
+    options = { ...options, body: "", data: { kind: "mail-list", accountId } };
+  }
   // Checked with no await before the show: a sign-out message that arrived
   // while the marker was being read stops this display outright.
   if (SIGNOUTS_IN_PROGRESS.has("*") || SIGNOUTS_IN_PROGRESS.has(accountId || "default")) return false;
   await self.registration.showNotification(title, options);
-  if (await pushSignedOut(accountId)) {
+  if (await pushSignedOut(accountId) === true) {
     try {
       const shown = await self.registration.getNotifications({ tag: options.tag });
       for (const n of shown) n.close();
@@ -484,8 +494,9 @@ async function pushSignedOut(accountId) {
     }
     return !!(accountId && await cache.match(signedOutKey(`signed-out/${encodeURIComponent(accountId)}`)));
   } catch (_) {
-    // No store: no marker can have been written either.
-    return false;
+    // Unreadable: neither signed out nor known not to be (null). The caller
+    // shows nothing private then.
+    return null;
   }
 }
 

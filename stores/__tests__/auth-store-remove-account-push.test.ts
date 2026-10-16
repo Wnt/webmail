@@ -39,7 +39,8 @@ vi.mock('@/lib/jmap/client', () => {
 vi.mock('@/lib/stalwart/principal', () => ({ fetchPrincipalDisplayName: async () => null }));
 
 import { useAuthStore } from '@/stores/auth-store';
-import { useAccountStore } from '@/stores/account-store';
+import { reservedCookieSlots, useAccountStore } from '@/stores/account-store';
+import { MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
 
 const acct = (username: string, host: string, slot: number) => ({
   id: `${username}@${host}`, label: username, serverUrl: `https://${host}`, username, authMode: 'basic' as const,
@@ -56,6 +57,7 @@ beforeEach(async () => {
   vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     if ((init?.method ?? 'GET') === 'DELETE') events.push(`DELETE ${url}`);
+    if (init?.method === 'POST' && url.startsWith('/api/auth/session')) events.push(`POST ${url}`);
     const m = url.match(/\/api\/auth\/session\?slot=(\d)/);
     if (m && (init?.method ?? 'GET') !== 'DELETE') {
       const a = [A, B][Number(m[1])];
@@ -138,4 +140,46 @@ it('the cookie slot stays reserved until the credential DELETEs have answered', 
   // A new sign-in now (this login again, too) gets another slot.
   answer();
   await vi.waitFor(() => expect(useAccountStore.getState().getNextCookieSlot()).toBe(B.cookieSlot));
+});
+
+it('signing out of every account keeps every slot reserved until its DELETE has answered', async () => {
+  teardown.mockResolvedValue({ suppressed: true, worker: 'settled', browserUnsubscribed: false });
+  let answer!: () => void;
+  const held = new Promise<void>((resolve) => { answer = resolve; });
+  const base = vi.mocked(fetch).getMockImplementation()!;
+  vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
+    if (String(input) === '/api/auth/session?all=true' && init?.method === 'DELETE') {
+      events.push('DELETE all held');
+      await held;
+    }
+    return base(input as never, init);
+  }));
+  void useAuthStore.getState().logoutAll();
+  await vi.waitFor(() => expect(events).toContain('DELETE all held'));
+  // That DELETE clears every slot's cookies: no slot is free for a new sign-in.
+  expect(reservedCookieSlots().sort((a, b) => a - b)).toEqual(Array.from({ length: MAX_ACCOUNT_SLOTS }, (_, i) => i));
+  answer();
+  await vi.waitFor(() => expect(reservedCookieSlots()).toEqual([]));
+});
+
+it('signing the active login in again while its sign-out runs waits for it, and never shares its slot', async () => {
+  let finish!: () => void;
+  teardown.mockImplementation(() => new Promise((resolve) => {
+    finish = () => resolve({ suppressed: true, worker: 'settled', browserUnsubscribed: false });
+  }));
+  const signingOut = useAuthStore.getState().logout();
+  await vi.waitFor(() => expect(teardown).toHaveBeenCalled());
+  let signedIn = false;
+  const signingIn = useAuthStore.getState().login('https://mail.x.test', 'a@x.test', 'pw', undefined, true)
+    .then((r) => { signedIn = true; return r; });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(signedIn).toBe(false);
+  finish();
+  await signingOut;
+  await signingIn;
+  const posts = events.filter((e) => e.startsWith('POST /api/auth/session?slot=0'));
+  if (posts.length > 0) {
+    expect(events.indexOf('DELETE /api/auth/session?slot=0')).toBeLessThan(events.indexOf(posts[0]));
+  }
+  expect(signedIn).toBe(true);
 });

@@ -693,6 +693,10 @@ export function forgetWebPushRegistration(accountId: string): void {
 export interface DisableWebPushParams {
   client: IJMAPClient;
   relayBaseUrl?: string;
+  // Fork (Wnt/webmail), audit bulwark-1: checked before every step; false
+  // once push was enabled again for the account (an explicit sign-out's
+  // teardown can outlive its wait), and nothing more is touched then.
+  stillOwned?: () => boolean;
 }
 
 // Best-effort teardown: clear the JMAP subscription, the relay mapping, and
@@ -708,6 +712,7 @@ export async function disableWebPush(params: DisableWebPushParams): Promise<void
 
   const storedServerId = localStorage.getItem(subIdKey);
   const deviceClientId = localStorage.getItem(devIdKey);
+  const owned = params.stillOwned ?? (() => true);
 
   // Destroy every subscription the server holds for this device, not just the
   // id we happen to have recorded. A destroy that lost its round-trip, a failed
@@ -723,12 +728,14 @@ export async function disableWebPush(params: DisableWebPushParams): Promise<void
     }
   }
   for (const id of idsToDestroy) {
+    if (!owned()) return;
     await params.client.destroyPushSubscription(id).catch(() => undefined);
   }
+  if (!owned()) return;
   localStorage.removeItem(subIdKey);
   localStorage.removeItem(subscriptionRelayKey(accountId));
 
-  if (deviceClientId && relayBaseUrl) {
+  if (deviceClientId && relayBaseUrl && owned()) {
     await fetch(
       buildRelayUrl(relayBaseUrl, `/api/push/register/${encodeURIComponent(deviceClientId)}`),
       { method: 'DELETE' },
@@ -746,7 +753,7 @@ export async function disableWebPush(params: DisableWebPushParams): Promise<void
   ) {
     const registration = await navigator.serviceWorker.getRegistration(SW_SCOPE);
     const sub = await registration?.pushManager.getSubscription();
-    if (sub) await sub.unsubscribe().catch(() => undefined);
+    if (sub && owned()) await sub.unsubscribe().catch(() => undefined);
   }
 }
 

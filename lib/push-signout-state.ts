@@ -109,17 +109,21 @@ async function pushStateCache(): Promise<Cache | null> {
 
 /**
  * Mark the accounts (and with `everyAccount`, the whole device) as signed out
- * for the service worker. Call inside withPushLock.
+ * for the service worker. Call inside withPushLock. False when a marker could
+ * not be stored.
  */
-export async function markPushSignedOutLocked(accountIds: string[], everyAccount: boolean): Promise<void> {
+export async function markPushSignedOutLocked(accountIds: string[], everyAccount: boolean): Promise<boolean> {
+  const urls = accountIds.map(accountMarkerUrl);
+  if (everyAccount) urls.push(stateUrl(DEVICE_MARKER));
+  if (urls.length === 0) return true;
   const cache = await pushStateCache();
-  if (!cache) return;
+  if (!cache) return false;
   const marker = () => new Response(JSON.stringify({ at: Date.now() }), {
     headers: { 'Content-Type': 'application/json' },
   });
-  const urls = accountIds.map(accountMarkerUrl);
-  if (everyAccount) urls.push(stateUrl(DEVICE_MARKER));
-  await Promise.all(urls.map((url) => cache.put(url, marker()).catch(() => undefined)));
+  // True only when every marker was stored: the caller falls back otherwise.
+  const stored = await Promise.all(urls.map((url) => cache.put(url, marker()).then(() => true, () => false)));
+  return stored.every(Boolean);
 }
 
 /** Lift the device-wide marker and, with `accountId`, that account's. Call inside withPushLock. */

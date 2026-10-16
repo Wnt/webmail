@@ -9,7 +9,7 @@ import { useVacationStore } from './vacation-store';
 import { subscriptionOwner, useCalendarStore } from './calendar-store';
 import { useFilterStore } from './filter-store';
 import { useSettingsStore } from './settings-store';
-import { releaseCookieSlot, reserveCookieSlot, useAccountStore, type AccountEntry } from './account-store';
+import { releaseCookieSlot, reserveCookieSlot, reservedCookieSlots, useAccountStore, type AccountEntry } from './account-store';
 import { fetchPrincipalDisplayName } from '@/lib/stalwart/principal';
 import { fetchConfig } from '@/hooks/use-config';
 import { debug } from '@/lib/debug';
@@ -610,14 +610,25 @@ async function clearClosingSlots(
   slots: ReadonlySet<number>,
   requests: () => Promise<string | null>,
 ): Promise<string | null> {
+  // Fork (Wnt/webmail): the slots stay reserved (stores/account-store.ts)
+  // until the DELETE answers - which clear their cookies - are in, beyond the
+  // timeout below, so no new sign-in lands in one meanwhile.
+  let answered!: () => void;
+  const answers = new Promise<void>((resolve) => { answered = resolve; });
+  for (const slot of slots) void holdSlotUntil(slot, answers);
   try {
     await settleSessionWrites(slots);
-    const result = await withTimeout(requests(), CREDENTIAL_CLEANUP_TIMEOUT_MS);
+    const pending = requests();
+    void pending.then(answered, answered);
+    const result = await withTimeout(pending, CREDENTIAL_CLEANUP_TIMEOUT_MS);
     if (result === TIMED_OUT) {
       console.warn('[auth] Sign-out cleanup is taking long; finishing it in the background');
       return null;
     }
     return result;
+  } catch (error) {
+    answered();
+    throw error;
   } finally {
     for (const slot of slots) closingSlots.delete(slot);
   }
@@ -641,31 +652,6 @@ function clearSlotCredentials(slot: number, includeToken: boolean, endSession = 
     ]);
     return readEndSessionUrl(token);
   });
-}
-
-/**
- * Fork (Wnt/webmail): {@link clearSlotCredentials} for removing one login,
- * settling only once the DELETE answers (which clear that slot's cookies) are
- * in - no timeout - so the caller can keep the slot reserved until nothing
- * from this sign-out can touch a newer session in it.
- */
-async function clearSlotCredentialsSettled(slot: number, includeToken: boolean): Promise<void> {
-  closingSlots.add(slot);
-  try {
-    await settleSessionWrites(new Set([slot]));
-    if (IS_LITE) {
-      await revokeLiteSlot(slot);
-      return;
-    }
-    await Promise.all([
-      deleteCredentials(`/api/auth/session?slot=${slot}`),
-      includeToken ? deleteCredentials(`/api/auth/token?slot=${slot}`) : null,
-    ]);
-  } catch {
-    // Reported by deleteCredentials; the slot is released all the same.
-  } finally {
-    closingSlots.delete(slot);
-  }
 }
 
 /**
@@ -1019,15 +1005,45 @@ class ClientRegistry extends Map<string, JMAPClient> {
 }
 const clients = new ClientRegistry();
 // Fork (Wnt/webmail), audit bulwark-1: logins whose explicit removal is
-// waiting for its push teardown; they keep their registry entry and slot.
+// still running (push teardown, credential cleanup).
 const removingAccounts = new Set<string>();
+// Fork (Wnt/webmail): sign-outs still running per login; a new sign-in of the
+// same login waits for its sign-out to finish first.
+const signOutsInProgress = new Map<string, Promise<unknown>>();
+
+function trackSignOut(loginId: string | null | undefined, work: Promise<unknown>): void {
+  if (!loginId) return;
+  const settled = work.catch(() => undefined);
+  signOutsInProgress.set(loginId, settled);
+  void settled.then(() => {
+    if (signOutsInProgress.get(loginId) === settled) signOutsInProgress.delete(loginId);
+  });
+}
+
+async function signOutSettled(loginId: string): Promise<void> {
+  await signOutsInProgress.get(loginId);
+}
+
+/**
+ * A slot for a new session: `preferred` (the login's existing slot, or the one
+ * an OAuth redirect saved) unless a sign-out cleanup still holds it.
+ */
+function freeCookieSlot(preferred: number | null | undefined): number {
+  const accountStore = useAccountStore.getState();
+  if (preferred !== null && preferred !== undefined && !reservedCookieSlots().includes(preferred)) return preferred;
+  return accountStore.getNextCookieSlot();
+}
 
 /**
  * Fork (Wnt/webmail): keep `slot` reserved (stores/account-store.ts) until
  * `work` - its sign-out cleanup - has settled, renewing the bounded
- * reservation meanwhile; only a page that goes away lets it lapse.
+ * reservation meanwhile; only a page that goes away lets it lapse. Holds are
+ * counted, so the last one to end releases the slot.
  */
+const slotHolds = new Map<number, number>();
+
 async function holdSlotUntil(slot: number, work: Promise<unknown>): Promise<void> {
+  slotHolds.set(slot, (slotHolds.get(slot) ?? 0) + 1);
   reserveCookieSlot(slot);
   const renew = setInterval(() => reserveCookieSlot(slot), 60_000);
   try {
@@ -1036,7 +1052,12 @@ async function holdSlotUntil(slot: number, work: Promise<unknown>): Promise<void
     // The cleanup reports its own failures.
   } finally {
     clearInterval(renew);
-    releaseCookieSlot(slot);
+    const left = (slotHolds.get(slot) ?? 1) - 1;
+    if (left > 0) slotHolds.set(slot, left);
+    else {
+      slotHolds.delete(slot);
+      releaseCookieSlot(slot);
+    }
   }
 }
 
@@ -1358,11 +1379,14 @@ export const useAuthStore = create<AuthState>()(
         try {
           // Resolve account/slot info up front so the TOTP exchange can target
           // the right per-account refresh-token cookie slot.
-          const accountStore = useAccountStore.getState();
           const accountId = generateAccountId(username, serverUrl);
-          const cookieSlot = accountStore.hasAccount(username, serverUrl)
-            ? (accountStore.getAccountById(accountId)?.cookieSlot ?? accountStore.getNextCookieSlot())
-            : accountStore.getNextCookieSlot();
+          // Fork (Wnt/webmail): a sign-out of this login still running here
+          // finishes first, and a slot its cleanup holds is not reused.
+          await signOutSettled(accountId);
+          const accountStore = useAccountStore.getState();
+          const cookieSlot = freeCookieSlot(accountStore.hasAccount(username, serverUrl)
+            ? accountStore.getAccountById(accountId)?.cookieSlot
+            : null);
 
           let client: JMAPClient;
           let upgradedToOAuth = false;
@@ -1620,9 +1644,11 @@ export const useAuthStore = create<AuthState>()(
           const username = client.getSessionUsername() || client.getUsername();
           if (!username) throw new Error('The server did not name the account');
 
-          const accountStore = useAccountStore.getState();
           const accountId = generateAccountId(username, serverUrl);
-          const cookieSlot = accountStore.getAccountById(accountId)?.cookieSlot ?? accountStore.getNextCookieSlot();
+          // Fork (Wnt/webmail): see login().
+          await signOutSettled(accountId);
+          const accountStore = useAccountStore.getState();
+          const cookieSlot = freeCookieSlot(accountStore.getAccountById(accountId)?.cookieSlot);
 
           const prevAccountId = get().activeAccountId;
           if (prevAccountId && prevAccountId !== accountId) {
@@ -1796,9 +1822,10 @@ export const useAuthStore = create<AuthState>()(
             ? sessionStorage.getItem('oauth_cookie_slot')
             : null;
           const pendingSlot = rawSlot !== null ? parseInt(rawSlot, 10) : NaN;
-          const slot = !isNaN(pendingSlot) && pendingSlot >= 0 && pendingSlot < MAX_ACCOUNT_SLOTS
+          // Fork (Wnt/webmail): not one a sign-out cleanup holds by now.
+          const slot = freeCookieSlot(!isNaN(pendingSlot) && pendingSlot >= 0 && pendingSlot < MAX_ACCOUNT_SLOTS
             ? pendingSlot
-            : accountStore.getNextCookieSlot();
+            : null);
 
           const tokenRes = await exchangeOAuthCode({ serverUrl, code, codeVerifier, redirectUri, slot, serverId });
 
@@ -2161,6 +2188,11 @@ export const useAuthStore = create<AuthState>()(
       },
 
        logout: async (options) => {
+        // Fork (Wnt/webmail): a new sign-in of this login waits for this to finish.
+        let signOutDone!: () => void;
+        trackSignOut(get().activeAccountId, new Promise<void>((resolve) => { signOutDone = resolve; }));
+        try {
+          await (async () => {
         const state = get();
         const wasDemoMode = state.isDemoMode;
         const wasOAuth = state.authMode === 'oauth';
@@ -2183,10 +2215,6 @@ export const useAuthStore = create<AuthState>()(
         // From here on nothing may renew this slot's session; the cleanup
         // below reopens it once the credentials are gone.
         if (!wasDemoMode) closingSlots.add(slot);
-        // Fork (Wnt/webmail): and no new sign-in may land in the slot while
-        // its cleanup can still clear its cookies (released once it has, or
-        // after a bounded time when the page leaves first).
-        if (!wasDemoMode) reserveCookieSlot(slot);
         clearRefreshTimer(accountId ?? undefined);
 
         // Fork (Wnt/webmail), audit bulwark-1: a sign-out the user asked for
@@ -2284,7 +2312,7 @@ export const useAuthStore = create<AuthState>()(
             // would take the user away from the accounts still signed in
             // here, which may share that session. Revoking the token ends
             // Bulwark's grant.
-            void holdSlotUntil(slot, clearSlotCredentialsSettled(slot, wasOAuth));
+            void clearSlotCredentials(slot, wasOAuth);
             return;
           }
 
@@ -2296,7 +2324,6 @@ export const useAuthStore = create<AuthState>()(
           debug.error(`Cannot restore next account ${nextAccount.id}, performing full logout`);
           for (const remaining of useAccountStore.getState().accounts) {
             droppedAccounts.push(remaining);
-            reserveCookieSlot(remaining.cookieSlot ?? 0); // Fork (Wnt/webmail): see above
             clearRefreshTimer(remaining.id);
             clients.get(remaining.id)?.disconnect();
             clients.delete(remaining.id);
@@ -2320,6 +2347,10 @@ export const useAuthStore = create<AuthState>()(
         notifyParent('sso:logout');
 
         finishSignOut(endSessionUrl, userInitiated);
+})();
+        } finally {
+          signOutDone();
+        }
       },
 
       // Remove a specific (typically non-active) account: tear down its client,
@@ -2352,7 +2383,7 @@ export const useAuthStore = create<AuthState>()(
         accountStore.removeAccount(accountId);
         clearPluginStorageForAccount(accountId);
 
-        void holdSlotUntil(slot, (async () => {
+        const removal = (async () => {
           try {
             // A removal the user asked for ends the account's Web Push first,
             // as in logout(), while its client and token still work.
@@ -2368,11 +2399,13 @@ export const useAuthStore = create<AuthState>()(
               forgetCalendarSubscriptions(client);
               try { client.disconnect(); } catch { /* noop */ }
             }
-            await clearSlotCredentialsSettled(slot, wasOAuth);
+            await clearSlotCredentials(slot, wasOAuth);
           } finally {
             removingAccounts.delete(accountId);
           }
-        })());
+        })();
+        void holdSlotUntil(slot, removal);
+        trackSignOut(accountId, removal);
       },
 
       logoutAll: async () => {
@@ -2403,10 +2436,6 @@ export const useAuthStore = create<AuthState>()(
             everyAccount: true,
           });
         }
-
-        // Fork (Wnt/webmail): no new sign-in may land in these slots while the
-        // cleanup can still clear their cookies (lapses after a bounded time).
-        if (!get().isDemoMode) for (const account of allAccounts) reserveCookieSlot(account.cookieSlot ?? 0);
 
         // Starts by marking every slot closing, so nothing renews a session
         // while the clients are torn down.
