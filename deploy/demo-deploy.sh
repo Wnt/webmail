@@ -22,7 +22,7 @@
 # rbm.systems containers are still on Watchtower's watch list.
 set -euo pipefail
 
-IMAGE=ghcr.io/bulwarkmail/webmail
+IMAGE=ghcr.io/bulwarkmail/webmail  # pin-check: repository (the tag is appended per deploy)
 NAME=bulwark-demo
 PORT=3002
 DATA=/opt/bulwark-demo-data

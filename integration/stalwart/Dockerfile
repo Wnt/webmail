@@ -11,7 +11,9 @@
 # global-setup / integration runner). This keeps the build offline-friendly and
 # avoids the base image's apt sources, which are unreachable in sandboxed CI.
 
-FROM stalwartlabs/stalwart:v0.16
+# Base images are pinned as tag@sha256:<multi-arch index digest>. To bump, change
+# the tag and digest together: docker buildx imagetools inspect <image>:<tag>
+FROM stalwartlabs/stalwart:v0.16.26@sha256:254ce5d7f3dbe4bb628ce2c7912e664ecb1c3466db79907f4a44d9a00117776b
 
 USER root
 

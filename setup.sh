@@ -386,12 +386,14 @@ draw_progress_bar() {
     echo -e "  ${DIM}[${RESET}${GREEN}${bar:0:$filled}${RESET}${DIM}${bar:$filled}${RESET}${DIM}]${RESET} ${BOLD}${pct}%%${RESET} ${DIM}(step ${current}/${total})${RESET}"
 }
 
-# Spinner for async operations (ASCII-safe)
+# Spinner for async operations (ASCII-safe). Returns the background job's
+# exit status, so a failed step stops the setup instead of reporting success.
 spinner() {
     local pid=$1
     local message="${2:-Working...}"
     local frames=('|' '/' '-' '\')
     local i=0
+    local rc=0
 
     hide_cursor
     while kill -0 "$pid" 2>/dev/null; do
@@ -399,8 +401,13 @@ spinner() {
         i=$(( (i + 1) % ${#frames[@]} ))
         sleep 0.1
     done
-    echo -ne "\r    ${OK} ${message}          \n"
+    wait "$pid" || rc=$?
     show_cursor
+    if [[ $rc -ne 0 ]]; then
+        echo -ne "\r    ${RED}x${RESET} ${message} (failed, exit ${rc})\n"
+        return "$rc"
+    fi
+    echo -ne "\r    ${OK} ${message}          \n"
 }
 
 # -- Screen Rendering ---------------------------------------------------------
@@ -895,7 +902,7 @@ screen_deployment() {
     echo ""
 
     menu_select "Choose deployment method:" \
-        "Node.js        - Build locally (npm install + npm run build + npm start)" \
+        "Node.js        - Build locally (npm ci + npm run build + npm start)" \
         "Docker         - Pull and run a pre-built container image" \
         "Docker Compose - Use the included docker-compose.yml"
 
@@ -1257,7 +1264,7 @@ run_deployment() {
         echo ""
         case "$CFG_DEPLOY_METHOD" in
             "node")
-                echo -e "    ${DIM}[dry-run] Would run:  npm install${RESET}"
+                echo -e "    ${DIM}[dry-run] Would run:  npm ci${RESET}"
                 echo -e "    ${DIM}[dry-run] Would run:  npm run build${RESET}"
                 echo -e "    ${DIM}[dry-run] Would start: npm start (port ${CFG_PORT})${RESET}"
                 ;;
@@ -1277,10 +1284,10 @@ run_deployment() {
         "node")
             echo -e "  ${BOLD}Building...${RESET}"
             echo ""
-            (cd "$SCRIPT_DIR" && npm install --loglevel=warn) &
+            (cd "$SCRIPT_DIR" && npm ci --loglevel=warn) &
             spinner $! "Installing npm packages"
 
-            (cd "$SCRIPT_DIR" && npm run build 2>&1 | tail -5) &
+            (cd "$SCRIPT_DIR" && set -o pipefail && npm run build 2>&1 | tail -5) &
             spinner $! "Building Next.js application"
 
             echo ""
