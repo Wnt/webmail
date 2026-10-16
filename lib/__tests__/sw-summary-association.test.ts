@@ -20,6 +20,8 @@ function loadWorker(preview: PreviewResponse) {
   const cacheStore = new Map<string, string>();
 
   const unsubscribe = vi.fn(async () => true);
+  let onShow: () => Promise<void> | void = () => {};
+  const whenShown = (fn: () => Promise<void> | void) => { onShow = fn; };
   let lookupHold: Promise<void> = Promise.resolve();
   const holdNotificationLookups = () => {
     let release!: () => void;
@@ -35,12 +37,16 @@ function loadWorker(preview: PreviewResponse) {
       showNotification: async (title: string, options: Record<string, unknown>) => {
         shown.push({ title, options });
         active.set(String(options.tag), { title, options });
+        await onShow();
       },
       getNotifications: async (filter?: { tag?: string }) => {
         // A snapshot taken now, handed back once any hold is released.
         const snapshot = [...active.values()]
           .filter((n) => !filter?.tag || n.options.tag === filter.tag)
-          .map((n) => ({ title: n.title, body: n.options.body, tag: n.options.tag, data: n.options.data }));
+          .map((n) => ({
+            title: n.title, body: n.options.body, tag: n.options.tag, data: n.options.data,
+            close: () => { if (active.get(String(n.options.tag)) === n) active.delete(String(n.options.tag)); },
+          }));
         await lookupHold;
         return snapshot;
       },
@@ -78,7 +84,7 @@ function loadWorker(preview: PreviewResponse) {
     await startPush(payload);
   }
   const marker = (path: string) => cacheStore.set(`https://mail.example.com/__push-state/${path}`, '{"at":1}');
-  return { push, startPush, shown, active, fetchMock, context, marker, unsubscribe, holdNotificationLookups };
+  return { push, startPush, shown, active, fetchMock, context, marker, unsubscribe, holdNotificationLookups, whenShown };
 }
 
 const payload = (extra: Record<string, unknown> = {}) => ({
@@ -144,6 +150,40 @@ describe('push security boundaries', () => {
     await push(payload({ email: summary }));
     expect(shown).toHaveLength(0);
     expect(unsubscribe).toHaveBeenCalled();
+  });
+  it('a push already being handled shows nothing once the user signs out', async () => {
+    const { startPush, shown, active, marker, fetchMock } = loadWorker({ ok: false, status: 401 });
+    let release!: () => void;
+    fetchMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { ok: false, status: 401, json: async () => ({}) };
+    });
+    const pending = startPush(payload({ email: { from: 'Doctor', subject: 'Private', preview: 'Confidential' } }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    marker('signed-out/acc1');
+    release();
+    await pending;
+    expect(shown).toHaveLength(0);
+    expect(active.size).toBe(0);
+  });
+  it('a notification shown while the sign-out lands closes itself', async () => {
+    const { push, active, marker, whenShown } = loadWorker({ ok: false, status: 401 });
+    // The page writes its marker (and closes what it saw) while this show is under way.
+    whenShown(() => { marker('signed-out/acc1'); });
+    await push(payload({ email: { from: 'Doctor', subject: 'Private', preview: 'Confidential' } }));
+    expect(active.size).toBe(0);
+  });
+  it('a summary replacement racing the sign-out leaves nothing on screen', async () => {
+    const { push, startPush, active, marker, holdNotificationLookups } = loadWorker({ ok: false, status: 401 });
+    await push(payload({ email: summary }));
+    const release = holdNotificationLookups();
+    const late = startPush(payload({ email: { ...summary, summary: 'A summary' }, renotify: false }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    marker('signed-out/acc1');
+    active.clear(); // the page closed the account's notifications
+    release();
+    await late;
+    expect(active.size).toBe(0);
   });
   it('attacker URLs in IDs remain same-origin click paths', () => {
     const { context } = loadWorker({ ok: false });

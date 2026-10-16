@@ -223,3 +223,46 @@ describe('a session that merely expired keeps push', () => {
     expect(localStorage.getItem('bulwark.push.subscriptionId.v1.acc1')).toBe('subscription1');
   });
 });
+
+describe('accounts without a connected client', () => {
+  it('explicitly removing one still silences its push on this device', async () => {
+    const log: string[] = [];
+    const { caches } = setup(log);
+    const other = account({ id: 'bob@example.com@mail.example.com', username: 'bob@example.com', cookieSlot: 1, isConnected: false, isDefault: false });
+    useAccountStore.setState({ accounts: [account(), other] });
+    // Recorded when bob's client was last connected here.
+    const { rememberPushAccount } = await import('@/lib/push-signout-state');
+    rememberPushAccount(other.id, 'acc2');
+    localStorage.setItem('bulwark.push.deviceClientId.v1.acc2', 'device2');
+    localStorage.setItem('bulwark.push.subscriptionId.v1.acc2', 'subscription2');
+    mockFetch({
+      ...credentialRoutes,
+      'DELETE /api/auth/session?slot=1': () => ok(),
+      'DELETE /api/auth/token?slot=1': () => ok(),
+      [`DELETE ${RELAY}/api/push/register/device2`]: () => ok(),
+    }, log);
+    useAuthStore.getState().removeAccount(other.id);
+    await vi.waitFor(() => expect(log).toContain('DELETE /api/auth/token?slot=1'));
+    expect(useAccountStore.getState().accounts.map((a) => a.id)).not.toContain(other.id);
+    expect(caches.has(`${window.location.origin}/__push-state/signed-out/acc2`)).toBe(true);
+    expect(localStorage.getItem('bulwark.push.subscriptionId.v1.acc2')).toBeNull();
+    // The relay forgets this browser for bob before his credentials go.
+    expect(log.indexOf(`DELETE ${RELAY}/api/push/register/device2`)).toBeGreaterThanOrEqual(0);
+    expect(log.indexOf(`DELETE ${RELAY}/api/push/register/device2`)).toBeLessThan(log.indexOf('DELETE /api/auth/token?slot=1'));
+    // alice keeps push: her record, the browser subscription and her account are untouched.
+    expect(localStorage.getItem('bulwark.push.subscriptionId.v1.acc1')).toBe('subscription1');
+    expect(caches.has(`${window.location.origin}/__push-state/signed-out/acc1`)).toBe(false);
+  });
+
+  it('signing out of everything covers every account with a push opt-in here', async () => {
+    const log: string[] = [];
+    const { caches } = setup(log);
+    localStorage.setItem('bulwark.push.deviceClientId.v1.acc9', 'device9');
+    localStorage.setItem('bulwark.push.subscriptionId.v1.acc9', 'subscription9');
+    mockFetch({ ...credentialRoutes, [`DELETE ${RELAY}/api/push/register/device9`]: () => ok() }, log);
+    await useAuthStore.getState().logout();
+    expect(caches.has(`${window.location.origin}/__push-state/signed-out/acc9`)).toBe(true);
+    expect(localStorage.getItem('bulwark.push.subscriptionId.v1.acc9')).toBeNull();
+    expect(log).toContain(`DELETE ${RELAY}/api/push/register/device9`);
+  });
+});

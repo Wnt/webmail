@@ -79,12 +79,18 @@ it('an explicit removal tears down the account push first, then its client and c
   }));
   useAuthStore.getState().removeAccount(B.id);
   expect(teardown).toHaveBeenCalledTimes(1);
-  const [{ clients, everyAccount }] = teardown.mock.calls[0];
+  const [{ clients, loginIds, everyAccount }] = teardown.mock.calls[0];
   expect(clients.map((c: { getAccountId: () => string }) => c.getAccountId())).toEqual(['jmap-b@y.test']);
+  expect(loginIds).toEqual([B.id]);
   expect(everyAccount).toBe(false);
-  // Nothing is revoked or disconnected while the teardown still needs them.
+  // Nothing is revoked or disconnected while the teardown still needs them,
+  // and the account keeps its cookie slot: a new sign-in cannot take it over.
   await new Promise((r) => setTimeout(r, 10));
   expect(events).toEqual(['teardown']);
+  expect(useAccountStore.getState().getAccountById(B.id)).toBeDefined();
+  expect(useAccountStore.getState().getNextCookieSlot()).not.toBe(B.cookieSlot);
+  await useAuthStore.getState().switchAccount(B.id);
+  expect(useAuthStore.getState().activeAccountId).toBe(A.id);
   finish();
   await vi.waitFor(() => expect(events).toContain('DELETE /api/auth/session?slot=1'));
   expect(events.indexOf('disconnect b@y.test')).toBeGreaterThan(events.indexOf('teardown done'));

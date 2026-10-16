@@ -56,33 +56,46 @@
 >    - bulwark-1, explicit sign-out ends Web Push (`lib/push-signout.ts`, `lib/push-signout-state.ts`,
 >      `stores/auth-store.ts`, `lib/web-push.ts`, `public/sw.js`): a sign-out the user asked for (sign out,
 >      sign out of all, removing an account) first runs `disableWebPush` against the locked relay while the
->      client and token still work, closes the account's notifications, forgets the local opt-in and, when no
->      account stays, unsubscribes the browser. A Cache Storage marker makes the service worker drop pushes for
->      that account (and with no account left, drop the browser subscription) if the teardown could not reach
->      the network. Enabling push clears the marker; a deliberate sign-in clears the device-wide one.
->      Sign-outs nobody asked for (rejected or unrenewable token, failed session restore, account switching)
->      leave push alone, so notifications keep arriving after a session expires.
+>      client and token still work (an account without a connected client: its relay record is deleted, via
+>      the login → push-account mapping recorded when its client connected), closes the account's
+>      notifications, forgets the local opt-in and, when no account stays, unsubscribes the browser (network
+>      part bounded to 8 s). A removed account keeps its registry entry and cookie slot until then. A Cache
+>      Storage marker makes the service worker drop pushes for that account (and with no account left, drop
+>      the browser subscription); the worker reads it again right before and after showing, so a push already
+>      being handled shows nothing. Only a user-initiated enable clears the account marker, a deliberate
+>      sign-in the device-wide one; an enable or background re-sync still running when the sign-out lands,
+>      or a re-sync of a marked account, undoes what it created. After an explicit sign-out, push needs a
+>      fresh opt-in. Sign-outs nobody asked for (rejected or unrenewable token, failed session restore,
+>      account switching) leave push alone, so notifications keep arriving after a session expires.
 >      Tests: `stores/__tests__/auth-store-logout-push.test.ts`,
 >      `stores/__tests__/auth-store-remove-account-push.test.ts`, `lib/__tests__/web-push.test.ts`.
 >    - bulwark-5 (`public/sw.js`, extends change 1): every mail notification records its account and headline
 >      message id; the quiet summary push replaces it only when both match the summary's account and newest id,
 >      and is dropped otherwise. Pushes are handled one at a time per account, so a summary cannot interleave
->      with a newer message's notification. Test: `lib/__tests__/sw-summary-association.test.ts`.
+>      with a newer message's notification; the preview lookup times out after 10 s.
+>      Test: `lib/__tests__/sw-summary-association.test.ts`.
 >    - bulwark-2, HTML attachment previews follow the remote-content policy (`components/files/html-attachment-preview.tsx`,
 >      `components/files/file-preview-modal.tsx`): the attachment is decoded by its charset, sanitized like a
 >      mail body and shown in a sandboxed srcdoc with the mail body's resource CSP and no referrer. Remote
 >      content stays blocked under "block", and under "ask" until "Load images" is clicked for that preview.
 >      Trusted senders are not consulted (the preview does not know the sender).
 >      Test: `components/files/__tests__/html-preview-remote-block.test.tsx`.
->    - bulwark-4, the session context needs a live credential (`lib/stalwart/auth-context.ts`,
->      `lib/stalwart/credentials.ts`, `app/api/fetch-ical/route.ts`): the sealed context carries an expiry
->      (12 h for a Bearer token, 7 days for Basic; live clients re-seal it on every sign-in, restore, switch
->      and renewal); an envelope without one is refused. The calendar fetch proxy checks the credential with
->      the mail server first (successes cached for 60 s). Push without a session is unaffected.
->      Tests: `lib/__tests__/stale-context-proxy.test.ts`, `lib/__tests__/fetch-ical-route.test.ts`.
+>    - bulwark-4, local capabilities need a live credential (`lib/stalwart/auth-context.ts`,
+>      `lib/stalwart/credentials.ts`): the sealed context carries an expiry (12 h for a Bearer token, 7 days
+>      for Basic; live clients re-seal it on every sign-in, restore, switch and renewal); an envelope without
+>      one is refused. Routes that use a session only as a local gate check the credential with the mail
+>      server first (successes cached for 60 s, failures answer 401): `fetch-ical`, instance details
+>      (`lib/auth/instance-details.ts`, health), `wopi/status`, `plugin-approval-status`, settings sync and
+>      `translate` (one-line switch to `getVerifiedStalwartCredentials`). The remembered-session cookie is
+>      checked the same way there. Routes that forward the credential are checked by the mail server.
+>      Push without a session is unaffected (the preview API already verifies upstream).
+>      Tests: `lib/__tests__/stale-context-proxy.test.ts`; mocks adjusted in the fetch-ical, translate,
+>      instance-details and settings route tests.
 >    - bulwark-6, favicon proxy bounds (`app/api/favicon/route.ts`): icons over 512 KiB are refused while
 >      streaming (or up front by Content-Length), the cache holds at most 32 MiB, identical misses share one
->      upstream request, at most 8 run at once, and redirects are not followed. Sender icons stay on.
+>      upstream request, at most 8 run at once and 64 distinct misses wait or run (more get 503 with
+>      Retry-After), a queued miss gives up after 10 s, a lookup every caller abandoned is cancelled, and
+>      redirects are not followed. Sender icons stay on.
 >      Test: `lib/__tests__/favicon-bounds.test.ts`.
 
 <p>

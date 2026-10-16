@@ -33,6 +33,8 @@ vi.mock('next/headers', () => ({
 }));
 
 const store = new Map<string, Record<string, unknown>>();
+// Fork (Wnt/webmail): the route checks the credential with the mail server (audit bulwark-4).
+vi.mock('@/lib/stalwart/credentials', () => ({ isLiveCredential: async () => true, isLiveSession: async () => true }));
 vi.mock('@/lib/settings-sync', () => ({
   loadUserSettings: async (username: string, serverUrl: string) => store.get(`${username}|${serverUrl}`) ?? null,
   saveUserSettings: async (username: string, serverUrl: string, settings: Record<string, unknown>) => {

@@ -155,6 +155,7 @@ describe("PushNotificationPrompt", () => {
       client: mocks.authState.client,
       relayBaseUrl: "https://mail.example.com/relay",
       accountLabel: "alice@example.com",
+      userInitiated: true,
     });
     expect(screen.queryByText("title")).not.toBeInTheDocument();
   });

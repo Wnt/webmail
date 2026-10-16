@@ -44,7 +44,7 @@ import {
   saveLiteRefreshToken,
 } from '@/lib/auth/lite-tokens';
 import { clearLiteOAuthFlow, readLiteOAuthFlow } from '@/lib/auth/lite-oauth';
-import { clearPushSignedOut, teardownPushOnSignOut } from '@/lib/push-signout';
+import { clearPushSignedOut, rememberPushAccount, teardownPushOnSignOut } from '@/lib/push-signout';
 
 /** Logins restored at once after the one on screen: enough to overlap round trips, few enough not to crowd the server. */
 const RESTORE_CONCURRENCY = 4;
@@ -695,6 +695,11 @@ function bindClientStatusHandlers(
   get: () => AuthState,
   accountId?: string,
 ): void {
+  // Fork (Wnt/webmail), audit bulwark-1: which push account this login is,
+  // for an explicit sign-out while its client is not connected.
+  if (accountId) {
+    try { rememberPushAccount(accountId, client.getAccountId()); } catch { /* not connected */ }
+  }
   client.onConnectionChange((connected) => {
     if (!accountId || get().activeAccountId === accountId) {
       set({ connectionLost: !connected });
@@ -983,6 +988,9 @@ let refreshPromise: Promise<string | null> | null = null;
 
 // Multi-account state: per-account JMAP clients and refresh timers
 const clients = new Map<string, JMAPClient>();
+// Fork (Wnt/webmail), audit bulwark-1: logins whose explicit removal is
+// waiting for its push teardown; they keep their registry entry and slot.
+const removingAccounts = new Set<string>();
 
 /**
  * Account switches can overlap (click B, then C before B lands). Each switch
@@ -2121,10 +2129,12 @@ export const useAuthStore = create<AuthState>()(
         if (userInitiated && !wasDemoMode) {
           const others = accountStore.accounts.filter((a) => a.id !== accountId);
           const next = others.find((a) => clients.has(a.id)) ?? others[0];
+          // No signed-in account stays: the sign-out below drops them all.
+          const everyAccount = !next || !clients.has(next.id);
           await teardownPushOnSignOut({
             clients: state.client ? [state.client] : [],
-            // No signed-in account stays: the sign-out below drops them all.
-            everyAccount: !next || !clients.has(next.id),
+            loginIds: everyAccount ? accountStore.accounts.map((a) => a.id) : (accountId ? [accountId] : []),
+            everyAccount,
           });
         }
 
@@ -2249,34 +2259,41 @@ export const useAuthStore = create<AuthState>()(
         if (accountId === get().activeAccountId) { void get().logout(options); return; }
         const accountStore = useAccountStore.getState();
         const account = accountStore.getAccountById(accountId);
-        if (!account) return;
+        if (!account || removingAccounts.has(accountId)) return;
         const slot = account.cookieSlot ?? 0;
         const wasOAuth = account.authMode === 'oauth';
         const client = clients.get(accountId);
-        // Fork (Wnt/webmail), audit bulwark-1: as in logout(), a removal the
-        // user asked for ends the account's Web Push before its client and
-        // token go. `options` can be a click event when wired to onClick.
+        // `options` can be a click event when wired straight to onClick.
         const userInitiated = options?.endProviderSession !== false;
-        const pushTeardown = userInitiated && client
-          ? teardownPushOnSignOut({ clients: [client], everyAccount: false })
-          : null;
 
         // Marked closing right away, so a renewal in flight cannot bring the
-        // session back; the cleanup itself waits for the push teardown.
+        // session back.
         closingSlots.add(slot);
-        if (pushTeardown) void pushTeardown.then(() => clearSlotCredentials(slot, wasOAuth));
-        else void clearSlotCredentials(slot, wasOAuth);
         clearRefreshTimer(accountId);
-        if (client) {
-          forgetCalendarSubscriptions(client);
-          const disconnect = () => { try { client.disconnect(); } catch { /* noop */ } };
-          if (pushTeardown) void pushTeardown.then(disconnect);
-          else disconnect();
-        }
-        clients.delete(accountId);
-        evictAccount(accountId);
-        accountStore.removeAccount(accountId);
-        clearPluginStorageForAccount(accountId);
+        const finish = () => {
+          // Started first: the cleanup keeps the slot marked closing.
+          void clearSlotCredentials(slot, wasOAuth);
+          if (client) {
+            forgetCalendarSubscriptions(client);
+            try { client.disconnect(); } catch { /* noop */ }
+          }
+          clients.delete(accountId);
+          evictAccount(accountId);
+          accountStore.removeAccount(accountId);
+          clearPluginStorageForAccount(accountId);
+        };
+        if (!userInitiated) { finish(); return; }
+
+        // Fork (Wnt/webmail), audit bulwark-1: as in logout(), a removal the
+        // user asked for ends the account's Web Push before its client and
+        // token go. The account (and so its cookie slot) stays registered
+        // until then, so no new sign-in can take over the slot meanwhile.
+        removingAccounts.add(accountId);
+        void teardownPushOnSignOut({ clients: client ? [client] : [], loginIds: [accountId], everyAccount: false })
+          .finally(() => {
+            removingAccounts.delete(accountId);
+            finish();
+          });
       },
 
       logoutAll: async () => {
@@ -2301,7 +2318,11 @@ export const useAuthStore = create<AuthState>()(
           const signedIn = new Set<IJMAPClient>(clients.values());
           const active = get().client;
           if (active) signedIn.add(active);
-          await teardownPushOnSignOut({ clients: [...signedIn], everyAccount: true });
+          await teardownPushOnSignOut({
+            clients: [...signedIn],
+            loginIds: allAccounts.map((a) => a.id),
+            everyAccount: true,
+          });
         }
 
         // Starts by marking every slot closing, so nothing renews a session
@@ -2342,6 +2363,8 @@ export const useAuthStore = create<AuthState>()(
       switchAccount: async (accountId: string) => {
         const state = get();
         if (state.activeAccountId === accountId) return;
+        // Fork (Wnt/webmail): being removed (see removeAccount).
+        if (removingAccounts.has(accountId)) return;
         const generation = ++switchGeneration;
         const superseded = () => generation !== switchGeneration;
 

@@ -11,11 +11,13 @@
 // also on a deliberate sign-in.
 
 import type { IJMAPClient } from '@/lib/jmap/client-interface';
-import { disableWebPush, forgetWebPushRegistration } from '@/lib/web-push';
+import { disableWebPush, dropRelayRegistration, forgetWebPushRegistration, locallyOptedInAccounts } from '@/lib/web-push';
 import { currentRelayUrl } from '@/lib/push-relay-current';
-import { markPushSignedOut, noteExplicitSignOut } from '@/lib/push-signout-state';
+import {
+  forgetPushAccountOfLogin, markPushSignedOut, noteExplicitSignOut, pushAccountOfLogin,
+} from '@/lib/push-signout-state';
 
-export { clearPushSignedOut } from '@/lib/push-signout-state';
+export { clearPushSignedOut, rememberPushAccount } from '@/lib/push-signout-state';
 
 const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, '');
 const SW_SCOPE = `${BASE_PATH}/`;
@@ -79,30 +81,49 @@ function withTimeout(work: Promise<unknown>, ms: number): Promise<void> {
  * before their clients disconnect and their tokens are revoked: destroying
  * the JMAP PushSubscription needs the still-valid credential.
  *
- * `everyAccount`: nobody stays signed in on this device, so the browser's
- * push subscription goes too, even for accounts without a client here.
+ * `clients`: the connected clients of those logins. `loginIds`: the login
+ * entries, so an account without a connected client is silenced too (its
+ * relay record goes; the JMAP record expires on the server).
+ * `everyAccount`: nobody stays signed in on this device, so every account
+ * with a push opt-in here and the browser's push subscription go too.
  */
 export async function teardownPushOnSignOut(params: {
   clients: IJMAPClient[];
+  loginIds?: string[];
   everyAccount: boolean;
 }): Promise<void> {
   if (typeof window === 'undefined') return;
-  const targets = params.clients
-    .map((client) => ({ client, accountId: accountIdOf(client) }))
-    .filter((t): t is { client: IJMAPClient; accountId: string } => t.accountId !== null);
-  const accountIds = targets.map((t) => t.accountId);
+  const targets = new Map<string, IJMAPClient | null>();
+  for (const client of params.clients) {
+    const accountId = accountIdOf(client);
+    if (accountId) targets.set(accountId, client);
+  }
+  for (const loginId of params.loginIds ?? []) {
+    const accountId = pushAccountOfLogin(loginId);
+    if (accountId && !targets.has(accountId)) targets.set(accountId, null);
+  }
+  if (params.everyAccount) {
+    for (const accountId of locallyOptedInAccounts()) if (!targets.has(accountId)) targets.set(accountId, null);
+  }
+  const accountIds = [...targets.keys()];
 
   // Local and quick, and enough on its own to silence this device.
   for (const accountId of accountIds) noteExplicitSignOut(accountId);
   await markPushSignedOut(accountIds, params.everyAccount);
   await closeNotifications(accountIds, params.everyAccount);
-  if (params.everyAccount) await withTimeout(unsubscribeBrowser(), TEARDOWN_TIMEOUT_MS);
 
+  // One deadline for all of the network work.
   const network = (async () => {
+    if (params.everyAccount) await unsubscribeBrowser();
     // The locked/configured relay, the same one push was enabled against.
     const relayBaseUrl = await currentRelayUrl().catch(() => undefined);
-    for (const { client } of targets) {
-      await disableWebPush({ client, relayBaseUrl }).catch(() => undefined);
+    for (const [accountId, client] of targets) {
+      if (client) await disableWebPush({ client, relayBaseUrl }).catch(() => undefined);
+      else await dropRelayRegistration(accountId, relayBaseUrl).catch(() => undefined);
+    }
+    // The browser subscription is shared: it goes once no other account here uses it.
+    if (!params.everyAccount && !locallyOptedInAccounts().some((id) => !targets.has(id))) {
+      await unsubscribeBrowser();
     }
   })();
   await withTimeout(network, TEARDOWN_TIMEOUT_MS);
@@ -110,4 +131,5 @@ export async function teardownPushOnSignOut(params: {
   // Even when the server side is still running: the opt-in is over, so no
   // later session restore may re-enable push for these accounts.
   for (const accountId of accountIds) forgetWebPushRegistration(accountId);
+  for (const loginId of params.loginIds ?? []) forgetPushAccountOfLogin(loginId);
 }

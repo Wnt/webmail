@@ -763,6 +763,7 @@ describe('explicit sign-out markers', () => {
       open: async () => ({
         put: async (key: string, res: Response) => { store.set(key, await res.text()); },
         delete: async (key: string) => store.delete(key),
+        match: async (key: string) => (store.has(key) ? new Response(store.get(key)) : undefined),
       }),
     });
     return store;
@@ -775,7 +776,7 @@ describe('explicit sign-out markers', () => {
     expect(store.size).toBe(3);
     installFetch({});
 
-    await enableWebPush({ client: makeClient([]), relayBaseUrl: RELAY, inboxOnly: false });
+    await enableWebPush({ client: makeClient([]), relayBaseUrl: RELAY, inboxOnly: false, userInitiated: true });
 
     expect([...store.keys()]).toEqual([`${window.location.origin}/__push-state/signed-out/other-account`]);
   });
@@ -789,9 +790,46 @@ describe('explicit sign-out markers', () => {
     localStorage.setItem(RELAY_KEY, RELAY);
     installFetch({});
 
-    await enableWebPush({ client: makeClient([sub('push-old', THIS_DEVICE)]), relayBaseUrl: RELAY, inboxOnly: false });
+    await enableWebPush({
+      client: makeClient([sub('push-old', THIS_DEVICE)]), relayBaseUrl: RELAY, inboxOnly: false, userInitiated: true,
+    });
 
     expect(store.size).toBe(0);
+  });
+
+  it('a background re-sync never lifts a marker; it undoes itself for a signed-out account', async () => {
+    const store = stubCaches();
+    const { markPushSignedOut } = await import('@/lib/push-signout-state');
+    await markPushSignedOut([ACCOUNT_ID], false);
+    // A record another tab still held, or one a sign-out in flight had not forgotten yet.
+    localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
+    localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
+    installFetch({});
+    const client = makeClient([sub('push-old', THIS_DEVICE)]);
+
+    expect(await resyncWebPush({ client, relayBaseUrl: RELAY, inboxOnly: false })).toBe(false);
+
+    expect(store.size).toBe(1);
+    expect(client.destroyed).toContain('push-old');
+    expect(localStorage.getItem(SUB_KEY)).toBeNull();
+  });
+
+  it('a background re-sync that has to recreate the subscription undoes it too', async () => {
+    stubCaches();
+    const { markPushSignedOut } = await import('@/lib/push-signout-state');
+    await markPushSignedOut([ACCOUNT_ID], false);
+    localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
+    localStorage.setItem(SUB_KEY, 'push-gone');
+    localStorage.setItem(RELAY_KEY, RELAY);
+    installFetch({});
+    const client = makeClient([]);
+
+    expect(await resyncWebPush({ client, relayBaseUrl: RELAY, inboxOnly: false })).toBe(false);
+
+    expect(client.destroyed).toContain('push-new');
+    expect(client.verifyPushSubscription).not.toHaveBeenCalled();
+    expect(localStorage.getItem(SUB_KEY)).toBeNull();
   });
 });
 

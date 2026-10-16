@@ -108,3 +108,53 @@ it('does not follow a redirect away from the provider', async () => {
   const { GET } = await import('@/app/api/favicon/route');
   expect((await GET(req('example.test'))).status).toBe(502);
 });
+
+it('callers that go away cancel their queued misses', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const fetchMock = vi.fn(async () => {
+    await gate;
+    return new Response(png(100), { headers: { 'content-type': 'image/png' } });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const { GET } = await import('@/app/api/favicon/route');
+  const controllers = Array.from({ length: 40 }, () => new AbortController());
+  const pending = controllers.map((c, i) => GET(new NextRequest(`https://webmail.example/api/favicon?domain=d${i}.example`, { signal: c.signal })));
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
+  for (const c of controllers) c.abort();
+  release();
+  await Promise.all(pending);
+  expect(fetchMock).toHaveBeenCalledTimes(8);
+});
+
+it('admits a bounded number of distinct misses and answers the rest 503 at once', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  vi.stubGlobal('fetch', vi.fn(async () => {
+    await gate;
+    return new Response(png(100), { headers: { 'content-type': 'image/png' } });
+  }));
+  const { GET } = await import('@/app/api/favicon/route');
+  const admitted = Array.from({ length: 64 }, (_, i) => GET(req(`d${i}.example`)));
+  const refused = await GET(req('one-too-many.example'));
+  expect(refused.status).toBe(503);
+  expect(refused.headers.get('Retry-After')).toBe('30');
+  // A request for a domain already being fetched still joins that fetch.
+  const joined = GET(req('d1.example'));
+  release();
+  for (const res of await Promise.all([...admitted, joined])) expect(res.status).toBe(200);
+});
+
+it('a queued miss gives up after its wait limit', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
+    const { GET } = await import('@/app/api/favicon/route');
+    for (let i = 0; i < 8; i++) void GET(req(`busy${i}.example`));
+    const queued = GET(req('queued.example'));
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect((await queued).status).toBe(503);
+  } finally {
+    vi.useRealTimers();
+  }
+});

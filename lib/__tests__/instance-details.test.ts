@@ -9,8 +9,10 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/auth/session-secret', () => ({ hasSessionSecret: () => state.secret }));
+// Fork (Wnt/webmail): the gate asks for live credentials (audit bulwark-4).
 vi.mock('@/lib/stalwart/credentials', () => ({
-  getStalwartCredentials: async () => (state.context ? { serverUrl: 'https://mail.example' } : null),
+  getVerifiedStalwartCredentials: async () => (state.context ? { serverUrl: 'https://mail.example' } : null),
+  isLiveSession: async () => true,
 }));
 vi.mock('next/headers', () => ({
   cookies: async () => ({ get: (name: string) => (state.jar.has(name) ? { value: state.jar.get(name) } : undefined) }),

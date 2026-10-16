@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rejectCrossOriginRequest } from '@/lib/security/same-origin';
 import { readFileEnv } from "@/lib/read-file-env";
-import { getStalwartCredentials } from '@/lib/stalwart/credentials';
+import { getVerifiedStalwartCredentials } from '@/lib/stalwart/credentials';
 
 // Host-side proxy backing the "Translate" plugin (manifest apiPostPaths:
 // ["/api/translate"]). The plugin slot iframe POSTs { text, target, source,
@@ -275,7 +275,8 @@ export async function POST(request: NextRequest) {
   // Same session gate as the other authenticated API routes: the plugin's
   // api.http.post carries the session cookies, but nothing else should be
   // able to relay requests through this deployment to the backends. (#903)
-  const creds = await getStalwartCredentials(request);
+  // Fork (Wnt/webmail), audit bulwark-4: a live credential, not a cookie that decrypts.
+  const creds = await getVerifiedStalwartCredentials(request);
   if (!creds) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }

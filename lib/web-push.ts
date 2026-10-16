@@ -8,7 +8,7 @@ import type { IJMAPClient } from '@/lib/jmap/client-interface';
 import type { EmailPushConfig, Mailbox } from '@/lib/jmap/types';
 import { DEFAULT_RELAY_BASE_URL } from '@/lib/push-relays';
 import { IS_LITE } from '@/lib/lite';
-import { clearPushSignedOut, signOutEpoch } from '@/lib/push-signout-state';
+import { clearPushSignedOut, isPushSignedOut, signOutEpoch } from '@/lib/push-signout-state';
 
 // Per-account keys: a single browser may be signed in to multiple accounts,
 // each with its own JMAP PushSubscription and its own relay record. Scoping
@@ -194,6 +194,10 @@ export interface EnableWebPushParams {
   // pushNotifyInboxOnly. Required, not optional: it changes the server-side
   // delivery filter, so every caller must decide explicitly.
   inboxOnly: boolean;
+  // Fork (Wnt/webmail), audit bulwark-1: the user turned push on just now.
+  // Only such an enable lifts an explicit sign-out's marker; a background
+  // re-sync of an account that carries one is undone instead.
+  userInitiated?: boolean;
 }
 
 export interface EnableWebPushResult {
@@ -552,7 +556,13 @@ export async function enableWebPush(
         const refreshed = await refreshSubscriptionExpires(params.client, match, emailPush);
         if (refreshed) {
           if (signOutEpoch(signOutAccountId) !== startedAtEpoch) throw new PushSignedOutError();
-          await clearPushSignedOut(accountId);
+          if (params.userInitiated) {
+            await clearPushSignedOut(accountId);
+          } else if (await isPushSignedOut(signOutAccountId)) {
+            await params.client.destroyPushSubscription(storedServerId).catch(() => undefined);
+            forgetWebPushRegistration(accountId);
+            throw new PushSignedOutError();
+          }
           return { subscriptionId: storedServerId };
         }
       }
@@ -597,17 +607,20 @@ export async function enableWebPush(
   });
 
   const verificationCode = await pollVerificationCode(relayBaseUrl, deviceClientId);
-  if (signOutEpoch(signOutAccountId) !== startedAtEpoch) {
-    // Signed out on purpose while this ran: undo instead of recording it.
+  if (signOutEpoch(signOutAccountId) !== startedAtEpoch
+    || (!params.userInitiated && await isPushSignedOut(signOutAccountId))) {
+    // Signed out on purpose while this ran (or, for a background re-sync,
+    // before it - possibly in another tab): undo instead of recording it.
     await params.client.destroyPushSubscription(serverAssignedId).catch(() => undefined);
+    forgetWebPushRegistration(accountId);
     throw new PushSignedOutError();
   }
   await params.client.verifyPushSubscription(serverAssignedId, verificationCode);
   localStorage.setItem(subIdKey, serverAssignedId);
   localStorage.setItem(relayKey, relayBaseUrl);
-  // Fork (Wnt/webmail): push is on again for this account - lift the marker
-  // an explicit sign-out left for the service worker (lib/push-signout.ts).
-  await clearPushSignedOut(accountId);
+  // Fork (Wnt/webmail): the user turned push on again for this account - lift
+  // the marker an explicit sign-out left for the service worker.
+  if (params.userInitiated) await clearPushSignedOut(accountId);
 
   return { subscriptionId: serverAssignedId };
 }
@@ -617,6 +630,32 @@ export async function enableWebPush(
  * opt-in, so nothing (resyncWebPush on the next session restore) brings push
  * back. Used by an explicit sign-out (lib/push-signout.ts).
  */
+/** Fork (Wnt/webmail): the accounts this browser holds a push opt-in for. */
+export function locallyOptedInAccounts(): string[] {
+  const ids: string[] = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(SUBSCRIPTION_ID_PREFIX)) ids.push(k.slice(SUBSCRIPTION_ID_PREFIX.length));
+    }
+  } catch {
+    // No storage, no opt-ins.
+  }
+  return ids;
+}
+
+/**
+ * Fork (Wnt/webmail): drop the relay's record of this browser for an account
+ * without a connected client, which stops delivery to this device. The JMAP
+ * PushSubscription needs a credential and is left to expire.
+ */
+export async function dropRelayRegistration(accountId: string, relayBaseUrl?: string): Promise<void> {
+  const deviceClientId = localStorage.getItem(deviceClientIdKey(accountId));
+  const relay = (relayBaseUrl ?? DEFAULT_RELAY_BASE_URL).replace(/\/+$/, '');
+  if (!deviceClientId || !relay) return;
+  await fetch(buildRelayUrl(relay, `/api/push/register/${encodeURIComponent(deviceClientId)}`), { method: 'DELETE' });
+}
+
 export function forgetWebPushRegistration(accountId: string): void {
   try {
     localStorage.removeItem(subscriptionIdKey(accountId));
@@ -860,7 +899,7 @@ export interface BulkWebPushResult {
 export async function enableWebPushForAccounts(
   targets: BulkWebPushTarget[],
   // inboxOnly mirrors settings-store's pushNotifyInboxOnly, as for a single account.
-  options: { relayBaseUrl?: string; forceRecreate?: boolean; inboxOnly: boolean },
+  options: { relayBaseUrl?: string; forceRecreate?: boolean; inboxOnly: boolean; userInitiated?: boolean },
 ): Promise<BulkWebPushResult> {
   const result: BulkWebPushResult = { enabled: [], failed: [] };
   let browserRefusal: unknown;
@@ -876,6 +915,7 @@ export async function enableWebPushForAccounts(
         accountLabel: target.accountLabel,
         forceRecreate: options.forceRecreate,
         inboxOnly: options.inboxOnly,
+        userInitiated: options.userInitiated,
       });
       result.enabled.push(target.accountId);
     } catch (error) {

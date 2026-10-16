@@ -193,10 +193,22 @@ async function handlePush(event) {
     if (freshIds.length > 0) query.set("emailId", freshIds[freshIds.length - 1]);
     const qs = query.toString();
     const previewUrl = `${BASE_PATH}/api/push/preview${qs ? `?${qs}` : ""}`;
-    const res = await fetch(previewUrl, {
-      credentials: "include",
-      cache: "no-store",
-    });
+    // Fork patch (Wnt/webmail): pushes for an account run one at a time, so
+    // a stalled lookup must not hold the next ones back for long.
+    const controller = typeof AbortController === "function" && typeof setTimeout === "function"
+      ? new AbortController()
+      : null;
+    const timer = controller ? setTimeout(() => controller.abort(), PREVIEW_TIMEOUT_MS) : null;
+    let res;
+    try {
+      res = await fetch(previewUrl, {
+        credentials: "include",
+        cache: "no-store",
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     if (res.ok) {
       preview = await res.json();
       previewOk = true;
@@ -273,7 +285,7 @@ async function handlePush(event) {
   }
 
   const quiet = await withinQuietWindow(accountId);
-  await self.registration.showNotification(title, {
+  await showMailNotification(accountId, title, {
     body,
     // Shared per-account tag: each new push replaces the account's single
     // notification rather than adding another.
@@ -331,7 +343,7 @@ async function replaceWithSummary(tag, content, accountId, headlineEmailId) {
   const data = current && current.data;
   if (!data || !headlineEmailId || data.headlineEmailId !== headlineEmailId
     || (data.accountId || "") !== (accountId || "")) return;
-  await self.registration.showNotification(content.title, {
+  await showMailNotification(accountId, content.title, {
     body: content.body,
     tag,
     icon: `${BASE_PATH}/api/pwa-icon/192`,
@@ -348,6 +360,27 @@ async function replaceWithSummary(tag, content, accountId, headlineEmailId) {
 // case the page could not do it.
 function signedOutKey(path) {
   return `${self.location.origin}${BASE_PATH}/__push-state/${path}`;
+}
+
+const PREVIEW_TIMEOUT_MS = 10_000;
+
+// Every mail notification goes through here. The marker is read again right
+// before showing, and once more after: a sign-out that landed while this
+// handler was busy (its preview lookup, the show itself) closed what was on
+// screen before this one appeared, so this one closes itself.
+async function showMailNotification(accountId, title, options) {
+  if (await pushSignedOut(accountId)) return false;
+  await self.registration.showNotification(title, options);
+  if (await pushSignedOut(accountId)) {
+    try {
+      const shown = await self.registration.getNotifications({ tag: options.tag });
+      for (const n of shown) n.close();
+    } catch (_) {
+      // Nothing left to close.
+    }
+    return false;
+  }
+  return true;
 }
 
 async function pushSignedOut(accountId) {

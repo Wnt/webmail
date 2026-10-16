@@ -4,6 +4,7 @@ import { cookies } from 'next/headers';
 import { decryptSession } from '@/lib/auth/crypto';
 import { sessionCookieName } from '@/lib/auth/session-cookie';
 import { readStalwartAuthContextFromStore } from '@/lib/stalwart/auth-context';
+import { isLiveCredential, isLiveSession } from '@/lib/stalwart/credentials';
 import { MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
 import { logger } from '@/lib/logger';
 import { getApprovalStatus, requestApproval, type ApprovalEntry } from '@/lib/admin/plugin-approvals';
@@ -19,16 +20,17 @@ import { getApprovalStatus, requestApproval, type ApprovalEntry } from '@/lib/ad
  * pending approval entry (or returns the existing one).
  */
 
+// Fork (Wnt/webmail), audit bulwark-4: only a credential the mail server still accepts names the user.
 async function resolveUsername(): Promise<string | null> {
   const cookieStore = await cookies();
   for (let slot = 0; slot < MAX_ACCOUNT_SLOTS; slot++) {
     const token = cookieStore.get(sessionCookieName(slot))?.value;
     if (token) {
       const sess = decryptSession(token);
-      if (sess?.username) return sess.username;
+      if (sess?.username && await isLiveSession(sess)) return sess.username;
     }
     const ctx = readStalwartAuthContextFromStore(cookieStore, slot);
-    if (ctx?.username) return ctx.username;
+    if (ctx?.username && await isLiveCredential(ctx)) return ctx.username;
   }
   return null;
 }

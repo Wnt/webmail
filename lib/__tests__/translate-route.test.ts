@@ -10,8 +10,9 @@ vi.mock('next/server', () => ({
 }));
 
 const getStalwartCredentials = vi.fn();
+// Fork (Wnt/webmail): the route asks for live credentials (audit bulwark-4).
 vi.mock('@/lib/stalwart/credentials', () => ({
-  getStalwartCredentials: (...args: unknown[]) => getStalwartCredentials(...args),
+  getVerifiedStalwartCredentials: (...args: unknown[]) => getStalwartCredentials(...args),
 }));
 
 function mockRequest(body: unknown): unknown {

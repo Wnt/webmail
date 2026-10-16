@@ -5,6 +5,7 @@ import { logger } from '@/lib/logger';
 import { decryptSession } from '@/lib/auth/crypto';
 import { sessionCookieName } from '@/lib/auth/session-cookie';
 import { readStalwartAuthContextFromStore } from '@/lib/stalwart/auth-context';
+import { isLiveCredential, isLiveSession } from '@/lib/stalwart/credentials';
 import { saveUserSettings, loadUserSettings, deleteUserSettings } from '@/lib/settings-sync';
 import { configManager } from '@/lib/admin/config-manager';
 import { hasSessionSecret } from '@/lib/auth/session-secret';
@@ -82,14 +83,17 @@ async function verifyIdentity(username: string, serverUrl: string): Promise<stri
     const token = cookieStore.get(sessionCookieName(slot))?.value;
     if (token) {
       const session = decryptSession(token);
-      if (session && session.username === username && normalizeUrl(session.serverUrl) === normalizedServerUrl) {
+      // Fork (Wnt/webmail), audit bulwark-4: and the mail server still accepts it.
+      if (session && session.username === username && normalizeUrl(session.serverUrl) === normalizedServerUrl
+        && await isLiveSession(session)) {
         return username;
       }
     }
 
     // Check stalwart auth context cookie (set for all auth modes)
     const ctx = readStalwartAuthContextFromStore(cookieStore, slot);
-    if (ctx && ctx.username === username && normalizeUrl(ctx.serverUrl) === normalizedServerUrl) {
+    if (ctx && ctx.username === username && normalizeUrl(ctx.serverUrl) === normalizedServerUrl
+      && await isLiveCredential(ctx)) {
       return ctx.accountName ?? username;
     }
   }

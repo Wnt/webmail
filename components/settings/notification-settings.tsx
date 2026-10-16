@@ -166,6 +166,7 @@ export function NotificationSettings() {
         accountLabel: username ?? undefined,
         forceRecreate,
         inboxOnly: pushNotifyInboxOnly,
+        userInitiated: true,
       });
       setPushStatus({ kind: 'enabled' });
     } catch (err) {

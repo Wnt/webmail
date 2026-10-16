@@ -6,7 +6,7 @@ import { hasSessionSecret } from '@/lib/auth/session-secret';
 import { sessionCookieName } from '@/lib/auth/session-cookie';
 import { verifyAdminSession } from '@/lib/admin/session';
 import { ADMIN_SESSION_COOKIE } from '@/lib/admin/types';
-import { getStalwartCredentials } from '@/lib/stalwart/credentials';
+import { getVerifiedStalwartCredentials, isLiveSession } from '@/lib/stalwart/credentials';
 
 /**
  * Whether a request may see details that fingerprint this instance: exact
@@ -21,12 +21,14 @@ import { getStalwartCredentials } from '@/lib/stalwart/credentials';
  */
 export async function canSeeInstanceDetails(request: NextRequest): Promise<boolean> {
   if (!hasSessionSecret()) return true;
-  if (await getStalwartCredentials(request)) return true;
+  // Fork (Wnt/webmail), audit bulwark-4: a live credential, not a cookie that decrypts.
+  if (await getVerifiedStalwartCredentials(request)) return true;
 
   const jar = await cookies();
   for (let slot = 0; slot < MAX_ACCOUNT_SLOTS; slot++) {
-    const session = jar.get(sessionCookieName(slot))?.value;
-    if (session && decryptSession(session)) return true;
+    const token = jar.get(sessionCookieName(slot))?.value;
+    const session = token ? decryptSession(token) : null;
+    if (session && await isLiveSession(session)) return true;
   }
   const admin = jar.get(ADMIN_SESSION_COOKIE)?.value;
   return !!admin && verifyAdminSession(admin) !== null;

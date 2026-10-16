@@ -247,6 +247,7 @@ export function PushNotificationPrompt() {
         relayBaseUrl: await currentRelayUrl(),
         accountLabel: username ?? undefined,
         inboxOnly: pushNotifyInboxOnly,
+        userInitiated: true,
       });
       setShowPrompt(false);
     } catch (err) {

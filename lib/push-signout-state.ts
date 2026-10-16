@@ -61,3 +61,44 @@ export function noteExplicitSignOut(accountId: string): void {
 export function signOutEpoch(accountId: string): number {
   return signOutEpochs.get(accountId) ?? 0;
 }
+
+/** True while the account (or the whole device) carries an explicit sign-out marker. */
+export async function isPushSignedOut(accountId: string): Promise<boolean> {
+  const cache = await pushStateCache();
+  if (!cache) return false;
+  try {
+    return !!(await cache.match(stateUrl(DEVICE_MARKER)) || await cache.match(accountMarkerUrl(accountId)));
+  } catch {
+    return false;
+  }
+}
+
+// Which JMAP account (the id pushes carry) a login entry was last connected
+// as. Lets an explicit sign-out silence an account whose client is not
+// connected right now (a failed or pending restore).
+const LOGIN_ACCOUNT_PREFIX = 'bulwark.push.loginAccount.v1.';
+
+export function rememberPushAccount(loginId: string, jmapAccountId: string): void {
+  if (!loginId || !jmapAccountId) return;
+  try {
+    localStorage.setItem(LOGIN_ACCOUNT_PREFIX + loginId, jmapAccountId);
+  } catch {
+    // No storage: only connected clients can be signed out of push.
+  }
+}
+
+export function pushAccountOfLogin(loginId: string): string | null {
+  try {
+    return localStorage.getItem(LOGIN_ACCOUNT_PREFIX + loginId);
+  } catch {
+    return null;
+  }
+}
+
+export function forgetPushAccountOfLogin(loginId: string): void {
+  try {
+    localStorage.removeItem(LOGIN_ACCOUNT_PREFIX + loginId);
+  } catch {
+    // Nothing recorded.
+  }
+}

@@ -21,19 +21,30 @@ const cache = new Map<string, CacheEntry>();
 // while it streams in (and up front when its declared length says so), the
 // positive cache holds at most CACHE_MAX_BYTES in all, identical misses share
 // one upstream request, and only FILL_CONCURRENCY upstream requests run at
-// once (the rest wait their turn).
+// once. At most MAX_PENDING_FILLS distinct misses wait or run; beyond that a
+// miss is answered 503 at once, a queued one gives up after QUEUE_WAIT_MS,
+// and a fill nobody waits for any more (every caller went away) is dropped.
 const FAVICON_MAX_BYTES = 512 * 1024;
 const CACHE_MAX_BYTES = 32 * 1024 * 1024;
 const FILL_CONCURRENCY = 8;
+const MAX_PENDING_FILLS = 64;
+const QUEUE_WAIT_MS = 10_000;
 let cacheBytes = 0;
-const inflight = new Map<string, Promise<FillResult>>();
 let activeFills = 0;
-const fillQueue: Array<() => void> = [];
+
+interface Fill {
+  promise: Promise<FillResult>;
+  waiters: number;
+  controller: AbortController;
+}
+const inflight = new Map<string, Fill>();
+const fillQueue: Array<{ start: () => void }> = [];
 
 type FillResult =
   | { kind: 'icon'; data: ArrayBuffer; contentType: string }
   | { kind: 'missing' }
-  | { kind: 'error' };
+  | { kind: 'error' }
+  | { kind: 'busy' };
 const negativeCache = new Map<string, NegativeCacheEntry>();
 const NEGATIVE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 const NEGATIVE_CACHE_MAX_SIZE = 2000;
@@ -471,16 +482,39 @@ function storeCached(key: string, entry: CacheEntry) {
   cacheBytes += entry.data.byteLength;
 }
 
-async function withFillSlot<T>(run: () => Promise<T>): Promise<T> {
-  if (activeFills >= FILL_CONCURRENCY) {
-    await new Promise<void>((resolve) => fillQueue.push(resolve));
+/** Hand a finished fill's slot to the next queued one, or free it. */
+function releaseFillSlot() {
+  const next = fillQueue.shift();
+  if (next) next.start();
+  else activeFills--;
+}
+
+/** Run `run` in one of the FILL_CONCURRENCY slots; null when the wait ran out or `signal` aborted first. */
+async function withFillSlot<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T | null> {
+  if (activeFills < FILL_CONCURRENCY) {
+    activeFills++;
+  } else {
+    // Admitted means the slot was handed over by releaseFillSlot().
+    const admitted = await new Promise<boolean>((resolve) => {
+      const entry = { start: () => { cleanup(); resolve(true); } };
+      const giveUp = () => {
+        cleanup();
+        const i = fillQueue.indexOf(entry);
+        if (i >= 0) fillQueue.splice(i, 1);
+        resolve(false);
+      };
+      const timer = setTimeout(giveUp, QUEUE_WAIT_MS);
+      const cleanup = () => { clearTimeout(timer); signal.removeEventListener('abort', giveUp); };
+      signal.addEventListener('abort', giveUp);
+      fillQueue.push(entry);
+    });
+    if (!admitted) return null;
   }
-  activeFills++;
   try {
+    if (signal.aborted) return null;
     return await run();
   } finally {
-    activeFills--;
-    fillQueue.shift()?.();
+    releaseFillSlot();
   }
 }
 
@@ -514,21 +548,46 @@ async function readLimited(res: Response, limit: number): Promise<ArrayBuffer | 
   return out.buffer;
 }
 
-/** One upstream lookup for `domain`, shared by every request that misses on it meanwhile. */
-function fillFavicon(domain: string): Promise<FillResult> {
-  const pending = inflight.get(domain);
-  if (pending) return pending;
-  const fill = withFillSlot(() => fetchFavicon(domain)).finally(() => inflight.delete(domain));
-  inflight.set(domain, fill);
-  return fill;
+/**
+ * One upstream lookup for `domain`, shared by every request that misses on it
+ * meanwhile. A caller that goes away stops waiting; once none is left, the
+ * lookup is cancelled.
+ */
+function fillFavicon(domain: string, callerSignal: AbortSignal): Promise<FillResult> {
+  let fill = inflight.get(domain);
+  if (!fill) {
+    if (inflight.size >= MAX_PENDING_FILLS) return Promise.resolve({ kind: 'busy' });
+    const controller = new AbortController();
+    const promise = withFillSlot(controller.signal, () => fetchFavicon(domain, controller.signal))
+      .then((result): FillResult => result ?? { kind: 'busy' })
+      .finally(() => inflight.delete(domain));
+    fill = { promise, waiters: 0, controller };
+    inflight.set(domain, fill);
+  }
+  const shared = fill;
+  shared.waiters++;
+  return new Promise<FillResult>((resolve) => {
+    const leave = () => {
+      callerSignal.removeEventListener('abort', leave);
+      if (--shared.waiters === 0) shared.controller.abort();
+      resolve({ kind: 'error' });
+    };
+    if (callerSignal.aborted) return leave();
+    callerSignal.addEventListener('abort', leave);
+    void shared.promise.then((result) => {
+      callerSignal.removeEventListener('abort', leave);
+      shared.waiters--;
+      resolve(result);
+    });
+  });
 }
 
-async function fetchFavicon(normalizedDomain: string): Promise<FillResult> {
+async function fetchFavicon(normalizedDomain: string, cancel: AbortSignal): Promise<FillResult> {
   try {
     const upstream = await fetch(
       `https://icons.duckduckgo.com/ip3/${encodeURIComponent(normalizedDomain)}.ico`,
       // A fixed provider URL: a redirect elsewhere is not followed.
-      { signal: AbortSignal.timeout(5000), redirect: 'error' }
+      { signal: AbortSignal.any([cancel, AbortSignal.timeout(5000)]), redirect: 'error' }
     );
 
     if (!upstream.ok) {
@@ -594,7 +653,13 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const result = await fillFavicon(normalizedDomain);
+  const result = await fillFavicon(normalizedDomain, request.signal);
+  if (result.kind === 'busy') {
+    return new NextResponse(null, {
+      status: 503,
+      headers: { 'Retry-After': '30', 'Cache-Control': 'no-store' },
+    });
+  }
   if (result.kind === 'icon') {
     return new NextResponse(result.data, {
       headers: faviconHeaders(result.contentType),

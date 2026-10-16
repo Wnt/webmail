@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getStalwartCredentials } from '@/lib/stalwart/credentials';
+import { getVerifiedStalwartCredentials } from '@/lib/stalwart/credentials';
 import { getWopiActions, getWopiClientUrl } from '@/lib/wopi/discovery';
 
 /**
@@ -10,7 +10,8 @@ import { getWopiActions, getWopiClientUrl } from '@/lib/wopi/discovery';
  * client URL itself stays server-side.
  */
 export async function GET(request: NextRequest) {
-  const creds = await getStalwartCredentials(request);
+  // Fork (Wnt/webmail), audit bulwark-4: a live credential, not a cookie that decrypts.
+  const creds = await getVerifiedStalwartCredentials(request);
   if (!creds) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }

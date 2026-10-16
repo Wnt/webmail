@@ -13,7 +13,7 @@ vi.mock('next/headers', () => ({ cookies: async () => ({
   set: (name: string, value: string) => { jar.set(name, value); },
   delete: (name: string) => { jar.delete(name); },
 }) }));
-vi.mock('@/lib/auth/session-secret', () => ({ getSessionSecret: () => 's'.repeat(64) }));
+vi.mock('@/lib/auth/session-secret', () => ({ getSessionSecret: () => 's'.repeat(64), hasSessionSecret: () => true }));
 vi.mock('@/lib/admin/config-manager', () => ({ configManager: {
   ensureLoaded: async () => {},
   get: (key: string, fallback: unknown) => key === 'jmapServerUrl' ? 'https://mail.example.test' : fallback,
@@ -143,5 +143,34 @@ describe('context envelope expiry', () => {
       exp: Date.now() + 365 * 86400_000,
     }, 'session-context'));
     expect(await readStalwartAuthContext(0)).toBeNull();
+  });
+});
+
+describe('other local gates need a live credential too', () => {
+  const instanceDetails = async () => {
+    const { canSeeInstanceDetails } = await import('@/lib/auth/instance-details');
+    return canSeeInstanceDetails(new NextRequest('https://webmail.example/api/health'));
+  };
+
+  it('instance details: a fresh context whose grant was revoked is not a session', async () => {
+    await seal('Bearer revoked-access-token');
+    mailServer(401);
+    expect(await instanceDetails()).toBe(false);
+  });
+
+  it('instance details: a live credential is', async () => {
+    await seal('Bearer live-token');
+    mailServer(200);
+    expect(await instanceDetails()).toBe(true);
+  });
+
+  it('instance details: a remembered session cookie only while its credential is live', async () => {
+    const { encryptSession } = await import('@/lib/auth/crypto');
+    const { sessionCookieName } = await import('@/lib/auth/session-cookie');
+    jar.set(sessionCookieName(0), encryptSession('https://mail.example.test', 'owner@example.test', 'pw'));
+    mailServer(401);
+    expect(await instanceDetails()).toBe(false);
+    mailServer(200);
+    expect(await instanceDetails()).toBe(true);
   });
 });
