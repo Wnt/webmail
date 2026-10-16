@@ -15,11 +15,10 @@ jobs:
 
       - name: Build inputs are pinned
         # Every Dockerfile FROM/syntax image is tag@sha256:<digest> and every
-        # action is a full commit SHA (audit deploy-4); bump them together.
+        # action is a full commit SHA (audit deploy-4); see the script header.
         run: |
-          bad=$( { grep -nE '^[[:space:]]*FROM[[:space:]]|^# *syntax=' $(git ls-files '*Dockerfile*') | grep -vE '@sha256:[0-9a-f]{64}([[:space:]]|$)';
-                   grep -nE '^[[:space:]]*(-[[:space:]]*)?uses:' .github/workflows/*.yml | grep -vE 'uses:[[:space:]]*(\./|[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$))'; } || true)
-          if [ -n "$bad" ]; then echo "::error::Unpinned build inputs (pin images as tag@sha256:<digest>, actions to a full commit SHA):"; echo "$bad"; exit 1; fi
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+          python3 .github/scripts/check_pins.py
 
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
