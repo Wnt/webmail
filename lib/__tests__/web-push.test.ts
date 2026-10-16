@@ -802,7 +802,7 @@ describe('enable racing an explicit sign-out', () => {
     const client = makeClient([]);
     installFetch({});
     // The sign-out lands while the enable waits for the server's verification.
-    client.createPushSubscription.mockImplementation(async () => {
+    vi.mocked(client.createPushSubscription).mockImplementation(async () => {
       noteExplicitSignOut(ACCOUNT_ID);
       return 'push-new';
     });
