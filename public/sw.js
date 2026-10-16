@@ -36,7 +36,11 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", () => {});
 
 self.addEventListener("push", (event) => {
-  event.waitUntil(handlePushInOrder(event));
+  // Fork patch (Wnt/webmail): whether this push showed a notification, and
+  // work that may outlive the handler (a delayed close, see showReplacing),
+  // which keeps the event alive without holding up the account's next push.
+  const work = { pending: [], displayed: false };
+  event.waitUntil(handlePushInOrder(event, work).then(() => Promise.all(work.pending)));
 });
 
 self.addEventListener("notificationclick", (event) => {
@@ -97,21 +101,33 @@ self.addEventListener("message", (event) => {
 // message's notification, so pushes are handled one at a time per account.
 const PUSH_QUEUES = new Map();
 
-function pushAccountKey(event) {
+function readPushPayload(event) {
   try {
-    const payload = event.data ? event.data.json() : null;
-    if (payload && typeof payload.accountId === "string" && payload.accountId) return payload.accountId;
-    const changed = payload && payload.changed && typeof payload.changed === "object" ? payload.changed : null;
-    return (changed && Object.keys(changed)[0]) || "default";
+    return event.data ? event.data.json() : null;
   } catch (_) {
-    return "default";
+    return null;
   }
 }
 
-function handlePushInOrder(event) {
-  const key = pushAccountKey(event);
+/** The account a push is for, as handlePush reads it ("" when it names none). */
+function pushPayloadAccountId(payload) {
+  if (payload && typeof payload.accountId === "string" && payload.accountId) return payload.accountId;
+  const changed = payload && payload.changed && typeof payload.changed === "object" ? payload.changed : null;
+  return (changed && Object.keys(changed)[0]) || "";
+}
+
+function handlePushInOrder(event, work) {
+  const payload = readPushPayload(event);
+  const key = pushPayloadAccountId(payload) || "default";
   const previous = PUSH_QUEUES.get(key) || Promise.resolve();
-  const run = previous.then(() => handlePush(event));
+  const run = previous.then(async () => {
+    try {
+      await handlePush(event, work);
+    } finally {
+      // Fork patch (Wnt/webmail): see acknowledgeUnshownPush.
+      if (!work.displayed) await acknowledgeUnshownPush(payload, work);
+    }
+  });
   const settled = run.catch(() => undefined);
   PUSH_QUEUES.set(key, settled);
   settled.then(() => {
@@ -120,7 +136,7 @@ function handlePushInOrder(event) {
   return run;
 }
 
-async function handlePush(event) {
+async function handlePush(event, work) {
   let payload = null;
   try {
     payload = event.data ? event.data.json() : null;
@@ -174,9 +190,7 @@ async function handlePush(event) {
       : null;
     // The summary is for the newest of its ids (the gateway summarises the
     // headline message); it only replaces a notification that shows that one.
-    if (content) {
-      await replaceWithSummary("bulwark-mail:" + (accountId || "default"), content, accountId, emailIds[emailIds.length - 1]);
-    }
+    if (content) await replaceWithSummary("bulwark-mail:" + (accountId || "default"), content, accountId, emailIds[emailIds.length - 1], work);
     return;
   }
 
@@ -307,7 +321,7 @@ async function handlePush(event) {
     // without a sound.
     renotify: !quiet,
     silent: quiet,
-  });
+  }, work);
 
   const announced = freshIds.length > 0 ? freshIds : (email ? [email.id] : []);
   if (announced.length > 0) {
@@ -340,7 +354,7 @@ function buildPayloadEmailContent(email) {
 // dismissed or opened in the meantime is not brought back, and one that now
 // headlines another message (a newer mail arrived, or the summary is a late
 // or replayed push) keeps its text: the summary is dropped (audit bulwark-5).
-async function replaceWithSummary(tag, content, accountId, headlineEmailId) {
+async function replaceWithSummary(tag, content, accountId, headlineEmailId, work) {
   let existing = [];
   try {
     existing = await self.registration.getNotifications({ tag });
@@ -359,7 +373,7 @@ async function replaceWithSummary(tag, content, accountId, headlineEmailId) {
     data,
     renotify: false,
     silent: true,
-  });
+  }, work);
 }
 
 // Fork patch (Wnt/webmail), audit bulwark-1: markers the page writes on an
@@ -456,7 +470,7 @@ async function handlePushSignOut(event) {
 // before showing, and once more after: a sign-out that landed while this
 // handler was busy (its preview lookup, the show itself) closed what was on
 // screen before this one appeared, so this one closes itself.
-async function showMailNotification(accountId, title, options) {
+async function showMailNotification(accountId, title, options, work) {
   const signedOut = await pushSignedOut(accountId);
   if (signedOut === true) return false;
   if (signedOut === null) {
@@ -467,11 +481,23 @@ async function showMailNotification(accountId, title, options) {
   // Checked with no await before the show: a sign-out message that arrived
   // while the marker was being read stops this display outright.
   if (SIGNOUTS_IN_PROGRESS.has("*") || SIGNOUTS_IN_PROGRESS.has(accountId || "default")) return false;
-  await self.registration.showNotification(title, options);
+  await showReplacing(title, options, work);
   if (await pushSignedOut(accountId) === true) {
     try {
       const shown = await self.registration.getNotifications({ tag: options.tag });
       for (const n of shown) n.close();
+      // WebKit refuses to close it this young; try again once it may.
+      if (work && typeof setTimeout === "function" && await usesApplePush()) {
+        work.pending.push(delay(MIN_CLOSE_AGE_MS).then(() => {
+          for (const n of shown) {
+            try {
+              n.close();
+            } catch (_) {
+              // Already gone.
+            }
+          }
+        }));
+      }
     } catch (_) {
       // Nothing left to close.
     }
@@ -479,6 +505,168 @@ async function showMailNotification(accountId, title, options) {
   }
   return true;
 }
+
+// Fork patch (Wnt/webmail): how WebKit (Safari, and web apps on the iOS Home
+// Screen) handles web push differs from Chromium and Firefox in three ways
+// that matter here (WebKit source, 2026):
+//  - `tag` never replaces: every notification gets its own random identifier
+//    (bugs.webkit.org 258922), so a same-tag notification is a second one.
+//  - close() works, but not on a notification younger than 30 s
+//    (s_persistentNotificationMinimumLifetime, WebKit 313831@main).
+//  - every push event must show a notification within 30 s; after three that
+//    do not, the origin's push subscriptions are removed, and the count never
+//    resets while the subscription lives (maxSilentPushCount, PushService.mm).
+//    Showing one and closing it at once does not work (the 30 s rule).
+// So: after showing a notification, close the older ones with its tag (late
+// enough), and on Apple's push service make sure each push shows something.
+
+/** WebKit refuses close() on a persistent notification younger than 30 s. */
+const MIN_CLOSE_AGE_MS = 31_000;
+
+function newShownId() {
+  try {
+    if (self.crypto && typeof self.crypto.randomUUID === "function") return self.crypto.randomUUID();
+  } catch (_) {
+    // Fall back below.
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Show a notification that replaces whatever has its tag, on every browser:
+ * it carries a one-off id, and right after it is shown every other
+ * notification with the tag is closed. Where the browser replaced it already
+ * (Chromium, Firefox) only the new one is found and nothing is closed. A
+ * close that WebKit would refuse (the older one is under 30 s old) waits in
+ * `work`, which the push event keeps alive without holding up the next push.
+ */
+async function showReplacing(title, options, work) {
+  const shownId = newShownId();
+  options = { ...options, data: { ...(options.data || {}), shownId, shownAt: Date.now() } };
+  await self.registration.showNotification(title, options);
+  if (work) work.displayed = true;
+  await closeOthersWithTag(options.tag, shownId, work);
+}
+
+async function closeOthersWithTag(tag, shownId, work) {
+  if (!tag) return;
+  let shown;
+  try {
+    shown = await self.registration.getNotifications({ tag });
+  } catch (_) {
+    return;
+  }
+  // Only when the new notification can be told apart (its data came back):
+  // otherwise this could close the very one just shown.
+  if (!shown.some((n) => n.data && n.data.shownId === shownId)) return;
+  for (const n of shown) {
+    if (n.data && n.data.shownId === shownId) continue;
+    const close = () => {
+      try {
+        n.close();
+      } catch (_) {
+        // Already gone.
+      }
+    };
+    const at = n.data ? Number(n.data.shownAt) : NaN;
+    const wait = Number.isFinite(at) ? at + MIN_CLOSE_AGE_MS - Date.now() : NaN;
+    if (!(wait > 0)) close();
+    // A young one (or one of unknown age, which may be refused now) is
+    // closed again once it is old enough.
+    if (typeof setTimeout === "function" && work && (wait > 0 || Number.isNaN(wait))) {
+      work.pending.push(delay(Math.min(wait > 0 ? wait : MIN_CLOSE_AGE_MS, MIN_CLOSE_AGE_MS)).then(close));
+    }
+  }
+}
+
+let applePushPromise = null;
+
+/** True when this registration's push subscription is Apple's (WebKit). */
+function usesApplePush() {
+  if (!applePushPromise) {
+    const lookup = (async () => {
+      try {
+        const subscription = await self.registration.pushManager.getSubscription();
+        const host = subscription && subscription.endpoint ? new URL(subscription.endpoint).hostname : "";
+        return host === "push.apple.com" || host.endsWith(".push.apple.com");
+      } catch (_) {
+        return false;
+      }
+    })();
+    applePushPromise = lookup;
+    // Look again next time unless it was Apple's: the subscription can change.
+    lookup.then((apple) => { if (!apple && applePushPromise === lookup) applePushPromise = null; });
+  }
+  return applePushPromise;
+}
+
+/**
+ * A push this worker chose not to announce (a redelivery, mail read in the
+ * meantime, a summary whose notification was dismissed or now shows a newer
+ * message, an account signed out on purpose). Elsewhere it stays silent; on
+ * Apple's push service it must still show one, so it shows, without sound:
+ * the account's notification again if one is on screen (still one in the
+ * end), else the mail this push is about (its summary when it has one), else
+ * a plain "New mail". Nothing private for an account signed out on purpose.
+ */
+async function acknowledgeUnshownPush(payload, work) {
+  if (!(await usesApplePush())) return;
+  const accountId = pushPayloadAccountId(payload);
+  const tag = "bulwark-mail:" + (accountId || "default");
+  const quiet = {
+    icon: `${BASE_PATH}/api/pwa-icon/192`,
+    badge: `${BASE_PATH}/api/pwa-icon/192`,
+    renotify: false,
+    silent: true,
+  };
+  try {
+    const signedOut = await pushSignedOut(accountId);
+    // Signed out of every account: the subscription has just been dropped
+    // (pushSignedOut), so there is nothing left to keep.
+    if (signedOut === true && !(await self.registration.pushManager.getSubscription())) return;
+    if (signedOut !== false
+      || SIGNOUTS_IN_PROGRESS.has("*") || SIGNOUTS_IN_PROGRESS.has(accountId || "default")) {
+      await showReplacing("New mail", { ...quiet, tag: PUSH_ACK_TAG, body: "", data: { kind: "push-ack" } }, work);
+      return;
+    }
+    let current = null;
+    try {
+      const existing = await self.registration.getNotifications({ tag });
+      current = existing && existing.length > 0 ? existing[existing.length - 1] : null;
+    } catch (_) {
+      current = null;
+    }
+    if (current) {
+      await showMailNotification(accountId, current.title, { ...quiet, tag, body: current.body || "", data: current.data }, work);
+      if (work.displayed) return;
+    }
+    const emailIds = payload && Array.isArray(payload.emailIds)
+      ? payload.emailIds.filter((id) => typeof id === "string" && id)
+      : [];
+    const content = buildPayloadEmailContent(payload && payload.email);
+    const emailId = emailIds.length > 0 ? emailIds[emailIds.length - 1] : "";
+    const data = emailId
+      ? { kind: "email", emailId, accountId, headlineEmailId: emailId }
+      : { kind: "mail-list", accountId };
+    await showMailNotification(
+      accountId,
+      content ? content.title : "New mail",
+      { ...quiet, tag, body: content ? content.body : "", data },
+      work,
+    );
+    if (!work.displayed) {
+      await showReplacing("New mail", { ...quiet, tag: PUSH_ACK_TAG, body: "", data: { kind: "push-ack" } }, work);
+    }
+  } catch (_) {
+    // The browser refused the notification; nothing more can be done.
+  }
+}
+
+const PUSH_ACK_TAG = "bulwark-push-ack";
 
 async function pushSignedOut(accountId) {
   try {

@@ -151,10 +151,16 @@ describe('service worker AI summary replacement', () => {
     expect(shown[1].options).toMatchObject({
       body: 'Lunch?\nAlice asks if you are free for lunch at noon.',
       tag: 'bulwark-mail:acc1',
-      data: shown[0].options.data,
       renotify: false,
       silent: true,
     });
+    // the same click data; only the per-display id and time are new (see showReplacing)
+    const clickData = (n: { options: Record<string, unknown> }) => {
+      const { shownId: _id, shownAt: _at, ...rest } = n.options.data as Record<string, unknown>;
+      return rest;
+    };
+    expect(clickData(shown[1])).toEqual(clickData(shown[0]));
+    expect((shown[1].options.data as { shownId: string }).shownId).not.toBe((shown[0].options.data as { shownId: string }).shownId);
     // the replacement needs no preview lookup
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -167,7 +173,10 @@ describe('service worker AI summary replacement', () => {
     await push(payload({ email: summary }));
     await push(payload({ email: withSummary, renotify: false }));
     expect(shown).toHaveLength(2);
-    expect(shown[1].options.data).toEqual({ kind: 'email', emailId: 'e1', threadId: 't1', slot: 2, accountId: 'acc1', headlineEmailId: 'e1' });
+    expect(shown[1].options.data).toEqual({
+      kind: 'email', emailId: 'e1', threadId: 't1', slot: 2, accountId: 'acc1', headlineEmailId: 'e1',
+      shownId: expect.any(String), shownAt: expect.any(Number),
+    });
     expect(shown[1].options.silent).toBe(true);
   });
 
