@@ -74,6 +74,51 @@ interface AccountState {
   hasAccount: (username: string, serverUrl: string) => boolean;
 }
 
+// Fork (Wnt/webmail), audit bulwark-1 review: cookie slots whose sign-out is
+// still clearing their cookies. A new sign-in must not land in one: the old
+// DELETE answers would clear the new session. Shared by every tab
+// (localStorage) and bounded in time, so a reservation whose page went away
+// before releasing it expires on its own.
+const SLOT_RESERVATIONS_KEY = 'bulwark.cookieSlotReservations.v1';
+const SLOT_RESERVATION_MS = 2 * 60 * 1000;
+
+function readReservations(): Record<string, number> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SLOT_RESERVATIONS_KEY) || '{}') as Record<string, unknown>;
+    const now = Date.now();
+    const live: Record<string, number> = {};
+    for (const [slot, until] of Object.entries(parsed)) {
+      if (typeof until === 'number' && until > now) live[slot] = until;
+    }
+    return live;
+  } catch {
+    return {};
+  }
+}
+
+function writeReservations(reservations: Record<string, number>): void {
+  try {
+    if (Object.keys(reservations).length === 0) localStorage.removeItem(SLOT_RESERVATIONS_KEY);
+    else localStorage.setItem(SLOT_RESERVATIONS_KEY, JSON.stringify(reservations));
+  } catch {
+    // No storage: no reservation.
+  }
+}
+
+export function reserveCookieSlot(slot: number): void {
+  writeReservations({ ...readReservations(), [slot]: Date.now() + SLOT_RESERVATION_MS });
+}
+
+export function releaseCookieSlot(slot: number): void {
+  const reservations = readReservations();
+  delete reservations[slot];
+  writeReservations(reservations);
+}
+
+export function reservedCookieSlots(): number[] {
+  return Object.keys(readReservations()).map(Number);
+}
+
 export const useAccountStore = create<AccountState>()(
   persist(
     (set, get) => ({
@@ -223,6 +268,8 @@ export const useAccountStore = create<AccountState>()(
 
       getNextCookieSlot: () => {
         const used = new Set(get().accounts.map((a) => a.cookieSlot));
+        // Fork (Wnt/webmail): nor a slot whose sign-out cleanup may still clear its cookies.
+        for (const slot of reservedCookieSlots()) used.add(slot);
         let i = 0;
         while (used.has(i)) i++;
         return i;

@@ -286,7 +286,8 @@ describe('accounts this browser cannot map (upgraded from before the mapping)', 
       [`DELETE ${RELAY}/api/push/register/device2`]: () => ok(),
     }, log);
     useAuthStore.getState().removeAccount(other.id);
-    await vi.waitFor(() => expect(useAccountStore.getState().accounts.map((a) => a.id)).toEqual([alice.id]));
+    expect(useAccountStore.getState().accounts.map((a) => a.id)).toEqual([alice.id]);
+    await vi.waitFor(() => expect(log).toContain('DELETE /api/auth/token?slot=1'));
     expect(caches.has(`${window.location.origin}/__push-state/signed-out/acc2`)).toBe(true);
     expect(localStorage.getItem('bulwark.push.subscriptionId.v1.acc2')).toBeNull();
     expect(log).toContain(`DELETE ${RELAY}/api/push/register/device2`);

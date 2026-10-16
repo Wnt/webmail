@@ -51,6 +51,7 @@ const B = acct('b@y.test', 'mail.y.test', 1);
 
 beforeEach(async () => {
   events.length = 0;
+  localStorage.removeItem('bulwark.cookieSlotReservations.v1');
   teardown.mockReset();
   vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input);
@@ -83,18 +84,18 @@ it('an explicit removal tears down the account push first, then its client and c
   expect(clients.map((c: { getAccountId: () => string }) => c.getAccountId())).toEqual(['jmap-b@y.test']);
   expect(loginIds).toEqual([B.id]);
   expect(everyAccount).toBe(false);
-  // Nothing is revoked or disconnected while the teardown still needs them,
-  // and the account keeps its cookie slot: a new sign-in cannot take it over.
+  // Nothing is revoked or disconnected while the teardown still needs them.
+  // The account leaves the list at once, but its cookie slot stays reserved:
+  // a new sign-in cannot take it over.
   await new Promise((r) => setTimeout(r, 10));
   expect(events).toEqual(['teardown']);
-  expect(useAccountStore.getState().getAccountById(B.id)).toBeDefined();
+  expect(useAccountStore.getState().getAccountById(B.id)).toBeUndefined();
   expect(useAccountStore.getState().getNextCookieSlot()).not.toBe(B.cookieSlot);
-  await useAuthStore.getState().switchAccount(B.id);
-  expect(useAuthStore.getState().activeAccountId).toBe(A.id);
   finish();
   await vi.waitFor(() => expect(events).toContain('DELETE /api/auth/session?slot=1'));
   expect(events.indexOf('disconnect b@y.test')).toBeGreaterThan(events.indexOf('teardown done'));
-  await vi.waitFor(() => expect(useAccountStore.getState().accounts.map((a) => a.id)).toEqual([A.id]));
+  expect(useAccountStore.getState().accounts.map((a) => a.id)).toEqual([A.id]);
+  await vi.waitFor(() => expect(useAccountStore.getState().getNextCookieSlot()).toBe(B.cookieSlot));
 });
 
 it('a removal the user did not ask for leaves push alone', async () => {
@@ -133,8 +134,8 @@ it('the cookie slot stays reserved until the credential DELETEs have answered', 
   }));
   useAuthStore.getState().removeAccount(B.id);
   await vi.waitFor(() => expect(events).toContain('DELETE held'));
-  expect(useAccountStore.getState().getAccountById(B.id)).toBeDefined();
   expect(useAccountStore.getState().getNextCookieSlot()).not.toBe(B.cookieSlot);
+  // A new sign-in now (this login again, too) gets another slot.
   answer();
-  await vi.waitFor(() => expect(useAccountStore.getState().getAccountById(B.id)).toBeUndefined());
+  await vi.waitFor(() => expect(useAccountStore.getState().getNextCookieSlot()).toBe(B.cookieSlot));
 });

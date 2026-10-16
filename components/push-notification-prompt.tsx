@@ -16,6 +16,7 @@ import {
 } from "@/lib/web-push";
 import { resolveActiveRelayUrl } from "@/lib/push-relays";
 import { currentRelayUrl } from "@/lib/push-relay-current";
+import { signOutGeneration } from "@/lib/push-signout-state";
 import {
   isPWAInstallPromptVisible,
   PWA_INSTALL_PROMPT_VISIBILITY_EVENT,
@@ -241,9 +242,12 @@ export function PushNotificationPrompt() {
     if (!client) return;
     setIsEnabling(true);
     setError(null);
+    // Fork (Wnt/webmail): an explicit sign-out after this click wins (lib/push-signout-state.ts).
+    const signOutGenerationAtStart = signOutGeneration(client.getAccountId());
     try {
       await enableWebPush({
         client,
+        signOutGenerationAtStart,
         relayBaseUrl: await currentRelayUrl(),
         accountLabel: username ?? undefined,
         inboxOnly: pushNotifyInboxOnly,

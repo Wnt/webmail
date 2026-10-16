@@ -30,6 +30,7 @@ import {
   resolvePushRelayOptions,
 } from '@/lib/push-relays';
 import { currentRelayUrl } from '@/lib/push-relay-current';
+import { signOutGeneration } from '@/lib/push-signout-state';
 
 type PushStatus =
   | { kind: 'idle' }
@@ -159,9 +160,12 @@ export function NotificationSettings() {
       return;
     }
     setPushStatus({ kind: 'busy' });
+    // Fork (Wnt/webmail): an explicit sign-out after this click wins (lib/push-signout-state.ts).
+    const signOutGenerationAtStart = signOutGeneration(client.getAccountId());
     try {
       await enableWebPush({
         client,
+        signOutGenerationAtStart,
         relayBaseUrl: await currentRelayUrl(),
         accountLabel: username ?? undefined,
         forceRecreate,

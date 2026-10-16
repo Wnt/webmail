@@ -156,6 +156,7 @@ describe("PushNotificationPrompt", () => {
       relayBaseUrl: "https://mail.example.com/relay",
       accountLabel: "alice@example.com",
       userInitiated: true,
+      signOutGenerationAtStart: expect.any(String),
     });
     expect(screen.queryByText("title")).not.toBeInTheDocument();
   });

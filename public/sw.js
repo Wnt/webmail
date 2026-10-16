@@ -371,10 +371,11 @@ function signedOutKey(path) {
 }
 
 const PREVIEW_TIMEOUT_MS = 10_000;
-const SIGNOUT_DRAIN_MS = 5_000;
+const SIGNOUT_DRAIN_MS = 30_000;
 
-// Accounts ("*": all) whose explicit sign-out the worker is settling right now.
-const SIGNOUTS_IN_PROGRESS = new Set();
+// Accounts ("*": all) whose explicit sign-out the worker is settling right
+// now, with how many such sign-outs are under way.
+const SIGNOUTS_IN_PROGRESS = new Map();
 
 // Preview lookups in flight, per account, so a sign-out can cut them short.
 const PREVIEW_LOOKUPS = new Map();
@@ -394,8 +395,8 @@ function previewLookups(accountId) {
 // being handled for those accounts: lookups are aborted, so each handler
 // reaches its marker check now; the account queues are drained, so a display
 // already handed to the browser has finished; then everything still on
-// screen for them is closed. The page waits for the answer before it goes on
-// with the sign-out.
+// screen for them is closed. The answer says whether that drain finished;
+// the page waits for it (bounded) before it goes on with the sign-out.
 async function handlePushSignOut(event) {
   const data = event.data || {};
   const port = event.ports && event.ports[0];
@@ -405,29 +406,46 @@ async function handlePushSignOut(event) {
     : [];
   const affected = (key) => everyAccount || accountIds.includes(key);
   const keys = everyAccount ? ["*"] : accountIds;
-  for (const key of keys) SIGNOUTS_IN_PROGRESS.add(key);
-  try {
-    for (const [key, lookups] of PREVIEW_LOOKUPS) {
-      if (affected(key)) for (const controller of lookups) controller.abort();
+  for (const key of keys) SIGNOUTS_IN_PROGRESS.set(key, (SIGNOUTS_IN_PROGRESS.get(key) || 0) + 1);
+  const closeShown = async () => {
+    try {
+      for (const n of await self.registration.getNotifications()) {
+        const tag = n.tag || "";
+        if (tag.startsWith("bulwark-mail:") && affected(tag.slice("bulwark-mail:".length))) n.close();
+      }
+    } catch (_) {
+      // Nothing to close.
     }
-    const pending = [...PUSH_QUEUES].filter(([key]) => affected(key)).map(([, queue]) => queue);
-    await Promise.race([
-      Promise.all(pending),
-      new Promise((resolve) => setTimeout(resolve, SIGNOUT_DRAIN_MS)),
-    ]);
-    const shown = await self.registration.getNotifications();
-    for (const n of shown) {
-      const tag = n.tag || "";
-      if (tag.startsWith("bulwark-mail:") && affected(tag.slice("bulwark-mail:".length))) n.close();
-    }
-  } catch (_) {
-    // Answer anyway; the markers already silence these accounts.
-  } finally {
+  };
+  const release = () => {
     // From here on the persisted markers (written before this message) are
     // what every later push reads.
-    for (const key of keys) SIGNOUTS_IN_PROGRESS.delete(key);
+    for (const key of keys) {
+      const left = (SIGNOUTS_IN_PROGRESS.get(key) || 1) - 1;
+      if (left > 0) SIGNOUTS_IN_PROGRESS.set(key, left);
+      else SIGNOUTS_IN_PROGRESS.delete(key);
+    }
+  };
+  for (const [key, lookups] of PREVIEW_LOOKUPS) {
+    if (affected(key)) for (const controller of lookups) controller.abort();
   }
-  if (port) port.postMessage({ done: true });
+  const pending = [...PUSH_QUEUES].filter(([key]) => affected(key)).map(([, queue]) => queue);
+  const drain = Promise.all(pending).then(() => true, () => true);
+  // Answer "done" only once the drain has really finished: a display the
+  // browser accepted but has not completed is not settled. Should it take
+  // longer than the deadline, answer "not done" and keep suppressing and
+  // closing until it has.
+  const drained = typeof setTimeout === "function"
+    ? await Promise.race([drain, new Promise((resolve) => setTimeout(() => resolve(false), SIGNOUT_DRAIN_MS))])
+    : await drain;
+  await closeShown();
+  if (port) port.postMessage({ done: drained === true });
+  if (!drained) {
+    // Still part of this message's lifetime (waitUntil above).
+    await drain;
+    await closeShown();
+  }
+  release();
 }
 
 // Every mail notification goes through here. The marker is read again right

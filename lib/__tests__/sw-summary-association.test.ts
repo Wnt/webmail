@@ -244,6 +244,28 @@ describe('push security boundaries', () => {
     await pending;
     expect(shown).toHaveLength(0);
   });
+  it('a display the browser has not completed by the deadline is reported as not settled, then closed', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { startPush, active, marker, whenShown, signOut } = loadWorker({ ok: false, status: 401 }, { timers: true });
+      let releaseShow!: () => void;
+      let showing!: () => void;
+      const showStarted = new Promise<void>((resolve) => { showing = resolve; });
+      whenShown(() => { showing(); return new Promise<void>((resolve) => { releaseShow = resolve; }); });
+      const pending = startPush(payload({ email: { from: 'Doctor', subject: 'Private', preview: 'Confidential' } }));
+      await showStarted;
+      marker('signed-out/acc1');
+      const answer = signOut(['acc1']);
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(await answer).toEqual({ done: false });
+      releaseShow();
+      await pending;
+      await vi.advanceTimersByTimeAsync(1);
+      expect(active.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('the sign-out cuts a pending preview lookup short instead of waiting for it', async () => {
     const { startPush, shown, marker, signOut, fetchMock } = loadWorker({ ok: false, status: 401 }, { timers: true });
     fetchMock.mockImplementationOnce(async (_url?: unknown, init?: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {

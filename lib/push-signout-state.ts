@@ -1,16 +1,30 @@
-// Fork (Wnt/webmail), audit bulwark-1: the explicit sign-out markers the
-// service worker reads (public/sw.js, same cache and keys). See
-// lib/push-signout.ts for when they are set.
+// Fork (Wnt/webmail), audit bulwark-1: the explicit sign-out state shared by
+// the page, every tab and the service worker. See lib/push-signout.ts for
+// when a sign-out happens.
 //
-// Protocol: a sign-out writes its markers, and a push enable commits (records
-// its opt-in, lifts markers), only inside withPushLock - a Web Lock shared by
-// every tab. Each marker carries a fresh id; an enable notes the ids present
-// when it starts and refuses to commit if any other id has appeared since,
-// i.e. if the account was signed out (in any tab) while it ran.
+// Protocol:
+// - Sign-out generation (localStorage, synchronous, shared by every tab):
+//   a per-account counter and a device-wide one. An explicit sign-out bumps
+//   them synchronously before anything else. They only ever grow.
+// - Markers (Cache Storage, read by public/sw.js): written by a sign-out,
+//   lifted only by a user-initiated enable (account and device marker) or a
+//   deliberate sign-in (device marker).
+// - Every marker mutation and every push enable commit runs inside
+//   withPushLock, a Web Lock shared by every tab. An enable notes the
+//   generation when the user (or a background re-sync) starts it and, after
+//   all its network work, commits under the lock only if the generation is
+//   unchanged. Otherwise the account was signed out meanwhile, in any tab,
+//   and the enable undoes what it created instead.
+// - Commit generation (localStorage): bumped by each successful commit, so a
+//   superseded enable's rollback never removes a newer enable's record.
 
 const PUSH_STATE_CACHE = 'bulwark-push-state-v1';
 const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, '');
 const DEVICE_MARKER = 'signed-out-all';
+const SIGNOUT_GEN_PREFIX = 'bulwark.push.signOutGen.v1.';
+const DEVICE_SIGNOUT_GEN = `${SIGNOUT_GEN_PREFIX}*`;
+const COMMIT_GEN_PREFIX = 'bulwark.push.commitGen.v1.';
+const LOCK_NAME = 'bulwark-push-signout';
 
 function stateUrl(path: string): string {
   return `${window.location.origin}${BASE_PATH}/__push-state/${path}`;
@@ -20,9 +34,7 @@ function accountMarkerUrl(accountId: string): string {
   return stateUrl(`signed-out/${encodeURIComponent(accountId)}`);
 }
 
-const LOCK_NAME = 'bulwark-push-signout';
-
-/** Run `fn` holding the cross-tab push sign-out lock (directly where Web Locks are unavailable). */
+/** Run `fn` holding the cross-tab push lock (directly where Web Locks are unavailable). Not reentrant. */
 export async function withPushLock<T>(fn: () => Promise<T>): Promise<T> {
   const locks = typeof navigator !== 'undefined'
     ? (navigator as Navigator & { locks?: LockManager }).locks
@@ -31,10 +43,59 @@ export async function withPushLock<T>(fn: () => Promise<T>): Promise<T> {
   return locks.request(LOCK_NAME, fn) as Promise<T>;
 }
 
-function newMarkerId(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+function readCounter(key: string): number {
+  try {
+    const n = Number(localStorage.getItem(key));
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function bumpCounter(key: string): void {
+  try {
+    localStorage.setItem(key, String(readCounter(key) + 1));
+  } catch {
+    // No storage: no cross-tab protection, the markers still apply.
+  }
+}
+
+/** Synchronously record that these accounts (and with `everyAccount`, the device) are being signed out. */
+export function bumpSignOutGeneration(accountIds: string[], everyAccount: boolean): void {
+  for (const accountId of accountIds) bumpCounter(SIGNOUT_GEN_PREFIX + accountId);
+  if (everyAccount) bumpCounter(DEVICE_SIGNOUT_GEN);
+}
+
+/** The account's sign-out generation now; changes whenever it (or the device) is signed out. */
+export function signOutGeneration(accountId: string): string {
+  return `${readCounter(DEVICE_SIGNOUT_GEN)}:${readCounter(SIGNOUT_GEN_PREFIX + accountId)}`;
+}
+
+/** Bumped (under the lock) by every committed enable of the account. */
+export function commitGeneration(accountId: string): number {
+  return readCounter(COMMIT_GEN_PREFIX + accountId);
+}
+
+export function bumpCommitGeneration(accountId: string): void {
+  bumpCounter(COMMIT_GEN_PREFIX + accountId);
+}
+
+// Sign-outs this tab is still tearing down, per account: an enable started
+// meanwhile waits for them, so the two never work on one account at once.
+const teardownsInProgress = new Map<string, Promise<unknown>>();
+
+export function trackTeardown(accountIds: string[], work: Promise<unknown>): void {
+  const settled = work.catch(() => undefined);
+  for (const accountId of accountIds) {
+    teardownsInProgress.set(accountId, settled);
+    void settled.then(() => {
+      if (teardownsInProgress.get(accountId) === settled) teardownsInProgress.delete(accountId);
+    });
+  }
+}
+
+export async function teardownSettled(accountId: string): Promise<void> {
+  await teardownsInProgress.get(accountId);
 }
 
 async function pushStateCache(): Promise<Cache | null> {
@@ -46,11 +107,14 @@ async function pushStateCache(): Promise<Cache | null> {
   }
 }
 
-/** Mark the accounts (and with `everyAccount`, the whole device) as signed out for the service worker. */
-export async function markPushSignedOut(accountIds: string[], everyAccount: boolean): Promise<void> {
+/**
+ * Mark the accounts (and with `everyAccount`, the whole device) as signed out
+ * for the service worker. Call inside withPushLock.
+ */
+export async function markPushSignedOutLocked(accountIds: string[], everyAccount: boolean): Promise<void> {
   const cache = await pushStateCache();
   if (!cache) return;
-  const marker = () => new Response(JSON.stringify({ at: Date.now(), id: newMarkerId() }), {
+  const marker = () => new Response(JSON.stringify({ at: Date.now() }), {
     headers: { 'Content-Type': 'application/json' },
   });
   const urls = accountIds.map(accountMarkerUrl);
@@ -58,12 +122,8 @@ export async function markPushSignedOut(accountIds: string[], everyAccount: bool
   await Promise.all(urls.map((url) => cache.put(url, marker()).catch(() => undefined)));
 }
 
-/**
- * Lift the sign-out markers: the device-wide one, and with `accountId` that
- * account's. Push for an account needs a fresh opt-in after an explicit
- * sign-out, so only enabling it clears the account's marker.
- */
-export async function clearPushSignedOut(accountId: string | null): Promise<void> {
+/** Lift the device-wide marker and, with `accountId`, that account's. Call inside withPushLock. */
+export async function clearPushSignedOutLocked(accountId: string | null): Promise<void> {
   const cache = await pushStateCache();
   if (!cache) return;
   const urls = [stateUrl(DEVICE_MARKER)];
@@ -71,18 +131,13 @@ export async function clearPushSignedOut(accountId: string | null): Promise<void
   await Promise.all(urls.map((url) => cache.delete(url).catch(() => false)));
 }
 
-// An enable that was already running when the user signed the account out
-// must not finish afterwards: it would recreate the subscription the
-// sign-out just removed and lift the marker. Each explicit sign-out bumps
-// the account's epoch; enableWebPush compares the epoch it started with.
-const signOutEpochs = new Map<string, number>();
-
-export function noteExplicitSignOut(accountId: string): void {
-  signOutEpochs.set(accountId, (signOutEpochs.get(accountId) ?? 0) + 1);
-}
-
-export function signOutEpoch(accountId: string): number {
-  return signOutEpochs.get(accountId) ?? 0;
+/**
+ * {@link clearPushSignedOutLocked} under the lock. A deliberate sign-in lifts
+ * the device-wide marker this way; an account's marker is lifted only by a
+ * user-initiated enable (see enableWebPush).
+ */
+export function clearPushSignedOut(accountId: string | null): Promise<void> {
+  return withPushLock(() => clearPushSignedOutLocked(accountId));
 }
 
 /** True while the account (or the whole device) carries an explicit sign-out marker. */
@@ -124,30 +179,4 @@ export function forgetPushAccountOfLogin(loginId: string): void {
   } catch {
     // Nothing recorded.
   }
-}
-
-/**
- * The ids of the sign-out markers that apply to the account now (its own and
- * the device-wide one). Compare with {@link signedOutSince}.
- */
-export async function signOutMarkerIds(accountId: string): Promise<string[]> {
-  const cache = await pushStateCache();
-  if (!cache) return [];
-  const ids: string[] = [];
-  for (const url of [stateUrl(DEVICE_MARKER), accountMarkerUrl(accountId)]) {
-    try {
-      const res = await cache.match(url);
-      if (!res) continue;
-      const body = await res.json().catch(() => null) as { id?: unknown; at?: unknown } | null;
-      ids.push(typeof body?.id === 'string' ? body.id : `${url}@${String(body?.at ?? '')}`);
-    } catch {
-      // Unreadable: treat as absent.
-    }
-  }
-  return ids;
-}
-
-/** True when a sign-out marker for the account appeared that was not among `before`. */
-export async function signedOutSince(accountId: string, before: string[]): Promise<boolean> {
-  return (await signOutMarkerIds(accountId)).some((id) => !before.includes(id));
 }

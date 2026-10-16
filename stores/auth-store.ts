@@ -9,7 +9,7 @@ import { useVacationStore } from './vacation-store';
 import { subscriptionOwner, useCalendarStore } from './calendar-store';
 import { useFilterStore } from './filter-store';
 import { useSettingsStore } from './settings-store';
-import { useAccountStore, type AccountEntry } from './account-store';
+import { releaseCookieSlot, reserveCookieSlot, useAccountStore, type AccountEntry } from './account-store';
 import { fetchPrincipalDisplayName } from '@/lib/stalwart/principal';
 import { fetchConfig } from '@/hooks/use-config';
 import { debug } from '@/lib/debug';
@@ -1501,6 +1501,9 @@ export const useAuthStore = create<AuthState>()(
 
           // Update account entry in case it already existed (addAccount is a no-op for existing accounts)
           accountStore.updateAccount(accountId, {
+            // Fork (Wnt/webmail): the session was remembered at `cookieSlot`;
+            // see loginWithOAuth (a slot reservation may have ended meanwhile).
+            cookieSlot,
             authMode: effectiveAuthMode,
             rememberMe: !!rememberMe,
             providerSession: false,
@@ -2162,6 +2165,10 @@ export const useAuthStore = create<AuthState>()(
         // From here on nothing may renew this slot's session; the cleanup
         // below reopens it once the credentials are gone.
         if (!wasDemoMode) closingSlots.add(slot);
+        // Fork (Wnt/webmail): and no new sign-in may land in the slot while
+        // its cleanup can still clear its cookies (released once it has, or
+        // after a bounded time when the page leaves first).
+        if (!wasDemoMode) reserveCookieSlot(slot);
         clearRefreshTimer(accountId ?? undefined);
 
         // Fork (Wnt/webmail), audit bulwark-1: a sign-out the user asked for
@@ -2259,7 +2266,7 @@ export const useAuthStore = create<AuthState>()(
             // would take the user away from the accounts still signed in
             // here, which may share that session. Revoking the token ends
             // Bulwark's grant.
-            void clearSlotCredentials(slot, wasOAuth);
+            void clearSlotCredentialsSettled(slot, wasOAuth).finally(() => releaseCookieSlot(slot));
             return;
           }
 
@@ -2310,27 +2317,32 @@ export const useAuthStore = create<AuthState>()(
         const client = clients.get(accountId);
         // `options` can be a click event when wired straight to onClick.
         const userInitiated = options?.endProviderSession !== false;
+        const others = accountStore.accounts.filter((a) => a.id !== accountId);
+        const unmapped = !client && !pushAccountOfLogin(accountId);
 
-        // Fork (Wnt/webmail), audit bulwark-1: the login keeps its registry
-        // entry - and so its cookie slot - until its sign-out is over: a
-        // removal the user asked for first ends the account's Web Push (as in
-        // logout(), while the client and token still work), and the slot is
-        // released only once the credential DELETEs have answered, so no new
-        // sign-in can take it over while they can still clear its cookies.
-        // Switching to it meanwhile is ignored.
+        // Marked closing right away, so a renewal in flight cannot bring the
+        // session back. Fork (Wnt/webmail), audit bulwark-1: the slot stays
+        // reserved until the credential DELETEs have answered, so a new
+        // sign-in (this login again included) lands in another slot and the
+        // old answers cannot clear its cookies.
         removingAccounts.add(accountId);
         closingSlots.add(slot);
+        reserveCookieSlot(slot);
         clearRefreshTimer(accountId);
-        const others = accountStore.accounts.filter((a) => a.id !== accountId);
+        clients.delete(accountId);
+        evictAccount(accountId);
+        accountStore.removeAccount(accountId);
+        clearPluginStorageForAccount(accountId);
+
         void (async () => {
           try {
+            // A removal the user asked for ends the account's Web Push first,
+            // as in logout(), while its client and token still work.
             if (userInitiated) {
               await teardownPushOnSignOut({
                 clients: client ? [client] : [],
                 loginIds: [accountId],
-                unmappedFallback: !client && !pushAccountOfLogin(accountId)
-                  ? { keep: pushAccountsOf(others) }
-                  : undefined,
+                unmappedFallback: unmapped ? { keep: pushAccountsOf(others) } : undefined,
                 everyAccount: false,
               });
             }
@@ -2338,13 +2350,10 @@ export const useAuthStore = create<AuthState>()(
               forgetCalendarSubscriptions(client);
               try { client.disconnect(); } catch { /* noop */ }
             }
-            clients.delete(accountId);
-            evictAccount(accountId);
-            clearPluginStorageForAccount(accountId);
             await clearSlotCredentialsSettled(slot, wasOAuth);
           } finally {
             removingAccounts.delete(accountId);
-            useAccountStore.getState().removeAccount(accountId);
+            releaseCookieSlot(slot);
           }
         })();
       },

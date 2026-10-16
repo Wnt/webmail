@@ -14,7 +14,7 @@ import type { IJMAPClient } from '@/lib/jmap/client-interface';
 import { disableWebPush, dropRelayRegistration, forgetWebPushRegistration, locallyOptedInAccounts } from '@/lib/web-push';
 import { currentRelayUrl } from '@/lib/push-relay-current';
 import {
-  forgetPushAccountOfLogin, markPushSignedOut, noteExplicitSignOut, pushAccountOfLogin, withPushLock,
+  bumpSignOutGeneration, commitGeneration, markPushSignedOutLocked, pushAccountOfLogin, trackTeardown, withPushLock,
 } from '@/lib/push-signout-state';
 
 export { clearPushSignedOut } from '@/lib/push-signout-state';
@@ -27,7 +27,7 @@ const NOTIFICATION_TAG_PREFIX = 'bulwark-mail:';
 // the marker already silences the device, and the server side goes on in the
 // background.
 const TEARDOWN_TIMEOUT_MS = 8000;
-// The worker drains within 5 s (SIGNOUT_DRAIN_MS in public/sw.js).
+// How long the sign-out waits for the worker to confirm (see settleWorker).
 const WORKER_SETTLE_TIMEOUT_MS = 6000;
 
 async function swRegistration(): Promise<ServiceWorkerRegistration | null> {
@@ -83,19 +83,35 @@ function withTimeout(work: Promise<unknown>, ms: number): Promise<void> {
  * accounts (see handlePushSignOut in public/sw.js) and wait for its answer:
  * once it comes, no notification for them can still be on its way.
  */
-async function settleWorker(accountIds: string[], everyAccount: boolean): Promise<void> {
+async function settleWorker(accountIds: string[], everyAccount: boolean): Promise<WorkerSettlement> {
   const registration = await swRegistration();
   const worker = registration?.active;
-  if (!worker || typeof MessageChannel === 'undefined') return;
+  if (!worker || typeof MessageChannel === 'undefined') return 'no-worker';
   const channel = new MessageChannel();
-  const answered = new Promise<void>((resolve) => { channel.port1.onmessage = () => resolve(); });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const answer = new Promise<WorkerSettlement>((resolve) => {
+    channel.port1.onmessage = (e: MessageEvent) => resolve((e.data as { done?: unknown })?.done === true ? 'settled' : 'pending');
+    timer = setTimeout(() => resolve('pending'), WORKER_SETTLE_TIMEOUT_MS);
+  });
   try {
     worker.postMessage({ type: 'push-signout', accountIds, everyAccount }, [channel.port2]);
-    await withTimeout(answered, WORKER_SETTLE_TIMEOUT_MS);
+    return await answer;
+  } catch {
+    return 'pending';
   } finally {
+    clearTimeout(timer);
     channel.port1.close();
   }
 }
+
+/**
+ * 'settled': the worker drained every push it was handling for these
+ * accounts and closed their notifications. 'pending': it did not confirm in
+ * time; it keeps suppressing them (markers, in-progress flag) and settles on
+ * its own, but the sign-out goes on without that guarantee. 'no-worker':
+ * nothing was being handled.
+ */
+export type WorkerSettlement = 'settled' | 'pending' | 'no-worker';
 
 /**
  * Turn Web Push off for the accounts being signed out on purpose. Call it
@@ -112,13 +128,13 @@ async function settleWorker(accountIds: string[], everyAccount: boolean): Promis
  * `everyAccount`: nobody stays signed in on this device, so every account
  * with a push opt-in here and the browser's push subscription go too.
  */
-export async function teardownPushOnSignOut(params: {
+export function teardownPushOnSignOut(params: {
   clients: IJMAPClient[];
   loginIds?: string[];
   unmappedFallback?: { keep: string[] };
   everyAccount: boolean;
-}): Promise<void> {
-  if (typeof window === 'undefined') return;
+}): Promise<{ worker: WorkerSettlement }> {
+  if (typeof window === 'undefined') return Promise.resolve({ worker: 'no-worker' });
   const targets = new Map<string, IJMAPClient | null>();
   for (const client of params.clients) {
     const accountId = accountIdOf(client);
@@ -135,18 +151,33 @@ export async function teardownPushOnSignOut(params: {
     }
   }
   const accountIds = [...targets.keys()];
+  // First, synchronously: from now on no enable that started earlier, in any
+  // tab, can commit for these accounts (lib/push-signout-state.ts), and one
+  // starting in this tab waits until this teardown is over.
+  bumpSignOutGeneration(accountIds, params.everyAccount);
+  const commitsAtStart = new Map(accountIds.map((id) => [id, commitGeneration(id)]));
+  const work = runTeardown(params, targets, accountIds, commitsAtStart);
+  trackTeardown(accountIds, work);
+  return work;
+}
 
-  // Local and quick, and enough on its own to silence this device. Written
-  // under the lock enables commit under (lib/push-signout-state.ts).
-  await withPushLock(async () => {
-    for (const accountId of accountIds) noteExplicitSignOut(accountId);
-    await markPushSignedOut(accountIds, params.everyAccount);
-  });
+async function runTeardown(
+  params: { everyAccount: boolean },
+  targets: Map<string, IJMAPClient | null>,
+  accountIds: string[],
+  commitsAtStart: Map<string, number>,
+): Promise<{ worker: WorkerSettlement }> {
+  // Local and quick, and enough on its own to silence this device.
+  await withPushLock(() => markPushSignedOutLocked(accountIds, params.everyAccount));
   // Pushes the worker is already handling settle before the sign-out goes on
   // (alongside the network work below, which it does not depend on).
   const settled = settleWorker(accountIds, params.everyAccount)
-    .catch(() => undefined)
-    .then(() => closeNotifications(accountIds, params.everyAccount));
+    .catch((): WorkerSettlement => 'pending')
+    .then(async (worker) => {
+      await closeNotifications(accountIds, params.everyAccount);
+      if (worker === 'pending') console.warn('[push] The service worker has not confirmed the sign-out yet; it settles on its own');
+      return worker;
+    });
 
   // One deadline for all of the network work.
   const network = (async () => {
@@ -162,10 +193,15 @@ export async function teardownPushOnSignOut(params: {
       await unsubscribeBrowser();
     }
   })();
-  await Promise.all([settled, withTimeout(network, TEARDOWN_TIMEOUT_MS)]);
+  const [worker] = await Promise.all([settled, withTimeout(network, TEARDOWN_TIMEOUT_MS)]);
 
   // Even when the server side is still running: the opt-in is over, so no
-  // later session restore may re-enable push for these accounts.
-  for (const accountId of accountIds) forgetWebPushRegistration(accountId);
-  for (const loginId of params.loginIds ?? []) forgetPushAccountOfLogin(loginId);
+  // later session restore may re-enable push for these accounts - unless the
+  // user has enabled it again since (in another tab), which stays.
+  await withPushLock(async () => {
+    for (const accountId of accountIds) {
+      if (commitGeneration(accountId) === commitsAtStart.get(accountId)) forgetWebPushRegistration(accountId);
+    }
+  });
+  return { worker };
 }

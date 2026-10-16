@@ -9,7 +9,8 @@ import type { EmailPushConfig, Mailbox } from '@/lib/jmap/types';
 import { DEFAULT_RELAY_BASE_URL } from '@/lib/push-relays';
 import { IS_LITE } from '@/lib/lite';
 import {
-  clearPushSignedOut, isPushSignedOut, signedOutSince, signOutEpoch, signOutMarkerIds, withPushLock,
+  bumpCommitGeneration, clearPushSignedOutLocked, commitGeneration, isPushSignedOut, signOutGeneration,
+  teardownSettled, withPushLock,
 } from '@/lib/push-signout-state';
 
 // Per-account keys: a single browser may be signed in to multiple accounts,
@@ -200,6 +201,10 @@ export interface EnableWebPushParams {
   // Only such an enable lifts an explicit sign-out's marker; a background
   // re-sync of an account that carries one is undone instead.
   userInitiated?: boolean;
+  // Fork (Wnt/webmail): signOutGeneration(accountId) when the operation was
+  // started (the click), if that was before this call; see
+  // lib/push-signout-state.ts. Defaults to the generation at this call.
+  signOutGenerationAtStart?: string;
 }
 
 export interface EnableWebPushResult {
@@ -479,20 +484,28 @@ export async function enableWebPush(
   const relayBaseUrl = (params.relayBaseUrl ?? DEFAULT_RELAY_BASE_URL).replace(/\/+$/, '');
   if (!relayBaseUrl) throw new Error('No push relay is configured on this server');
   // Fork (Wnt/webmail), audit bulwark-1: the commit protocol of
-  // lib/push-signout-state.ts. What this enable records only takes effect if
-  // no explicit sign-out of the account happened (in any tab) since it
-  // started; a background re-sync never commits for a signed-out account,
-  // and only a user-initiated enable lifts the markers.
+  // lib/push-signout-state.ts. Captured synchronously, before any await:
+  // what this enable records only takes effect if no explicit sign-out of
+  // the account happened (in any tab) since it started. A background re-sync
+  // never commits for a signed-out account, and only a user-initiated enable
+  // lifts the markers.
   const signOutAccountId = params.client.getAccountId();
-  const startedAtEpoch = signOutEpoch(signOutAccountId);
-  const markersAtStart = await signOutMarkerIds(signOutAccountId);
+  const startGeneration = params.signOutGenerationAtStart ?? signOutGeneration(signOutAccountId);
+  const startCommit = commitGeneration(signOutAccountId);
+  // A sign-out of this account still being torn down in this tab finishes first.
+  await teardownSettled(signOutAccountId);
   const commitUnlessSignedOut = (record: () => void) => withPushLock(async () => {
-    if (signOutEpoch(signOutAccountId) !== startedAtEpoch
-      || await signedOutSince(signOutAccountId, markersAtStart)
+    if (signOutGeneration(signOutAccountId) !== startGeneration
       || (!params.userInitiated && await isPushSignedOut(signOutAccountId))) return false;
     record();
-    if (params.userInitiated) await clearPushSignedOut(signOutAccountId);
+    bumpCommitGeneration(signOutAccountId);
+    if (params.userInitiated) await clearPushSignedOutLocked(signOutAccountId);
     return true;
+  });
+  // A refused commit forgets the local opt-in it found only while no other
+  // enable has committed since this one started: it never removes a newer one.
+  const forgetUnlessSuperseded = () => withPushLock(async () => {
+    if (commitGeneration(signOutAccountId) === startCommit) forgetWebPushRegistration(signOutAccountId);
   });
 
   await ensurePermission();
@@ -571,8 +584,9 @@ export async function enableWebPush(
         const refreshed = await refreshSubscriptionExpires(params.client, match, emailPush);
         if (refreshed) {
           if (!(await commitUnlessSignedOut(() => {}))) {
-            await params.client.destroyPushSubscription(storedServerId).catch(() => undefined);
-            forgetWebPushRegistration(accountId);
+            // The record predates the sign-out, whose teardown removes it on
+            // the server; a newer enable may be refreshing the same one.
+            await forgetUnlessSuperseded();
             throw new PushSignedOutError();
           }
           return { subscriptionId: storedServerId };
@@ -627,8 +641,9 @@ export async function enableWebPush(
   if (!committed) {
     // Signed out on purpose while this ran (or, for a background re-sync,
     // before it - possibly in another tab): undo instead of recording it.
+    // Only this enable knows the new subscription, so removing it is safe.
     await params.client.destroyPushSubscription(serverAssignedId).catch(() => undefined);
-    forgetWebPushRegistration(accountId);
+    await forgetUnlessSuperseded();
     throw new PushSignedOutError();
   }
 
@@ -913,7 +928,12 @@ export async function enableWebPushForAccounts(
 ): Promise<BulkWebPushResult> {
   const result: BulkWebPushResult = { enabled: [], failed: [] };
   let browserRefusal: unknown;
-  for (const target of targets) {
+  // Fork (Wnt/webmail): each account's sign-out generation as of the start of
+  // the walk, so a sign-out during it wins (lib/push-signout-state.ts).
+  const generations = targets.map((t) => {
+    try { return signOutGeneration(t.client.getAccountId()); } catch { return undefined; }
+  });
+  for (const [i, target] of targets.entries()) {
     if (browserRefusal !== undefined) {
       result.failed.push({ accountId: target.accountId, error: browserRefusal });
       continue;
@@ -926,6 +946,7 @@ export async function enableWebPushForAccounts(
         forceRecreate: options.forceRecreate,
         inboxOnly: options.inboxOnly,
         userInitiated: options.userInitiated,
+        signOutGenerationAtStart: generations[i],
       });
       result.enabled.push(target.accountId);
     } catch (error) {

@@ -54,30 +54,35 @@
 >      release up to 24.22.0; bump the base image once a Node 24 release ships ≥ 7.30.1.
 >      Test: `lib/__tests__/undici-response-error.test.ts`.
 >    - bulwark-1, explicit sign-out ends Web Push (`lib/push-signout.ts`, `lib/push-signout-state.ts`,
->      `stores/auth-store.ts`, `lib/web-push.ts`, `public/sw.js`). Only a sign-out the user asked for (sign out,
->      sign out of all, removing an account) does this; sign-outs nobody asked for (rejected or unrenewable
->      token, failed session restore, account switching) leave push alone, so notifications keep arriving
->      after a session expires. In order:
->      1. Cache Storage markers for the accounts (and with no account left, the device) are written under a
->         cross-tab Web Lock; the service worker drops pushes for marked accounts (with no account left, it
->         also drops the browser subscription), reading the marker right before and after showing.
+>      `stores/auth-store.ts`, `stores/account-store.ts`, `lib/web-push.ts`, `public/sw.js`, the enable buttons).
+>      Only a sign-out the user asked for (sign out, sign out of all, removing an account) does this; sign-outs
+>      nobody asked for (rejected or unrenewable token, failed session restore, account switching) leave push
+>      alone, so notifications keep arriving after a session expires. In order:
+>      1. Synchronously, the accounts' (and with no account left, the device's) sign-out generation in
+>         localStorage is bumped; then Cache Storage markers are written under a cross-tab Web Lock. The
+>         service worker drops pushes for marked accounts (with no account left, it also drops the browser
+>         subscription), reading the marker right before and after showing.
 >      2. The worker is asked to settle: it stops any display not yet handed to the browser, aborts pending
->         preview lookups for those accounts, drains their push queues, closes their notifications and
->         answers; the sign-out waits for that answer (alongside step 3).
+>         preview lookups, drains the accounts' push queues, closes their notifications and answers whether
+>         the drain finished (up to 30 s; if not, it keeps suppressing and closes once it has). The page
+>         waits up to 6 s alongside step 3 and reports `pending` rather than assuming success.
 >      3. `disableWebPush` against the locked relay while the client and token still work; for an account
 >         without a connected client, its relay record is deleted (login → push-account mapping recorded when
 >         a client connects; a login that cannot be mapped turns off every local opt-in no remaining account
 >         claims). With no account left the browser is unsubscribed. Network part bounded to 8 s.
->      4. The local opt-in is forgotten. A removed account keeps its registry entry and cookie slot until its
->         credential DELETEs have answered.
->      An enable commits (records its opt-in, lifts markers) under the same lock and only if no new marker
->      appeared since it started (so an enable or re-sync racing a sign-out in any tab undoes what it
->      created); a background re-sync never commits for a marked account. Only a user-initiated enable lifts
->      an account's marker, a deliberate sign-in the device-wide one, so push needs a fresh opt-in after an
->      explicit sign-out.
+>      4. The local opt-in is forgotten (unless push was enabled again meanwhile).
+>      An enable notes the sign-out generation when it starts (at the click) and commits (records the opt-in,
+>      lifts markers) under the lock only if it is unchanged, so an enable or re-sync racing a sign-out in any
+>      tab undoes what it created; its rollback never removes a newer enable's record, and in this tab it
+>      waits for a teardown of the same account to finish. A background re-sync never commits for a marked
+>      account. Only a user-initiated enable lifts an account's marker, a deliberate sign-in (under the lock)
+>      the device-wide one, so push needs a fresh opt-in after an explicit sign-out.
+>      The cookie slot of a signed-out or removed login stays reserved (`stores/account-store.ts`, shared by
+>      tabs, at most 2 min) until its credential DELETEs have answered, so a new sign-in - the same login
+>      included - lands in another slot and the old answers cannot clear its cookies.
 >      Tests: `stores/__tests__/auth-store-logout-push.test.ts`,
 >      `stores/__tests__/auth-store-remove-account-push.test.ts`, `lib/__tests__/web-push.test.ts`,
->      `lib/__tests__/sw-summary-association.test.ts`.
+>      `lib/__tests__/push-signout.test.ts`, `lib/__tests__/sw-summary-association.test.ts`.
 >    - bulwark-5 (`public/sw.js`, extends change 1): every mail notification records its account and headline
 >      message id; the quiet summary push replaces it only when both match the summary's account and newest id,
 >      and is dropped otherwise. Pushes are handled one at a time per account, so a summary cannot interleave
