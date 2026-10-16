@@ -128,6 +128,16 @@ class ShellTests(unittest.TestCase):
         for line in good:
             self.assertEqual(check_shell(line + "\n"), [], line)
 
+    def test_declarations_and_other_assignments(self):
+        bad = ('declare -r PW_IMAGE="mcr.microsoft.com/playwright"', "typeset -x IMAGE=node:24",
+               "readonly -a X_IMAGE=node", 'PW_IMAGE+=":latest"', "printf -v PW_IMAGE '%s' node",
+               "read -r PW_IMAGE < f")
+        for line in bad:
+            self.assertEqual(len(check_shell(line + "\n")), 1, line)
+        self.assertEqual(check_shell(f'declare -r PW_IMAGE="x/y:1@{D}"\n'), [])
+        self.assertEqual(check_shell('docker run "$PW_IMAGE" true\n'), [])
+        self.assertEqual(len(check_shell('cd x; PW_IMAGE=node:24\n')), 1)
+
     def test_npm_install_in_scripts(self):
         for body in ("(cd x && npm install --loglevel=warn) &", "npm --ignore-scripts install",
                      "npm \\\n  install"):
@@ -189,6 +199,22 @@ class WorkflowTests(unittest.TestCase):
     def test_docker_action_remote_tag_named_dockerfile(self):
         self.assertEqual(len(check_workflow("  image: docker://alpine:Dockerfile\n")), 1)
         self.assertEqual(len(check_workflow("runs: {using: docker, image: 'docker://alpine:latest'}\n")), 1)
+
+    def test_multiline_image_values(self):
+        bad = ("    container:\n      image: >-\n        node:24\n",
+               "    container:\n      image:\n        node:24\n",
+               "    container:\n      image: |\n        node:24\n",
+               "    container: >-\n      node:24\n",
+               '    image: "node:\n      24"\n', "    image: &img node:24\n", "    image: *img\n")
+        for body in bad:
+            self.assertTrue(check_workflow(body), body)
+        good = (f"    container:\n      image: >-\n        node:24@{D}\n",
+                f"    container:\n      image:\n        node:24@{D}\n",
+                f"    container:\n      image: node:24@{D}\n      options: --user 1001\n",
+                f"    services:\n      db:\n        image: redis:7@{D}\n",
+                "jobs:\n  image:\n    needs: test\n    runs-on: ubuntu-latest\n")
+        for body in good:
+            self.assertEqual(check_workflow(body), [], body)
 
     def test_local_action_must_exist(self):
         self.assertEqual(len(check_workflow("  - uses: ./missing\n", lambda ref: False)), 1)

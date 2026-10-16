@@ -15,8 +15,9 @@
 - Dockerfile RUN lines and workflow lines must not run `npm install` (or its
   aliases), with or without npm options in between; use `npm ci`, which
   installs exactly the lockfile.
-- Shell scripts (*.sh): every `IMAGE=` / `*_IMAGE=` assignment must carry a
-  digest (a bare name means :latest). A value that is only a repository name,
+- Shell scripts (*.sh): every `IMAGE=` / `*_IMAGE=` assignment (plain,
+  export/readonly/local/declare/typeset) must carry a digest (a bare name
+  means :latest); any other way of setting such a variable is refused. A value that is only a repository name,
   completed with a tag elsewhere, needs an explicit `# pin-check: repository`
   comment on its line. Shell lines must not run `npm install` either.
 
@@ -40,7 +41,12 @@ NPM_INSTALL_ALIASES = {"install", "i", "in", "ins", "inst", "insta", "instal", "
 SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|&()`\n]")
 ESCAPED_KEY = re.compile(r"""(^|[\s{,\[-])"[^"]*\\[^"]*"\s*:""")
 IMAGE_KEY = re.compile(r"""(?:^|[\s{,\[-])(['"]?)(image|container)\1\s*:\s*([^,}\]\n]*)""")
-SH_IMAGE = re.compile(r"""^\s*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_]*IMAGE)=(['"]?)([^'"\s]*)\2""", re.I)
+SH_IMAGE = re.compile(r"""^\s*(?:(?:export|readonly|local|declare|typeset)(?:\s+-[A-Za-z]+)*\s+)?"""
+                      r"""([A-Za-z_]*IMAGE)=(['"]?)([^'"\s]*)\2(?:\s|;|$)""", re.I)
+# Any other way of setting an *IMAGE variable (+=, printf -v, read, ...).
+SH_IMAGE_ANY = re.compile(r"""(?:^|[;&|(]\s*)(?:(?:export|readonly|local|declare|typeset)(?:\s+-[A-Za-z]+)*\s+)?"""
+                          r"""[A-Za-z_]*IMAGE\+?=|(?:printf\s+-v|\bread\b[^;|&]*)\s+[A-Za-z_]*IMAGE\b""", re.I)
+MAPPING_LINE = re.compile(r"""^(-\s|\?\s|['"]?[\w.-]+['"]?\s*:(\s|$))""")
 
 
 def is_dockerfile(path):
@@ -235,9 +241,33 @@ def check_workflow(text, local_action_exists=lambda ref: True):
             errors.append(f"line {n}: unsupported quoted key with escapes: {raw.strip()}")
             continue
         for im in IMAGE_KEY.finditer(strip_comment(raw)):
-            value = unquote(im.group(3))
-            if not value or value in ("|", ">", "|-", ">-") or value.startswith("{"):
-                continue  # mapping follows (container:), checked on its own lines
+            raw_value = strip_comment(im.group(3))
+            if raw_value[:1] in ("&", "*", "!"):
+                errors.append(f"line {n}: unsupported YAML anchor/alias/tag on {im.group(2)}: {raw_value}")
+                continue
+            if raw_value[:1] in ("'", '"') and (len(raw_value) < 2 or raw_value[-1] != raw_value[0]):
+                errors.append(f"line {n}: unsupported multi-line quoted {im.group(2)} value")
+                continue
+            value = unquote(raw_value)
+            if raw_value.startswith("{"):
+                continue  # flow mapping: its image key is matched by this same loop
+            if not value or value[0] in "|>":
+                # Value on the following, more-indented lines: a block scalar,
+                # a multi-line plain scalar, or (container:) a mapping.
+                indent = len(raw) - len(raw.lstrip())
+                body = []
+                for nxt in lines[n:]:
+                    if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= indent:
+                        break
+                    if nxt.strip():
+                        body.append(nxt.strip())
+                if not body:
+                    continue
+                if not value and MAPPING_LINE.match(body[0]):
+                    # container: mapping (its image: line is checked itself),
+                    # or a job that happens to be named "image".
+                    continue
+                value = unquote(" ".join(strip_comment(b) for b in body))
             if "${{" in value:
                 errors.append(f"line {n}: image from an expression, cannot verify pin: {value}")
             elif (im.group(2) == "image" and value.endswith("Dockerfile")
@@ -274,8 +304,12 @@ def check_shell(text):
         if runs_npm_install(strip_comment(command)):
             errors.append(f"use npm ci, not npm install: {command.strip()[:120]}")
     for n, raw in enumerate(lines, 1):
+        if raw.lstrip().startswith("#"):
+            continue
         m = SH_IMAGE.match(raw)
         if not m:
+            if SH_IMAGE_ANY.search(strip_comment(raw)):
+                errors.append(f"line {n}: unsupported way of setting an image variable: {raw.strip()}")
             continue
         value = m.group(3)
         if not value or re.search(r"#\s*pin-check:\s*repository\b", raw):
