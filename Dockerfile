@@ -55,7 +55,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # updates newer than the pinned base. Packages come from the base image's own
 # release branch and are verified against the signing keys inside the pinned
 # base, so this trusts Alpine's package signing, not a movable image tag. The
-# built image is still deployed and reviewed by digest.
+# built image is still deployed and reviewed by digest. Residual of audit
+# deploy-4, for the owner to accept or to replace with a base-digest bump.
 RUN apk upgrade --no-cache && \
     npm uninstall -g npm && \
     rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npx && \
