@@ -1022,6 +1022,24 @@ const clients = new ClientRegistry();
 // waiting for its push teardown; they keep their registry entry and slot.
 const removingAccounts = new Set<string>();
 
+/**
+ * Fork (Wnt/webmail): keep `slot` reserved (stores/account-store.ts) until
+ * `work` - its sign-out cleanup - has settled, renewing the bounded
+ * reservation meanwhile; only a page that goes away lets it lapse.
+ */
+async function holdSlotUntil(slot: number, work: Promise<unknown>): Promise<void> {
+  reserveCookieSlot(slot);
+  const renew = setInterval(() => reserveCookieSlot(slot), 60_000);
+  try {
+    await work;
+  } catch {
+    // The cleanup reports its own failures.
+  } finally {
+    clearInterval(renew);
+    releaseCookieSlot(slot);
+  }
+}
+
 /** The push accounts (JMAP account ids) of these logins, as far as known here. */
 function pushAccountsOf(accounts: AccountEntry[]): string[] {
   const ids: string[] = [];
@@ -2266,7 +2284,7 @@ export const useAuthStore = create<AuthState>()(
             // would take the user away from the accounts still signed in
             // here, which may share that session. Revoking the token ends
             // Bulwark's grant.
-            void clearSlotCredentialsSettled(slot, wasOAuth).finally(() => releaseCookieSlot(slot));
+            void holdSlotUntil(slot, clearSlotCredentialsSettled(slot, wasOAuth));
             return;
           }
 
@@ -2278,6 +2296,7 @@ export const useAuthStore = create<AuthState>()(
           debug.error(`Cannot restore next account ${nextAccount.id}, performing full logout`);
           for (const remaining of useAccountStore.getState().accounts) {
             droppedAccounts.push(remaining);
+            reserveCookieSlot(remaining.cookieSlot ?? 0); // Fork (Wnt/webmail): see above
             clearRefreshTimer(remaining.id);
             clients.get(remaining.id)?.disconnect();
             clients.delete(remaining.id);
@@ -2327,14 +2346,13 @@ export const useAuthStore = create<AuthState>()(
         // old answers cannot clear its cookies.
         removingAccounts.add(accountId);
         closingSlots.add(slot);
-        reserveCookieSlot(slot);
         clearRefreshTimer(accountId);
         clients.delete(accountId);
         evictAccount(accountId);
         accountStore.removeAccount(accountId);
         clearPluginStorageForAccount(accountId);
 
-        void (async () => {
+        void holdSlotUntil(slot, (async () => {
           try {
             // A removal the user asked for ends the account's Web Push first,
             // as in logout(), while its client and token still work.
@@ -2353,9 +2371,8 @@ export const useAuthStore = create<AuthState>()(
             await clearSlotCredentialsSettled(slot, wasOAuth);
           } finally {
             removingAccounts.delete(accountId);
-            releaseCookieSlot(slot);
           }
-        })();
+        })());
       },
 
       logoutAll: async () => {
@@ -2386,6 +2403,10 @@ export const useAuthStore = create<AuthState>()(
             everyAccount: true,
           });
         }
+
+        // Fork (Wnt/webmail): no new sign-in may land in these slots while the
+        // cleanup can still clear their cookies (lapses after a bounded time).
+        if (!get().isDemoMode) for (const account of allAccounts) reserveCookieSlot(account.cookieSlot ?? 0);
 
         // Starts by marking every slot closing, so nothing renews a session
         // while the clients are torn down.
