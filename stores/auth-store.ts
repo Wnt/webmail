@@ -45,7 +45,7 @@ import {
 } from '@/lib/auth/lite-tokens';
 import { clearLiteOAuthFlow, readLiteOAuthFlow } from '@/lib/auth/lite-oauth';
 import { clearPushSignedOut, teardownPushOnSignOut } from '@/lib/push-signout';
-import { rememberPushAccount } from '@/lib/push-signout-state';
+import { pushAccountOfLogin, rememberPushAccount } from '@/lib/push-signout-state';
 
 /** Logins restored at once after the one on screen: enough to overlap round trips, few enough not to crowd the server. */
 const RESTORE_CONCURRENCY = 4;
@@ -644,6 +644,31 @@ function clearSlotCredentials(slot: number, includeToken: boolean, endSession = 
 }
 
 /**
+ * Fork (Wnt/webmail): {@link clearSlotCredentials} for removing one login,
+ * settling only once the DELETE answers (which clear that slot's cookies) are
+ * in - no timeout - so the caller can keep the slot reserved until nothing
+ * from this sign-out can touch a newer session in it.
+ */
+async function clearSlotCredentialsSettled(slot: number, includeToken: boolean): Promise<void> {
+  closingSlots.add(slot);
+  try {
+    await settleSessionWrites(new Set([slot]));
+    if (IS_LITE) {
+      await revokeLiteSlot(slot);
+      return;
+    }
+    await Promise.all([
+      deleteCredentials(`/api/auth/session?slot=${slot}`),
+      includeToken ? deleteCredentials(`/api/auth/token?slot=${slot}`) : null,
+    ]);
+  } catch {
+    // Reported by deleteCredentials; the slot is released all the same.
+  } finally {
+    closingSlots.delete(slot);
+  }
+}
+
+/**
  * Revoke and clear every slot's credentials. With `endSessionSlot`, resolves
  * to the URL that ends that slot's identity provider session, when there is one.
  */
@@ -996,6 +1021,18 @@ const clients = new ClientRegistry();
 // Fork (Wnt/webmail), audit bulwark-1: logins whose explicit removal is
 // waiting for its push teardown; they keep their registry entry and slot.
 const removingAccounts = new Set<string>();
+
+/** The push accounts (JMAP account ids) of these logins, as far as known here. */
+function pushAccountsOf(accounts: AccountEntry[]): string[] {
+  const ids: string[] = [];
+  for (const account of accounts) {
+    const id = pushAccountOfLogin(account.id) ?? (() => {
+      try { return clients.get(account.id)?.getAccountId() || null; } catch { return null; }
+    })();
+    if (id) ids.push(id);
+  }
+  return ids;
+}
 
 /**
  * Account switches can overlap (click B, then C before B lands). Each switch
@@ -2139,6 +2176,9 @@ export const useAuthStore = create<AuthState>()(
           await teardownPushOnSignOut({
             clients: state.client ? [state.client] : [],
             loginIds: everyAccount ? accountStore.accounts.map((a) => a.id) : (accountId ? [accountId] : []),
+            unmappedFallback: !everyAccount && !state.client && !(accountId && pushAccountOfLogin(accountId))
+              ? { keep: pushAccountsOf(others) }
+              : undefined,
             everyAccount,
           });
         }
@@ -2271,34 +2311,42 @@ export const useAuthStore = create<AuthState>()(
         // `options` can be a click event when wired straight to onClick.
         const userInitiated = options?.endProviderSession !== false;
 
-        // Marked closing right away, so a renewal in flight cannot bring the
-        // session back.
+        // Fork (Wnt/webmail), audit bulwark-1: the login keeps its registry
+        // entry - and so its cookie slot - until its sign-out is over: a
+        // removal the user asked for first ends the account's Web Push (as in
+        // logout(), while the client and token still work), and the slot is
+        // released only once the credential DELETEs have answered, so no new
+        // sign-in can take it over while they can still clear its cookies.
+        // Switching to it meanwhile is ignored.
+        removingAccounts.add(accountId);
         closingSlots.add(slot);
         clearRefreshTimer(accountId);
-        const finish = () => {
-          // Started first: the cleanup keeps the slot marked closing.
-          void clearSlotCredentials(slot, wasOAuth);
-          if (client) {
-            forgetCalendarSubscriptions(client);
-            try { client.disconnect(); } catch { /* noop */ }
-          }
-          clients.delete(accountId);
-          evictAccount(accountId);
-          accountStore.removeAccount(accountId);
-          clearPluginStorageForAccount(accountId);
-        };
-        if (!userInitiated) { finish(); return; }
-
-        // Fork (Wnt/webmail), audit bulwark-1: as in logout(), a removal the
-        // user asked for ends the account's Web Push before its client and
-        // token go. The account (and so its cookie slot) stays registered
-        // until then, so no new sign-in can take over the slot meanwhile.
-        removingAccounts.add(accountId);
-        void teardownPushOnSignOut({ clients: client ? [client] : [], loginIds: [accountId], everyAccount: false })
-          .finally(() => {
+        const others = accountStore.accounts.filter((a) => a.id !== accountId);
+        void (async () => {
+          try {
+            if (userInitiated) {
+              await teardownPushOnSignOut({
+                clients: client ? [client] : [],
+                loginIds: [accountId],
+                unmappedFallback: !client && !pushAccountOfLogin(accountId)
+                  ? { keep: pushAccountsOf(others) }
+                  : undefined,
+                everyAccount: false,
+              });
+            }
+            if (client) {
+              forgetCalendarSubscriptions(client);
+              try { client.disconnect(); } catch { /* noop */ }
+            }
+            clients.delete(accountId);
+            evictAccount(accountId);
+            clearPluginStorageForAccount(accountId);
+            await clearSlotCredentialsSettled(slot, wasOAuth);
+          } finally {
             removingAccounts.delete(accountId);
-            finish();
-          });
+            useAccountStore.getState().removeAccount(accountId);
+          }
+        })();
       },
 
       logoutAll: async () => {

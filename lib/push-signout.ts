@@ -14,7 +14,7 @@ import type { IJMAPClient } from '@/lib/jmap/client-interface';
 import { disableWebPush, dropRelayRegistration, forgetWebPushRegistration, locallyOptedInAccounts } from '@/lib/web-push';
 import { currentRelayUrl } from '@/lib/push-relay-current';
 import {
-  forgetPushAccountOfLogin, markPushSignedOut, noteExplicitSignOut, pushAccountOfLogin,
+  forgetPushAccountOfLogin, markPushSignedOut, noteExplicitSignOut, pushAccountOfLogin, withPushLock,
 } from '@/lib/push-signout-state';
 
 export { clearPushSignedOut } from '@/lib/push-signout-state';
@@ -27,6 +27,8 @@ const NOTIFICATION_TAG_PREFIX = 'bulwark-mail:';
 // the marker already silences the device, and the server side goes on in the
 // background.
 const TEARDOWN_TIMEOUT_MS = 8000;
+// The worker drains within 5 s (SIGNOUT_DRAIN_MS in public/sw.js).
+const WORKER_SETTLE_TIMEOUT_MS = 6000;
 
 async function swRegistration(): Promise<ServiceWorkerRegistration | null> {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return null;
@@ -77,6 +79,25 @@ function withTimeout(work: Promise<unknown>, ms: number): Promise<void> {
 }
 
 /**
+ * Ask the service worker to settle the pushes it is handling for these
+ * accounts (see handlePushSignOut in public/sw.js) and wait for its answer:
+ * once it comes, no notification for them can still be on its way.
+ */
+async function settleWorker(accountIds: string[], everyAccount: boolean): Promise<void> {
+  const registration = await swRegistration();
+  const worker = registration?.active;
+  if (!worker || typeof MessageChannel === 'undefined') return;
+  const channel = new MessageChannel();
+  const answered = new Promise<void>((resolve) => { channel.port1.onmessage = () => resolve(); });
+  try {
+    worker.postMessage({ type: 'push-signout', accountIds, everyAccount }, [channel.port2]);
+    await withTimeout(answered, WORKER_SETTLE_TIMEOUT_MS);
+  } finally {
+    channel.port1.close();
+  }
+}
+
+/**
  * Turn Web Push off for the accounts being signed out on purpose. Call it
  * before their clients disconnect and their tokens are revoked: destroying
  * the JMAP PushSubscription needs the still-valid credential.
@@ -84,12 +105,17 @@ function withTimeout(work: Promise<unknown>, ms: number): Promise<void> {
  * `clients`: the connected clients of those logins. `loginIds`: the login
  * entries, so an account without a connected client is silenced too (its
  * relay record goes; the JMAP record expires on the server).
+ * `unmappedFallback`: one of the logins could not be mapped to a push account
+ * (it never connected since this mapping exists); every local opt-in not in
+ * `keep` (the accounts that stay) is turned off too, so nothing unknown can
+ * keep notifying. Those accounts need a fresh opt-in.
  * `everyAccount`: nobody stays signed in on this device, so every account
  * with a push opt-in here and the browser's push subscription go too.
  */
 export async function teardownPushOnSignOut(params: {
   clients: IJMAPClient[];
   loginIds?: string[];
+  unmappedFallback?: { keep: string[] };
   everyAccount: boolean;
 }): Promise<void> {
   if (typeof window === 'undefined') return;
@@ -102,14 +128,22 @@ export async function teardownPushOnSignOut(params: {
     const accountId = pushAccountOfLogin(loginId);
     if (accountId && !targets.has(accountId)) targets.set(accountId, null);
   }
-  if (params.everyAccount) {
-    for (const accountId of locallyOptedInAccounts()) if (!targets.has(accountId)) targets.set(accountId, null);
+  if (params.everyAccount || params.unmappedFallback) {
+    const keep = params.everyAccount ? [] : params.unmappedFallback!.keep;
+    for (const accountId of locallyOptedInAccounts()) {
+      if (!targets.has(accountId) && !keep.includes(accountId)) targets.set(accountId, null);
+    }
   }
   const accountIds = [...targets.keys()];
 
-  // Local and quick, and enough on its own to silence this device.
-  for (const accountId of accountIds) noteExplicitSignOut(accountId);
-  await markPushSignedOut(accountIds, params.everyAccount);
+  // Local and quick, and enough on its own to silence this device. Written
+  // under the lock enables commit under (lib/push-signout-state.ts).
+  await withPushLock(async () => {
+    for (const accountId of accountIds) noteExplicitSignOut(accountId);
+    await markPushSignedOut(accountIds, params.everyAccount);
+  });
+  // Pushes the worker is already handling settle before the sign-out goes on.
+  await settleWorker(accountIds, params.everyAccount).catch(() => undefined);
   await closeNotifications(accountIds, params.everyAccount);
 
   // One deadline for all of the network work.

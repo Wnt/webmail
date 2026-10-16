@@ -54,25 +54,33 @@
 >      release up to 24.22.0; bump the base image once a Node 24 release ships ≥ 7.30.1.
 >      Test: `lib/__tests__/undici-response-error.test.ts`.
 >    - bulwark-1, explicit sign-out ends Web Push (`lib/push-signout.ts`, `lib/push-signout-state.ts`,
->      `stores/auth-store.ts`, `lib/web-push.ts`, `public/sw.js`): a sign-out the user asked for (sign out,
->      sign out of all, removing an account) first runs `disableWebPush` against the locked relay while the
->      client and token still work (an account without a connected client: its relay record is deleted, via
->      the login → push-account mapping recorded when its client connected), closes the account's
->      notifications, forgets the local opt-in and, when no account stays, unsubscribes the browser (network
->      part bounded to 8 s). A removed account keeps its registry entry and cookie slot until then. A Cache
->      Storage marker makes the service worker drop pushes for that account (and with no account left, drop
->      the browser subscription); the worker reads it again right before and after showing, so a push already
->      being handled shows nothing. Only a user-initiated enable clears the account marker, a deliberate
->      sign-in the device-wide one; an enable or background re-sync still running when the sign-out lands,
->      or a re-sync of a marked account, undoes what it created. After an explicit sign-out, push needs a
->      fresh opt-in. Sign-outs nobody asked for (rejected or unrenewable token, failed session restore,
->      account switching) leave push alone, so notifications keep arriving after a session expires.
+>      `stores/auth-store.ts`, `lib/web-push.ts`, `public/sw.js`). Only a sign-out the user asked for (sign out,
+>      sign out of all, removing an account) does this; sign-outs nobody asked for (rejected or unrenewable
+>      token, failed session restore, account switching) leave push alone, so notifications keep arriving
+>      after a session expires. In order:
+>      1. Cache Storage markers for the accounts (and with no account left, the device) are written under a
+>         cross-tab Web Lock; the service worker drops pushes for marked accounts (with no account left, it
+>         also drops the browser subscription), reading the marker right before and after showing.
+>      2. The worker is asked to settle: it aborts pending preview lookups for those accounts, drains their
+>         push queues, closes their notifications and answers; the sign-out waits for that answer.
+>      3. `disableWebPush` against the locked relay while the client and token still work; for an account
+>         without a connected client, its relay record is deleted (login → push-account mapping recorded when
+>         a client connects; a login that cannot be mapped turns off every local opt-in no remaining account
+>         claims). With no account left the browser is unsubscribed. Network part bounded to 8 s.
+>      4. The local opt-in is forgotten. A removed account keeps its registry entry and cookie slot until its
+>         credential DELETEs have answered.
+>      An enable commits (records its opt-in, lifts markers) under the same lock and only if no new marker
+>      appeared since it started (so an enable or re-sync racing a sign-out in any tab undoes what it
+>      created); a background re-sync never commits for a marked account. Only a user-initiated enable lifts
+>      an account's marker, a deliberate sign-in the device-wide one, so push needs a fresh opt-in after an
+>      explicit sign-out.
 >      Tests: `stores/__tests__/auth-store-logout-push.test.ts`,
->      `stores/__tests__/auth-store-remove-account-push.test.ts`, `lib/__tests__/web-push.test.ts`.
+>      `stores/__tests__/auth-store-remove-account-push.test.ts`, `lib/__tests__/web-push.test.ts`,
+>      `lib/__tests__/sw-summary-association.test.ts`.
 >    - bulwark-5 (`public/sw.js`, extends change 1): every mail notification records its account and headline
 >      message id; the quiet summary push replaces it only when both match the summary's account and newest id,
 >      and is dropped otherwise. Pushes are handled one at a time per account, so a summary cannot interleave
->      with a newer message's notification; the preview lookup times out after 10 s.
+>      with a newer message's notification; the preview lookup (headers and body) times out after 10 s.
 >      Test: `lib/__tests__/sw-summary-association.test.ts`.
 >    - bulwark-2, HTML attachment previews follow the remote-content policy (`components/files/html-attachment-preview.tsx`,
 >      `components/files/file-preview-modal.tsx`): the attachment is decoded by its charset, sanitized like a
@@ -84,9 +92,10 @@
 >      `lib/stalwart/credentials.ts`): the sealed context carries an expiry (12 h for a Bearer token, 7 days
 >      for Basic; live clients re-seal it on every sign-in, restore, switch and renewal); an envelope without
 >      one is refused. Routes that use a session only as a local gate check the credential with the mail
->      server first (successes cached for 60 s, failures answer 401): `fetch-ical`, instance details
->      (`lib/auth/instance-details.ts`, health), `wopi/status`, `plugin-approval-status`, settings sync and
->      `translate` (one-line switch to `getVerifiedStalwartCredentials`). The remembered-session cookie is
+>      server first (successes cached for 60 s, failures answer 401; the first slot whose credential is live
+>      wins): `fetch-ical`, instance details (`lib/auth/instance-details.ts`, health), `wopi/status`,
+>      `plugin-approval-status`, plugin config for mailbox users, settings sync and `translate` (one-line
+>      switch to `getVerifiedStalwartCredentials`). The remembered-session cookie is
 >      checked the same way there. Routes that forward the credential are checked by the mail server.
 >      Push without a session is unaffected (the preview API already verifies upstream).
 >      Tests: `lib/__tests__/stale-context-proxy.test.ts`; mocks adjusted in the fetch-ical, translate,

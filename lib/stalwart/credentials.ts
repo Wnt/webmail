@@ -120,7 +120,22 @@ export async function isLiveSession(session: SessionCredentials): Promise<boolea
  * the credential. Null when there is none, or it is expired or revoked.
  */
 export async function getVerifiedStalwartCredentials(request: NextRequest): Promise<StalwartCredentials | null> {
-  const creds = await getStalwartCredentials(request);
-  if (!creds) return null;
-  return (await isLiveCredential(creds)) ? creds : null;
+  const cookieStore = await cookies();
+  // Like getStalwartCredentials, but the first slot whose credential is live:
+  // a revoked one in an earlier slot must not hide a signed-in later one.
+  for (const slot of getCandidateSlots(request)) {
+    const context = readStalwartAuthContextFromStore(cookieStore, slot);
+    if (!context) continue;
+    const serverUrl = context.serverUrl.replace(/\/+$/, '');
+    const creds: StalwartCredentials = {
+      serverUrl,
+      authHeader: context.authHeader,
+      username: context.username,
+      hasSessionCookie: !!cookieStore.get(sessionCookieName(slot))?.value,
+      slot,
+      trusted: await isTrustedJmapServerUrl(serverUrl),
+    };
+    if (await isLiveCredential(creds)) return creds;
+  }
+  return null;
 }

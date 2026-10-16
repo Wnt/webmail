@@ -828,7 +828,6 @@ describe('explicit sign-out markers', () => {
     expect(await resyncWebPush({ client, relayBaseUrl: RELAY, inboxOnly: false })).toBe(false);
 
     expect(client.destroyed).toContain('push-new');
-    expect(client.verifyPushSubscription).not.toHaveBeenCalled();
     expect(localStorage.getItem(SUB_KEY)).toBeNull();
   });
 });
@@ -848,7 +847,72 @@ describe('enable racing an explicit sign-out', () => {
     await expect(enableWebPush({ client, relayBaseUrl: RELAY, inboxOnly: false })).rejects.toThrow('Signed out');
 
     expect(client.destroyed).toContain('push-new');
-    expect(client.verifyPushSubscription).not.toHaveBeenCalled();
+    expect(localStorage.getItem(SUB_KEY)).toBeNull();
+  });
+});
+
+describe('enable racing a sign-out in another tab (persisted markers)', () => {
+  function stubCaches() {
+    const store = new Map<string, string>();
+    vi.stubGlobal('caches', {
+      open: async () => ({
+        put: async (key: string, res: Response) => { store.set(key, await res.text()); },
+        delete: async (key: string) => store.delete(key),
+        match: async (key: string) => (store.has(key) ? new Response(store.get(key)) : undefined),
+      }),
+    });
+    return store;
+  }
+
+  it('a deliberate enable whose verification answers after the sign-out commits nothing and keeps the marker', async () => {
+    const store = stubCaches();
+    const { markPushSignedOut } = await import('@/lib/push-signout-state');
+    localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
+    const client = makeClient([]);
+    installFetch({});
+    // Another tab signs the account out while the server's answer is on its way.
+    vi.mocked(client.verifyPushSubscription).mockImplementation(async () => {
+      await markPushSignedOut([ACCOUNT_ID], false);
+    });
+
+    await expect(enableWebPush({ client, relayBaseUrl: RELAY, inboxOnly: false, userInitiated: true }))
+      .rejects.toThrow('Signed out');
+
+    expect(store.size).toBe(1);
+    expect(client.destroyed).toContain('push-new');
+    expect(localStorage.getItem(SUB_KEY)).toBeNull();
+  });
+
+  it('a deliberate enable lifts a marker that was there when it started', async () => {
+    const store = stubCaches();
+    const { markPushSignedOut } = await import('@/lib/push-signout-state');
+    await markPushSignedOut([ACCOUNT_ID], true);
+    installFetch({});
+
+    await enableWebPush({ client: makeClient([]), relayBaseUrl: RELAY, inboxOnly: false, userInitiated: true });
+
+    expect(store.size).toBe(0);
+    expect(localStorage.getItem(SUB_KEY)).toBe('push-new');
+  });
+
+  it('a refresh racing a sign-out in another tab undoes itself', async () => {
+    const store = stubCaches();
+    const { markPushSignedOut } = await import('@/lib/push-signout-state');
+    localStorage.setItem(DEVICE_KEY, THIS_DEVICE);
+    localStorage.setItem(SUB_KEY, 'push-old');
+    localStorage.setItem(RELAY_KEY, RELAY);
+    installFetch({});
+    const client = makeClient([sub('push-old', THIS_DEVICE)]);
+    vi.mocked(client.listPushSubscriptions).mockImplementation(async () => {
+      await markPushSignedOut([ACCOUNT_ID], false);
+      return [sub('push-old', THIS_DEVICE)];
+    });
+
+    await expect(enableWebPush({ client, relayBaseUrl: RELAY, inboxOnly: false, userInitiated: true }))
+      .rejects.toThrow('Signed out');
+
+    expect(store.size).toBe(1);
+    expect(client.destroyed).toContain('push-old');
     expect(localStorage.getItem(SUB_KEY)).toBeNull();
   });
 });

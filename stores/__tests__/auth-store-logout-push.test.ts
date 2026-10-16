@@ -266,3 +266,32 @@ describe('accounts without a connected client', () => {
     expect(log).toContain(`DELETE ${RELAY}/api/push/register/device9`);
   });
 });
+
+describe('accounts this browser cannot map (upgraded from before the mapping)', () => {
+  it('removing an unmapped login turns off every local opt-in no remaining account claims', async () => {
+    const log: string[] = [];
+    const { caches } = setup(log);
+    const alice = account();
+    const other = account({ id: 'bob@example.com@mail.example.com', username: 'bob@example.com', cookieSlot: 1, isConnected: false, isDefault: false });
+    useAccountStore.setState({ accounts: [alice, other] });
+    const { rememberPushAccount } = await import('@/lib/push-signout-state');
+    rememberPushAccount(alice.id, 'acc1');
+    // bob's opt-in from the old version: no mapping to his login.
+    localStorage.setItem('bulwark.push.deviceClientId.v1.acc2', 'device2');
+    localStorage.setItem('bulwark.push.subscriptionId.v1.acc2', 'subscription2');
+    mockFetch({
+      ...credentialRoutes,
+      'DELETE /api/auth/session?slot=1': () => ok(),
+      'DELETE /api/auth/token?slot=1': () => ok(),
+      [`DELETE ${RELAY}/api/push/register/device2`]: () => ok(),
+    }, log);
+    useAuthStore.getState().removeAccount(other.id);
+    await vi.waitFor(() => expect(useAccountStore.getState().accounts.map((a) => a.id)).toEqual([alice.id]));
+    expect(caches.has(`${window.location.origin}/__push-state/signed-out/acc2`)).toBe(true);
+    expect(localStorage.getItem('bulwark.push.subscriptionId.v1.acc2')).toBeNull();
+    expect(log).toContain(`DELETE ${RELAY}/api/push/register/device2`);
+    // alice is claimed by her login and keeps push.
+    expect(localStorage.getItem('bulwark.push.subscriptionId.v1.acc1')).toBe('subscription1');
+    expect(caches.has(`${window.location.origin}/__push-state/signed-out/acc1`)).toBe(false);
+  });
+});

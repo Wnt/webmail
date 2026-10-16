@@ -71,6 +71,11 @@ self.addEventListener("message", (event) => {
     return;
   }
 
+  if (data.type === "push-signout") {
+    event.waitUntil(handlePushSignOut(event));
+    return;
+  }
+
   if (data.type === "open-mailto-in-client") {
     event.waitUntil(handleOpenMailtoInClient(event));
     return;
@@ -194,24 +199,27 @@ async function handlePush(event) {
     const qs = query.toString();
     const previewUrl = `${BASE_PATH}/api/push/preview${qs ? `?${qs}` : ""}`;
     // Fork patch (Wnt/webmail): pushes for an account run one at a time, so
-    // a stalled lookup must not hold the next ones back for long.
+    // a stalled lookup (headers or body) must not hold the next ones back
+    // for long; an explicit sign-out cuts it short too (handlePushSignOut).
     const controller = typeof AbortController === "function" && typeof setTimeout === "function"
       ? new AbortController()
       : null;
     const timer = controller ? setTimeout(() => controller.abort(), PREVIEW_TIMEOUT_MS) : null;
-    let res;
+    const lookups = previewLookups(accountId);
+    if (controller) lookups.add(controller);
     try {
-      res = await fetch(previewUrl, {
+      const res = await fetch(previewUrl, {
         credentials: "include",
         cache: "no-store",
         ...(controller ? { signal: controller.signal } : {}),
       });
+      if (res.ok) {
+        preview = await res.json();
+        previewOk = true;
+      }
     } finally {
       if (timer) clearTimeout(timer);
-    }
-    if (res.ok) {
-      preview = await res.json();
-      previewOk = true;
+      if (controller) lookups.delete(controller);
     }
   } catch (_) {
     preview = null;
@@ -363,6 +371,55 @@ function signedOutKey(path) {
 }
 
 const PREVIEW_TIMEOUT_MS = 10_000;
+const SIGNOUT_DRAIN_MS = 5_000;
+
+// Preview lookups in flight, per account, so a sign-out can cut them short.
+const PREVIEW_LOOKUPS = new Map();
+
+function previewLookups(accountId) {
+  const key = accountId || "default";
+  let set = PREVIEW_LOOKUPS.get(key);
+  if (!set) {
+    set = new Set();
+    PREVIEW_LOOKUPS.set(key, set);
+  }
+  return set;
+}
+
+// Fork patch (Wnt/webmail), audit bulwark-1: the page's explicit sign-out
+// asks the worker (after writing the markers) to settle every push already
+// being handled for those accounts: lookups are aborted, so each handler
+// reaches its marker check now; the account queues are drained, so a display
+// already handed to the browser has finished; then everything still on
+// screen for them is closed. The page waits for the answer before it goes on
+// with the sign-out.
+async function handlePushSignOut(event) {
+  const data = event.data || {};
+  const port = event.ports && event.ports[0];
+  const everyAccount = data.everyAccount === true;
+  const accountIds = Array.isArray(data.accountIds)
+    ? data.accountIds.filter((id) => typeof id === "string" && id)
+    : [];
+  const affected = (key) => everyAccount || accountIds.includes(key);
+  try {
+    for (const [key, lookups] of PREVIEW_LOOKUPS) {
+      if (affected(key)) for (const controller of lookups) controller.abort();
+    }
+    const pending = [...PUSH_QUEUES].filter(([key]) => affected(key)).map(([, queue]) => queue);
+    await Promise.race([
+      Promise.all(pending),
+      new Promise((resolve) => setTimeout(resolve, SIGNOUT_DRAIN_MS)),
+    ]);
+    const shown = await self.registration.getNotifications();
+    for (const n of shown) {
+      const tag = n.tag || "";
+      if (tag.startsWith("bulwark-mail:") && affected(tag.slice("bulwark-mail:".length))) n.close();
+    }
+  } catch (_) {
+    // Answer anyway; the markers already silence these accounts.
+  }
+  if (port) port.postMessage({ done: true });
+}
 
 // Every mail notification goes through here. The marker is read again right
 // before showing, and once more after: a sign-out that landed while this

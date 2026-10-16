@@ -3,7 +3,7 @@ import { getPlugin } from '@/lib/admin/plugin-registry';
 import { getDevPlugin } from '@/lib/admin/plugin-dev';
 import { getPluginConfig, setPluginConfig, deletePluginConfigKey } from '@/lib/admin/plugin-config';
 import { requireAdminAuth } from '@/lib/admin/session';
-import { getStalwartCredentials } from '@/lib/stalwart/credentials';
+import { getVerifiedStalwartCredentials } from '@/lib/stalwart/credentials';
 
 /** Resolve a plugin from the persisted registry first, then PLUGIN_DEV_DIR. */
 async function resolvePlugin(id: string) {
@@ -38,7 +38,8 @@ export async function GET(
     const isAdmin = !('error' in adminAuth);
 
     if (!isAdmin) {
-      const creds = await getStalwartCredentials(request);
+      // Fork (Wnt/webmail), audit bulwark-4: a live credential, not a cookie that decrypts.
+      const creds = await getVerifiedStalwartCredentials(request);
       if (!creds) {
         return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
       }

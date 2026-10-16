@@ -94,7 +94,7 @@ it('an explicit removal tears down the account push first, then its client and c
   finish();
   await vi.waitFor(() => expect(events).toContain('DELETE /api/auth/session?slot=1'));
   expect(events.indexOf('disconnect b@y.test')).toBeGreaterThan(events.indexOf('teardown done'));
-  expect(useAccountStore.getState().accounts.map((a) => a.id)).toEqual([A.id]);
+  await vi.waitFor(() => expect(useAccountStore.getState().accounts.map((a) => a.id)).toEqual([A.id]));
 });
 
 it('a removal the user did not ask for leaves push alone', async () => {
@@ -117,4 +117,24 @@ it('signing out of the active account while another stays tears down only that a
 it('remembers which push account each connected login is', () => {
   expect(localStorage.getItem(`bulwark.push.loginAccount.v1.${A.id}`)).toBe('jmap-a@x.test');
   expect(localStorage.getItem(`bulwark.push.loginAccount.v1.${B.id}`)).toBe('jmap-b@y.test');
+});
+
+it('the cookie slot stays reserved until the credential DELETEs have answered', async () => {
+  teardown.mockResolvedValue(undefined);
+  let answer!: () => void;
+  const held = new Promise<void>((resolve) => { answer = resolve; });
+  const base = vi.mocked(fetch).getMockImplementation()!;
+  vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
+    if (String(input) === '/api/auth/session?slot=1' && init?.method === 'DELETE') {
+      events.push('DELETE held');
+      await held;
+    }
+    return base(input as never, init);
+  }));
+  useAuthStore.getState().removeAccount(B.id);
+  await vi.waitFor(() => expect(events).toContain('DELETE held'));
+  expect(useAccountStore.getState().getAccountById(B.id)).toBeDefined();
+  expect(useAccountStore.getState().getNextCookieSlot()).not.toBe(B.cookieSlot);
+  answer();
+  await vi.waitFor(() => expect(useAccountStore.getState().getAccountById(B.id)).toBeUndefined());
 });

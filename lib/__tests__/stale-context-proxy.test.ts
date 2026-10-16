@@ -174,3 +174,37 @@ describe('other local gates need a live credential too', () => {
     expect(await instanceDetails()).toBe(true);
   });
 });
+
+describe('several signed-in slots', () => {
+  it('a revoked credential in an earlier slot does not hide a live later one', async () => {
+    const { setStalwartAuthContextInStore } = await import('@/lib/stalwart/auth-context');
+    const { cookies } = await import('next/headers');
+    const store = await cookies();
+    setStalwartAuthContextInStore(store, 0, { serverUrl: 'https://mail.example.test', username: 'owner@example.test', authHeader: 'Bearer revoked' });
+    setStalwartAuthContextInStore(store, 1, { serverUrl: 'https://mail.example.test', username: 'other@example.test', authHeader: 'Bearer live' });
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
+      return auth === 'Bearer live'
+        ? new Response(JSON.stringify(SESSION), { status: 200, headers: { 'content-type': 'application/json' } })
+        : new Response('{}', { status: 401 });
+    }));
+    expect((await fetchFeed()).status).toBe(200);
+  });
+});
+
+describe('plugin configuration for mailbox users', () => {
+  it('a fresh context whose grant was revoked gets nothing', async () => {
+    vi.doMock('@/lib/admin/session', () => ({ requireAdminAuth: async () => ({ error: 'no admin' }) }));
+    vi.doMock('@/lib/admin/plugin-registry', () => ({ getPlugin: async () => ({ id: 'demo', configSchema: { a: { type: 'string' } } }) }));
+    vi.doMock('@/lib/admin/plugin-config', () => ({ getPluginConfig: async () => ({ a: 'x' }) }));
+    await seal('Bearer revoked-access-token');
+    mailServer(401);
+    const { GET } = await import('@/app/api/admin/plugins/[id]/config/route');
+    const res = await GET(new NextRequest('https://webmail.example/api/admin/plugins/demo/config'), { params: Promise.resolve({ id: 'demo' }) });
+    expect(res.status).toBe(401);
+    mailServer(200);
+    const ok = await GET(new NextRequest('https://webmail.example/api/admin/plugins/demo/config'), { params: Promise.resolve({ id: 'demo' }) });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ a: 'x' });
+  });
+});

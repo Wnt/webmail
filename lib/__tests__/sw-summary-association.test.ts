@@ -12,7 +12,7 @@ const SW_SOURCE = readFileSync(join(process.cwd(), 'public', 'sw.js'), 'utf8');
 type Shown = { title: string; options: Record<string, unknown> };
 type PreviewResponse = { ok: boolean; status?: number; body?: unknown } | 'throw';
 
-function loadWorker(preview: PreviewResponse) {
+function loadWorker(preview: PreviewResponse, { timers = false } = {}) {
   const listeners = new Map<string, (event: unknown) => void>();
   const shown: Shown[] = [];
   // Notifications currently on screen, by tag (a new one with the same tag replaces the old).
@@ -64,12 +64,15 @@ function loadWorker(preview: PreviewResponse) {
       },
     }),
   };
-  const fetchMock = vi.fn(async () => {
+  const fetchMock = vi.fn(async (_url?: unknown, _init?: { signal?: AbortSignal }): Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }> => {
     if (preview === 'throw') throw new TypeError('network down');
     return { ok: preview.ok, status: preview.status ?? 200, json: async () => preview.body };
   });
 
-  const context = vm.createContext({ self, caches, fetch: fetchMock, URL, URLSearchParams, Response, Date, console });
+  const context = vm.createContext({
+    self, caches, fetch: fetchMock, URL, URLSearchParams, Response, Date, console,
+    ...(timers ? { setTimeout, clearTimeout, AbortController } : {}),
+  });
   vm.runInContext(SW_SOURCE, context);
 
   function startPush(payload: unknown): Promise<unknown> {
@@ -83,8 +86,19 @@ function loadWorker(preview: PreviewResponse) {
   async function push(payload: unknown) {
     await startPush(payload);
   }
+  /** The page's explicit sign-out asking the worker to settle; resolves with its answer. */
+  function signOut(accountIds: string[], everyAccount = false): Promise<unknown> {
+    return new Promise((resolve) => {
+      const waits: Promise<unknown>[] = [];
+      listeners.get('message')?.({
+        data: { type: 'push-signout', accountIds, everyAccount },
+        ports: [{ postMessage: (msg: unknown) => resolve(msg) }],
+        waitUntil: (p: Promise<unknown>) => waits.push(p),
+      });
+    });
+  }
   const marker = (path: string) => cacheStore.set(`https://mail.example.com/__push-state/${path}`, '{"at":1}');
-  return { push, startPush, shown, active, fetchMock, context, marker, unsubscribe, holdNotificationLookups, whenShown };
+  return { push, startPush, shown, active, fetchMock, context, marker, unsubscribe, holdNotificationLookups, whenShown, signOut };
 }
 
 const payload = (extra: Record<string, unknown> = {}) => ({
@@ -184,6 +198,57 @@ describe('push security boundaries', () => {
     release();
     await late;
     expect(active.size).toBe(0);
+  });
+  it('the sign-out is answered only after a display already under way has finished and been closed', async () => {
+    const { startPush, active, marker, whenShown, signOut } = loadWorker({ ok: false, status: 401 }, { timers: true });
+    let releaseShow!: () => void;
+    let showing!: () => void;
+    const showStarted = new Promise<void>((resolve) => { showing = resolve; });
+    whenShown(() => { showing(); return new Promise<void>((resolve) => { releaseShow = resolve; }); });
+    const pending = startPush(payload({ email: { from: 'Doctor', subject: 'Private', preview: 'Confidential' } }));
+    await showStarted;
+    marker('signed-out/acc1');
+    let answered = false;
+    const answer = signOut(['acc1']).then((msg) => { answered = true; return msg; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(answered).toBe(false);
+    releaseShow();
+    expect(await answer).toEqual({ done: true });
+    await pending;
+    expect(active.size).toBe(0);
+  });
+  it('the sign-out cuts a pending preview lookup short instead of waiting for it', async () => {
+    const { startPush, shown, marker, signOut, fetchMock } = loadWorker({ ok: false, status: 401 }, { timers: true });
+    fetchMock.mockImplementationOnce(async (_url?: unknown, init?: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    }) as never);
+    const pending = startPush(payload({ email: { from: 'Doctor', subject: 'Private', preview: 'Confidential' } }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    marker('signed-out/acc1');
+    const started = Date.now();
+    expect(await signOut(['acc1'])).toEqual({ done: true });
+    expect(Date.now() - started).toBeLessThan(2000);
+    await pending;
+    expect(shown).toHaveLength(0);
+  });
+  it('a preview whose body stalls times out and the next push for the account goes ahead', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { startPush, shown, fetchMock } = loadWorker({ ok: false, status: 401 }, { timers: true });
+      fetchMock.mockImplementationOnce(async (_url?: unknown, init?: { signal?: AbortSignal }) => ({
+        ok: true, status: 200,
+        json: () => new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+      }) as never);
+      const first = startPush(payload({ email: { from: 'A', subject: 'First', preview: 'one' } }));
+      const second = startPush(payload({ emailIds: ['e2'], email: { from: 'B', subject: 'Second', preview: 'two' } }));
+      await vi.advanceTimersByTimeAsync(10_001);
+      await Promise.all([first, second]);
+      expect(shown.map((n) => n.options.body)).toEqual(['First\none', 'Second\ntwo']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it('attacker URLs in IDs remain same-origin click paths', () => {
     const { context } = loadWorker({ ok: false });
