@@ -113,3 +113,8 @@ it('signing out of the active account while another stays tears down only that a
   expect(everyAccount).toBe(false);
   expect(useAuthStore.getState().activeAccountId).toBe(B.id);
 });
+
+it('remembers which push account each connected login is', () => {
+  expect(localStorage.getItem(`bulwark.push.loginAccount.v1.${A.id}`)).toBe('jmap-a@x.test');
+  expect(localStorage.getItem(`bulwark.push.loginAccount.v1.${B.id}`)).toBe('jmap-b@y.test');
+});

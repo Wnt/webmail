@@ -44,7 +44,8 @@ import {
   saveLiteRefreshToken,
 } from '@/lib/auth/lite-tokens';
 import { clearLiteOAuthFlow, readLiteOAuthFlow } from '@/lib/auth/lite-oauth';
-import { clearPushSignedOut, rememberPushAccount, teardownPushOnSignOut } from '@/lib/push-signout';
+import { clearPushSignedOut, teardownPushOnSignOut } from '@/lib/push-signout';
+import { rememberPushAccount } from '@/lib/push-signout-state';
 
 /** Logins restored at once after the one on screen: enough to overlap round trips, few enough not to crowd the server. */
 const RESTORE_CONCURRENCY = 4;
@@ -695,11 +696,6 @@ function bindClientStatusHandlers(
   get: () => AuthState,
   accountId?: string,
 ): void {
-  // Fork (Wnt/webmail), audit bulwark-1: which push account this login is,
-  // for an explicit sign-out while its client is not connected.
-  if (accountId) {
-    try { rememberPushAccount(accountId, client.getAccountId()); } catch { /* not connected */ }
-  }
   client.onConnectionChange((connected) => {
     if (!accountId || get().activeAccountId === accountId) {
       set({ connectionLost: !connected });
@@ -987,7 +983,16 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshPromise: Promise<string | null> | null = null;
 
 // Multi-account state: per-account JMAP clients and refresh timers
-const clients = new Map<string, JMAPClient>();
+// Fork (Wnt/webmail), audit bulwark-1: every client is registered here once
+// connected; remember which push account (JMAP account id) each login is, so
+// an explicit sign-out can silence it later even without a connected client.
+class ClientRegistry extends Map<string, JMAPClient> {
+  override set(loginId: string, client: JMAPClient): this {
+    try { rememberPushAccount(loginId, client.getAccountId()); } catch { /* not connected */ }
+    return super.set(loginId, client);
+  }
+}
+const clients = new ClientRegistry();
 // Fork (Wnt/webmail), audit bulwark-1: logins whose explicit removal is
 // waiting for its push teardown; they keep their registry entry and slot.
 const removingAccounts = new Set<string>();

@@ -17,7 +17,7 @@ import {
   forgetPushAccountOfLogin, markPushSignedOut, noteExplicitSignOut, pushAccountOfLogin,
 } from '@/lib/push-signout-state';
 
-export { clearPushSignedOut, rememberPushAccount } from '@/lib/push-signout-state';
+export { clearPushSignedOut } from '@/lib/push-signout-state';
 
 const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, '');
 const SW_SCOPE = `${BASE_PATH}/`;
