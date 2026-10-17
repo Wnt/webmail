@@ -51,5 +51,8 @@ export function safeReturnPath(raw: unknown, basePath = ''): string | null {
   if (!locale || !(locales as readonly string[]).includes(locale)) return null;
   const rest = segments.slice(2).join('/');
   if (rest === 'login' || rest.startsWith('login/') || rest === 'auth' || rest.startsWith('auth/')) return null;
-  return `${base}${path}${url.search}`;
+  // URL() percent-encodes what it normalises: bound the result too, or a
+  // short Unicode path becomes a pending cookie no browser keeps.
+  const result = `${base}${path}${url.search}`;
+  return result.length <= MAX_RETURN_PATH ? result : null;
 }

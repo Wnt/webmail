@@ -16,7 +16,7 @@ export interface PasskeyEntryPageProps {
   appName: string;
   /** Mark that follows the colour scheme itself (an SVG with its own media query). */
   logoUrl: string;
-  /** `<basePath>/api/auth/sso/begin` */
+  /** `<basePath>/api/auth/sso/begin`, where the button links to */
   beginAction: string;
   locale: string;
   returnTo: string | null;
@@ -41,6 +41,13 @@ export function reasonForSsoError(code: string | undefined): PasskeyEntryReason 
   return 'error';
 }
 
+/** `<begin>?locale=..[&return=..]` */
+export function beginHref(beginAction: string, locale: string, returnTo: string | null): string {
+  const q = new URLSearchParams({ locale });
+  if (returnTo) q.set('return', returnTo);
+  return `${beginAction}?${q.toString()}`;
+}
+
 export const PASSKEY_BUTTON_LABEL = 'Kirjaudu passkeyllä / Sign in with passkey';
 
 export function PasskeyEntryPage({ appName, logoUrl, beginAction, locale, returnTo, reason }: PasskeyEntryPageProps) {
@@ -60,14 +67,13 @@ export function PasskeyEntryPage({ appName, logoUrl, beginAction, locale, return
         ) : (
           <p className={styles.text}>Jatka passkeyllä. / Continue with your passkey.</p>
         )}
-        {/* A plain GET navigation: no script needed, and the passkey prompt on the next page follows this tap. */}
-        <form method="get" action={beginAction}>
-          <input type="hidden" name="locale" value={locale} />
-          {returnTo ? <input type="hidden" name="return" value={returnTo} /> : null}
-          <button type="submit" className={styles.button} autoFocus>
-            {PASSKEY_BUTTON_LABEL}
-          </button>
-        </form>
+        {/* A plain link, not a form: the page's CSP limits form targets to
+            this origin, and a browser applies that to the redirect on to an
+            identity provider elsewhere. No script needed; the passkey prompt
+            on the next page follows this tap. */}
+        <a href={beginHref(beginAction, locale, returnTo)} className={styles.button} autoFocus>
+          {PASSKEY_BUTTON_LABEL}
+        </a>
       </div>
     </main>
   );

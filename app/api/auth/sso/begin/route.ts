@@ -30,10 +30,11 @@ import {
   passkeyEntryEnabled,
   passkeyEntryServerId,
   relativeRedirect,
+  SSO_PENDING_COOKIE,
+  SSO_PENDING_MAX_AGE_MS,
 } from '@/lib/auth/passkey-entry';
 
-const SSO_PENDING_COOKIE = 'sso_pending';
-const SSO_PENDING_MAX_AGE = 300; // 5 minutes, as /api/auth/sso/start
+const SSO_PENDING_MAX_AGE = SSO_PENDING_MAX_AGE_MS / 1000; // as /api/auth/sso/start
 
 function noStore(res: NextResponse): NextResponse {
   res.headers.set('Cache-Control', 'no-store');
@@ -46,7 +47,13 @@ export async function GET(request: NextRequest) {
   if (!passkeyEntryEnabled()) return new NextResponse('Not Found', { status: 404 });
   const basePath = request.nextUrl.basePath ?? '';
   const locale = knownLocale(request.nextUrl.searchParams.get('locale')) ?? routing.defaultLocale;
-  const toLoginPage = (error: string) => noStore(relativeRedirect(`${basePath}/${locale}/login?sso_error=${error}`));
+  // Parsed first, so a failure here still keeps it for the retry.
+  const returnTo = safeReturnPath(request.nextUrl.searchParams.get('return'), basePath);
+  const toLoginPage = (error: string) => {
+    const q = new URLSearchParams({ sso_error: error });
+    if (returnTo) q.set('return', returnTo);
+    return noStore(relativeRedirect(`${basePath}/${locale}/login?${q.toString()}`));
+  };
 
   try {
     if (!hasSessionSecret()) {
@@ -65,7 +72,6 @@ export async function GET(request: NextRequest) {
     // proxy forwards it; see wopiBrowserOrigin). The provider only accepts
     // the callbacks registered for this client, so a forged Host gets nowhere.
     const redirectUri = `${wopiBrowserOrigin(request)}${basePath}/${locale}/auth/callback`;
-    const returnTo = safeReturnPath(request.nextUrl.searchParams.get('return'), basePath);
 
     const codeVerifier = generateCodeVerifierServer();
     const state = generateStateServer();

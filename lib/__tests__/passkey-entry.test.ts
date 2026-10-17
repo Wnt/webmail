@@ -38,7 +38,7 @@ vi.mock('@/lib/oauth/token-exchange', () => ({
 
 import { proxy } from '@/proxy';
 import { safeReturnPath } from '@/lib/auth/passkey-entry-shared';
-import { decryptPayload } from '@/lib/auth/crypto';
+import { decryptPayload, encryptPayload } from '@/lib/auth/crypto';
 import { GET as begin } from '@/app/api/auth/sso/begin/route';
 
 const ORIGIN = 'http://localhost:3000';
@@ -87,7 +87,7 @@ describe('safeReturnPath', () => {
     'https://evil.example/en', '//evil.example/en', '/\\evil.example/en', '/en\\..\\x', 'en/mail',
     '/xx/mail', '/mail', '/', '', '/en/login', '/en/login?x=1', '/en/auth/callback?code=1',
     '/en/%2e%2e/admin', '/en/mail%2f..%2fx', '/en/mail\nx', '/en/mail x', 'javascript:alert(1)',
-    `/en/${'a'.repeat(3000)}`, 42, null, undefined,
+    `/en/${'a'.repeat(3000)}`, `/en/mail/${'漢'.repeat(1500)}`, 42, null, undefined,
   ])('refuses %s', (raw) => {
     expect(safeReturnPath(raw)).toBeNull();
   });
@@ -170,6 +170,21 @@ describe('proxy: signed-out page loads go to the passkey sign-in before any HTML
     expect((await load('/en/auth/callback?code=c&state=s')).status).toBe(200);
   });
 
+  it('keeps the deep link of the sign-in that failed, for the retry - only for that flow', async () => {
+    const pending = (extra: Record<string, unknown> = {}) => `sso_pending=${encodeURIComponent(encryptPayload({
+      state: 'st-1', code_verifier: 'v', redirect_uri: `${ORIGIN}/en/auth/callback`, created_at: Date.now(),
+      return_to: '/en/mail/message/M1?slot=2', ...extra,
+    }, 'sso-pending'))}`;
+    const ok = location(await load('/en/auth/callback?error=access_denied&state=st-1', { cookies: pending() }));
+    expect(ok.path).toBe('/en/login');
+    expect(ok.q.get('return')).toBe('/en/mail/message/M1?slot=2');
+    // another flow's state, an expired flow, an unsafe value: no destination
+    expect(location(await load('/en/auth/callback?error=access_denied&state=other', { cookies: pending() })).q.has('return')).toBe(false);
+    expect(location(await load('/en/auth/callback?error=access_denied&state=st-1', { cookies: pending({ created_at: Date.now() - 6 * 60_000 }) })).q.has('return')).toBe(false);
+    expect(location(await load('/en/auth/callback?error=access_denied&state=st-1', { cookies: pending({ return_to: '//evil.example/en' }) })).q.has('return')).toBe(false);
+    expect(location(await load('/en/auth/callback?error=access_denied&state=st-1', { cookies: 'sso_pending=garbage' })).q.has('return')).toBe(false);
+  });
+
   it('is off unless OAuth-only with auto-SSO and a single server', async () => {
     directMode(false);
     expect((await load('/en/mail/inbox')).status).toBe(200);
@@ -236,6 +251,16 @@ describe('GET /api/auth/sso/begin', () => {
     const res = await call('?locale=en');
     expect(res.status).toBe(303);
     expect(res.headers.get('location')).toBe('/en/login?sso_error=temporarily_unavailable');
+    // ...keeping the page it was for.
+    const kept = await call('?locale=en&return=%2Fen%2Fmail%2Fmessage%2FM1');
+    expect(kept.headers.get('location')).toBe('/en/login?sso_error=temporarily_unavailable&return=%2Fen%2Fmail%2Fmessage%2FM1');
+  });
+
+  it('never sets a pending cookie a browser would not keep', async () => {
+    const res = await call(`?locale=en&return=${encodeURIComponent(`/en/mail/${'漢'.repeat(600)}`)}`);
+    const set = res.headers.getSetCookie().find((c) => c.startsWith('sso_pending='))!;
+    expect(set.length).toBeLessThan(4096);
+    expect(pendingCookie(res).return_to).toBeUndefined();
   });
 
   it('does not exist outside passkey-entry mode', async () => {

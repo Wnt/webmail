@@ -43,9 +43,11 @@ describe('login route in passkey-entry mode', () => {
     expect(html).not.toContain('UPSTREAM-LOGIN-FORM');
     expect(html).toContain('Madekivi Mail');
     expect(html).toContain('/branding/Madekivi_Favicon.svg');
-    expect(html).toContain('<form action="/api/auth/sso/begin" method="get">');
+    // A link, not a form: form-action 'self' would block the redirect on to a provider elsewhere.
+    expect(html).toContain('<a href="/api/auth/sso/begin?locale=en"');
     expect(html).toContain('Kirjaudu passkeyllä / Sign in with passkey');
-    expect(html.match(/<button/g)).toHaveLength(1);
+    expect(html.match(/<a /g)).toHaveLength(1);
+    expect(html).not.toContain('<form');
     expect(html).not.toMatch(/type="password"|name="username"/);
     expect(html).not.toContain('<script');
   });
@@ -60,9 +62,9 @@ describe('login route in passkey-entry mode', () => {
 
   it('keeps a safe return path for the button and drops any other', async () => {
     expect(await render({ return: '/en/mail/message/M1?slot=0' }))
-      .toContain('<input type="hidden" name="return" value="/en/mail/message/M1?slot=0"/>');
+      .toContain('href="/api/auth/sso/begin?locale=en&amp;return=%2Fen%2Fmail%2Fmessage%2FM1%3Fslot%3D0"');
     const html = await render({ return: '//evil.example/en' });
-    expect(html).not.toContain('name="return"');
+    expect(html).not.toContain('return=');
   });
 
   it('leaves the upstream page for adding an account, the mobile app, and other modes', async () => {

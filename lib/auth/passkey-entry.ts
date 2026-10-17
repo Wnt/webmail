@@ -23,12 +23,17 @@ import { NextResponse } from 'next/server';
 import { configManager } from '@/lib/admin/config-manager';
 import { parseJmapServers } from '@/lib/admin/jmap-servers';
 import { IS_LITE } from '@/lib/lite';
+import { decryptPayload } from '@/lib/auth/crypto';
 import { locales } from '@/i18n/routing';
 import { SIGNED_OUT_COOKIE, safeReturnPath } from '@/lib/auth/passkey-entry-shared';
 
 export { SIGNED_OUT_COOKIE };
 
 export const SSO_BEGIN_PATH = '/api/auth/sso/begin';
+
+/** /api/auth/sso/start and .../complete: the encrypted PKCE/state cookie and its lifetime. */
+export const SSO_PENDING_COOKIE = 'sso_pending';
+export const SSO_PENDING_MAX_AGE_MS = 5 * 60 * 1000;
 
 /** The refresh-token cookies (lib/oauth/tokens.ts): `jmap_rt` and `jmap_rt_<slot>`. */
 const SESSION_COOKIE = /^jmap_rt(?:_\d+)?$/;
@@ -99,8 +104,12 @@ export function passkeyEntryRedirect(request: NextRequest, pathname: string, loc
   // The provider sends errors (access_denied, ...) back to the callback: to
   // the branded page with its button, never to an automatic retry.
   if (rest === '/auth/callback') {
-    if (!request.nextUrl.searchParams.has('error')) return null;
-    return redirect(request, loginPath, { sso_error: ssoErrorCode(request.nextUrl.searchParams.get('error')) });
+    const q = request.nextUrl.searchParams;
+    if (!q.has('error')) return null;
+    return redirect(request, loginPath, {
+      sso_error: ssoErrorCode(q.get('error')),
+      return: pendingReturnPath(request, q.get('state')),
+    });
   }
   if (rest.startsWith('/auth/')) return null;
 
@@ -121,6 +130,21 @@ export function passkeyEntryRedirect(request: NextRequest, pathname: string, loc
   // remembering where the visit was going.
   if (signedOut) return redirect(request, loginPath, { return: here });
   return redirect(request, SSO_BEGIN_PATH, { locale, return: here });
+}
+
+/**
+ * The page the sign-in that just failed was for, so the retry still opens
+ * it: from the encrypted pending cookie, only for the flow this callback
+ * answers (same state, not expired), and re-checked.
+ */
+function pendingReturnPath(request: NextRequest, state: string | null): string | null {
+  const cookie = request.cookies.get(SSO_PENDING_COOKIE)?.value;
+  if (!cookie || !state) return null;
+  const pending = decryptPayload(cookie, 'sso-pending');
+  if (!pending || pending.state !== state) return null;
+  const createdAt = Number(pending.created_at);
+  if (!Number.isFinite(createdAt) || Date.now() - createdAt > SSO_PENDING_MAX_AGE_MS) return null;
+  return safeReturnPath(pending.return_to, request.nextUrl.basePath ?? '');
 }
 
 /** `locale` if the app has it, else null. */

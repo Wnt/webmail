@@ -77,6 +77,9 @@
 }
 .button {
   display: block;
+  box-sizing: border-box;
+  text-align: center;
+  text-decoration: none;
   width: 100%;
   margin-top: 14px;
   padding: 10px 16px;
