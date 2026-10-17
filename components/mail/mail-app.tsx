@@ -3738,7 +3738,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
         return;
       }
 
-      const fullEmail = await fetchClient.getEmail(email.id, accountId);
+      const fullEmail = await fetchClient.getEmail(email.id, accountId, { threadId: listEmail?.threadId });
       if (fullEmail) {
         if (listEmail?.isScheduled) {
           fullEmail.scheduledSendAt = listEmail.scheduledSendAt;

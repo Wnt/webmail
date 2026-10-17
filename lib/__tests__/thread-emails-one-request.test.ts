@@ -67,4 +67,29 @@ describe('getThreadEmails', () => {
     expect(sent).toEqual([['Thread/get', 'Email/get'], ['Email/get'], ['Email/get']]);
     expect(emails.map((e) => e.id).sort()).toEqual(['a', 'b', 'c']);
   });
+
+  it('getEmail reuses a conversation fetch that is in flight', async () => {
+    const client = await connected();
+    const sent: string[][] = [];
+    fetchSpy.mockImplementation((async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { methodCalls: [string, Record<string, unknown>, string][] };
+      sent.push(body.methodCalls.map((c) => c[0]));
+      if (body.methodCalls[0][0] === 'Thread/get') {
+        return json({ sessionState: 's', methodResponses: [
+          ['Thread/get', { list: [{ id: 'T', emailIds: ['a', 'b'] }] }, 't'],
+          ['Email/get', { list: [email('a', '2026-01-01T00:00:00Z'), email('b', '2026-02-01T00:00:00Z')] }, 'e'],
+        ] });
+      }
+      return json({ sessionState: 's', methodResponses: [['Email/get', { list: [email('b', '2026-02-01T00:00:00Z')] }, '0']] });
+    }) as never);
+    const [thread, newest] = await Promise.all([client.getThreadEmails('T'), client.getEmail('b', undefined, { threadId: 'T' })]);
+    expect(sent).toEqual([['Thread/get', 'Email/get']]);
+    expect(newest?.id).toBe('b');
+    expect(newest).not.toBe(thread[0]); // a copy: the open message and the thread list don't share an object
+    // Another thread, or no thread hint: fetched as before.
+    await client.getEmail('b');
+    await client.getEmail('b', undefined, { threadId: 'other' });
+    expect(sent).toEqual([['Thread/get', 'Email/get'], ['Email/get'], ['Email/get']]);
+  });
 });
+

@@ -334,6 +334,10 @@ const DEFAULT_MAILBOX_RIGHTS = {
   maySubmit: true,
 } as const;
 
+// How long a getThreadEmails result may stand in for getEmail of one of its members.
+const THREAD_FETCH_REUSE_MS = 5_000;
+const threadFetchKey = (accountId: string, threadId: string) => `${accountId}\u0000${threadId}`;
+
 const EMAIL_LIST_PROPERTIES = [
   "id",
   "threadId",
@@ -2330,9 +2334,26 @@ export class JMAPClient implements IJMAPClient {
     return result;
   }
 
-  async getEmail(emailId: string, accountId?: string): Promise<Email | null> {
+  async getEmail(emailId: string, accountId?: string, opts?: { threadId?: string }): Promise<Email | null> {
     try {
       const targetAccountId = accountId || this.accountId;
+
+      // A desktop conversation click expands the thread (getThreadEmails,
+      // every member with its body) and opens the newest message at the same
+      // moment. When that thread fetch is in flight or just done, take the
+      // message from it rather than fetch the same body a second time. The
+      // thread fetch asks for every property requested below.
+      if (opts?.threadId) {
+        const recent = this.threadFetches.get(threadFetchKey(targetAccountId, opts.threadId));
+        if (recent && Date.now() - recent.at < THREAD_FETCH_REUSE_MS) {
+          const member = (await recent.promise).find((e) => e.id === emailId);
+          if (member?.bodyValues) {
+            const email = structuredClone(member);
+            if (email.headers) await this.parseEmailHeaders(email);
+            return email;
+          }
+        }
+      }
 
       const response = await this.request([
         ["Email/get", {
@@ -3596,6 +3617,17 @@ export class JMAPClient implements IJMAPClient {
   }
 
   async getThreadEmails(threadId: string, accountId?: string): Promise<Email[]> {
+    const key = threadFetchKey(accountId || this.accountId, threadId);
+    const promise = this.fetchThreadEmails(threadId, accountId);
+    this.threadFetches.set(key, { at: Date.now(), promise });
+    // Drop the entry once it can no longer be reused.
+    setTimeout(() => {
+      if (this.threadFetches.get(key)?.promise === promise) this.threadFetches.delete(key);
+    }, THREAD_FETCH_REUSE_MS);
+    return promise;
+  }
+
+  private async fetchThreadEmails(threadId: string, accountId?: string): Promise<Email[]> {
     try {
       const targetAccountId = accountId || this.accountId;
       const emailGetArgs = {
@@ -8601,6 +8633,8 @@ export class JMAPClient implements IJMAPClient {
   };
 
   private static readonly POLLING_INTERVAL = 3_000;
+  /** getThreadEmails calls getEmail may reuse (see getEmail), by account and thread. */
+  private threadFetches = new Map<string, { at: number; promise: Promise<Email[]> }>();
   // Shared/secondary accounts get no SSE push (Stalwart pushes the primary
   // account only), so poll them on a slow cadence alongside SSE to keep their
   // folder + unified/All-Mail counters from going stale between focus events.

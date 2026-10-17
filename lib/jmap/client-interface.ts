@@ -185,7 +185,8 @@ export interface IJMAPClient {
    */
   getEmailQuerySortOptions?(accountId?: string): string[] | null;
   getEmailsInMailbox(mailboxId: string): Promise<Email[]>;
-  getEmail(emailId: string, accountId?: string): Promise<Email | null>;
+  /** `threadId` lets the client reuse a getThreadEmails fetch of that thread in flight. */
+  getEmail(emailId: string, accountId?: string, opts?: { threadId?: string }): Promise<Email | null>;
   getSomeEmails(emailsId: string[], accountId?: string): Promise<Email[]>
   /**
    * Attachment parts per email id for list-row chips, fetched lazily because

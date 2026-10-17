@@ -249,7 +249,8 @@ describe('standard mail UI blob routing', () => {
     useEmailStore.setState({ emails: [stub], selectedEmail: automatic ? stub : null, isUnifiedView: true, selectedMailbox: '' });
     render(<MailApp />);
     if (!automatic) fireEvent.click(screen.getByText('Select 0'));
-    await waitFor(() => expect(other.getEmail).toHaveBeenCalledWith('email', 'nrichmond'));
+    // A click (handleEmailSelect) also passes the thread, so a conversation fetch can be reused.
+    await waitFor(() => expect(other.getEmail).toHaveBeenCalledWith('email', 'nrichmond', ...(automatic ? [] : [{ threadId: 'thread' }])));
     await waitFor(() => expect(useEmailStore.getState().selectedEmail?.bodyValues).toBeDefined());
     await downloadAttachment();
     await exportEmail();
