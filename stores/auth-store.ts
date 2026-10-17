@@ -895,14 +895,17 @@ export function saveRedirectAfterLogin(): void {
 
 export function redirectToLogin(): void {
   if (typeof window === 'undefined' || leavingForProviderLogout) return;
+  // Fork (Wnt/webmail): a page that found itself signed out (no session at
+  // start, an expired one) signs in where it is when the in-page passkey
+  // sign-in is mounted - no navigation to a login page. Only then: a sign-out,
+  // here or in another tab, still leaves the document so nothing of the
+  // signed-in page stays in memory.
+  if (!useAuthStore.getState().isAuthenticated && requestPasskeyGate()) return;
   navigateToLogin();
 }
 
 function navigateToLogin(): void {
   if (typeof window === 'undefined') return;
-  // Fork (Wnt/webmail): with the in-page passkey sign-in mounted, signing in
-  // happens where the user is - no navigation to a login page.
-  if (requestPasskeyGate()) return;
 
   const loginPath = getLocaleLoginPath();
   if (window.location.pathname === loginPath) return;

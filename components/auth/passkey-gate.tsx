@@ -30,6 +30,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { usePasskeyGateStore } from "@/stores/passkey-gate-store";
 import { generateCodeChallenge, generateCodeVerifier } from "@/lib/oauth/pkce";
 import { SIGNED_OUT_COOKIE } from "@/lib/auth/passkey-entry-shared";
+import { locales } from "@/i18n/routing";
 import type { PasskeyGateConfig } from "@/lib/auth/passkey-entry";
 import { PasskeyEntryPage, beginHref, type PasskeyEntryReason } from "./passkey-entry-page";
 
@@ -106,10 +107,18 @@ class GateError extends Error {
   }
 }
 
-async function postJson(path: string, body: unknown, headers: Record<string, string> = {}) {
-  const res = await fetch(path, {
+/** Only ever this page's own origin: a path the server checked, resolved here and checked again. */
+function sameOriginUrl(path: string): string {
+  const url = new URL(path, window.location.origin);
+  if (url.origin !== window.location.origin) throw new GateError("cross_origin");
+  return url.href;
+}
+
+async function postJson(path: string, body: unknown, headers: Record<string, string> = {}, signal?: AbortSignal) {
+  const res = await fetch(sameOriginUrl(path), {
     method: "POST",
     credentials: "same-origin",
+    signal,
     headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
@@ -146,7 +155,7 @@ function signedOutCookie(): boolean {
 export function PasskeyGate({ config, children }: { config: PasskeyGateConfig | null; children: ReactNode }) {
   const pathname = usePathname() ?? "";
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const { requested, epoch, reason: requestedReason } = usePasskeyGateStore();
+  const { requested, epoch, reason: requestedReason, returnTo: requestedReturn } = usePasskeyGateStore();
   const [signedInHere, setSignedInHere] = useState(false);
   const [status, setStatus] = useState<{ text: string; error: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -170,16 +179,39 @@ export function PasskeyGate({ config, children }: { config: PasskeyGateConfig | 
   const preparing = useRef<Promise<Prepared> | null>(null);
   const running = useRef(false);
   const autoDone = useRef(false);
+  // Every showing of the gate is one generation: hiding or unmounting it
+  // aborts what is in flight (fetches, the passkey prompt), and nothing that
+  // resolves later for an old generation sends another request or signs in.
+  const generation = useRef(0);
+  const abort = useRef<AbortController | null>(null);
+  const current = () => ({ gen: generation.current, signal: abort.current?.signal });
+  const stale = (gen: number) => gen !== generation.current;
+
+  useEffect(() => {
+    if (!visible) return;
+    generation.current += 1;
+    abort.current = new AbortController();
+    return () => {
+      generation.current += 1;
+      abort.current?.abort();
+      abort.current = null;
+      prepared.current = null;
+      preparing.current = null;
+      running.current = false;
+    };
+  }, [visible]);
 
   const prepare = useCallback((): Promise<Prepared> => {
     if (!firstParty) return Promise.reject(new GateError("no_first_party"));
     if (!preparing.current) {
+      const { gen, signal } = current();
       preparing.current = (async () => {
         const verifier = generateCodeVerifier();
         const [data, codeChallenge] = await Promise.all([
-          postJson(firstParty.optionsPath, {}),
+          postJson(firstParty.optionsPath, {}, {}, signal),
           generateCodeChallenge(verifier),
         ]);
+        if (stale(gen)) throw new GateError("stale");
         const p: Prepared = {
           options: data.options as PublicKeyCredentialRequestOptionsJSONLike,
           csrf: String(data.csrf ?? ""),
@@ -200,20 +232,23 @@ export function PasskeyGate({ config, children }: { config: PasskeyGateConfig | 
 
   const signIn = useCallback(async (p: Prepared, auto: boolean) => {
     if (running.current || !firstParty) return;
+    const { gen, signal } = current();
     running.current = true;
     setBusy(true);
     setStatus(WAITING);
     try {
       let cred: PublicKeyCredential | null;
       try {
-        cred = (await navigator.credentials.get({ publicKey: requestOptions(p.options) })) as PublicKeyCredential | null;
+        cred = (await navigator.credentials.get({ publicKey: requestOptions(p.options), signal })) as PublicKeyCredential | null;
       } catch (err) {
+        if (stale(gen)) return;
         const name = err instanceof DOMException ? err.name : "";
         if (name === "AbortError") return;
         // Cancelled, timed out, or (on load) not allowed without a tap: the same answer either way.
         setStatus(name === "NotAllowedError" ? (auto ? TAP : CANCELLED) : explain(err));
         return;
       }
+      if (stale(gen)) return;
       if (!cred) {
         setStatus(auto ? TAP : CANCELLED);
         return;
@@ -230,7 +265,9 @@ export function PasskeyGate({ config, children }: { config: PasskeyGateConfig | 
           assertion: assertionJSON(cred),
         },
         { "X-Gateway-CSRF": p.csrf },
+        signal,
       );
+      if (stale(gen)) return;
       const code = typeof out.code === "string" ? out.code : "";
       if (!code) throw new GateError("no_code");
       const ok = await useAuthStore.getState().loginWithServerSso(code, null, {
@@ -242,16 +279,22 @@ export function PasskeyGate({ config, children }: { config: PasskeyGateConfig | 
       setSignedInHere(true);
       usePasskeyGateStore.getState().signedIn();
     } catch (err) {
-      setStatus(explain(err));
+      if (!stale(gen)) setStatus(explain(err));
     } finally {
-      running.current = false;
-      setBusy(false);
-      // Have the next challenge ready for the tap.
-      if (!useAuthStore.getState().isAuthenticated && !fresh()) prepare().catch(() => { /* the tap fetches one */ });
+      if (!stale(gen)) {
+        running.current = false;
+        setBusy(false);
+        // Have the next challenge ready for the tap.
+        if (!useAuthStore.getState().isAuthenticated && !fresh()) prepare().catch(() => { /* the tap fetches one */ });
+      }
     }
   }, [firstParty, prepare]);
 
   const reason: PasskeyEntryReason = requestedReason ?? (visible && (config?.signedOut || signedOutCookie()) ? "signed_out" : null);
+  // Where the redirect-flow fallback returns: what the login route was asked
+  // for, else this page (its address may lack the locale: the proxy serves
+  // those in place, and the return path is checked with the locale in it).
+  const fallbackReturn = requestedReturn ?? (visible && config ? currentPath(config.locale) : null);
   const mayAutostart = !!config?.autostart && !reason;
 
   // Shown: fetch the challenge, and make the one automatic attempt where allowed.
@@ -260,22 +303,25 @@ export function PasskeyGate({ config, children }: { config: PasskeyGateConfig | 
     autoDone.current = false;
     if (!firstParty) {
       // Redirect flow (no first-party endpoints): it starts by itself as before.
-      if (mayAutostart) window.location.assign(beginHref(config.beginAction, config.locale, currentPath()));
+      if (mayAutostart) window.location.assign(beginHref(config.beginAction, config.locale, fallbackReturn));
       return;
     }
-    prepare().catch((err) => setStatus(explain(err)));
+    prepare().catch((err) => { if (!(err instanceof GateError && err.code === "stale")) setStatus(explain(err)); });
     if (!mayAutostart) return;
     const active = () => document.visibilityState === "visible" && (typeof document.hasFocus !== "function" || document.hasFocus());
+    // One automatic attempt, consumed as soon as it starts: whatever goes
+    // wrong after that (a failed fetch, a refused prompt), only a tap retries.
     const attempt = () => {
-      if (autoDone.current || running.current || !active()) return;
+      if (autoDone.current || running.current || !active()) return; // a later focus or visibility change tries
+      autoDone.current = true;
       const p = fresh();
       (p ? Promise.resolve(p) : prepare())
         .then((ready) => {
-          if (autoDone.current || running.current || !active()) return; // a later focus tries again
-          autoDone.current = true;
+          if (running.current) return;
+          if (!active()) { setStatus(TAP); return; } // hidden meanwhile: the tap, not a later surprise
           return signIn(ready, true);
         })
-        .catch((err) => setStatus(explain(err)));
+        .catch((err) => { if (!(err instanceof GateError && err.code === "stale")) setStatus(explain(err)); });
     };
     document.addEventListener("visibilitychange", attempt);
     window.addEventListener("focus", attempt);
@@ -284,7 +330,7 @@ export function PasskeyGate({ config, children }: { config: PasskeyGateConfig | 
       document.removeEventListener("visibilitychange", attempt);
       window.removeEventListener("focus", attempt);
     };
-  }, [visible, config, firstParty, mayAutostart, prepare, signIn]);
+  }, [visible, config, firstParty, mayAutostart, prepare, signIn, fallbackReturn]);
 
   const onTap = useCallback(() => {
     autoDone.current = true; // the tap takes over from any automatic attempt
@@ -308,7 +354,7 @@ export function PasskeyGate({ config, children }: { config: PasskeyGateConfig | 
           logoUrl={config.logoUrl}
           beginAction={config.beginAction}
           locale={config.locale}
-          returnTo={currentPath()}
+          returnTo={fallbackReturn}
           reason={reason}
           onSignIn={firstParty ? onTap : undefined}
           busy={busy}
@@ -319,8 +365,13 @@ export function PasskeyGate({ config, children }: { config: PasskeyGateConfig | 
   );
 }
 
-/** Where the user is (for the redirect flow's return); null on the server. */
-function currentPath(): string | null {
+/** Where the user is, with the locale in the path (for the redirect flow's return); null on the server. */
+function currentPath(locale: string): string | null {
   if (typeof window === "undefined") return null;
-  return `${window.location.pathname}${window.location.search}`;
+  const base = (process.env.NEXT_PUBLIC_BASE_PATH ?? "").replace(/\/+$/, "");
+  const { pathname, search } = window.location;
+  const rest = base && pathname.startsWith(base) ? pathname.slice(base.length) || "/" : pathname;
+  const first = rest.split("/")[1] ?? "";
+  const localized = first === locale || (locales as readonly string[]).includes(first) ? rest : `/${locale}${rest === "/" ? "" : rest}`;
+  return `${base}${localized}${search}`;
 }

@@ -181,7 +181,9 @@ function sameOriginPath(endpoint: string | undefined, origin: string): string | 
   if (!endpoint) return null;
   try {
     const u = new URL(endpoint);
-    return u.origin === origin && !u.search && !u.hash ? u.pathname : null;
+    if (u.origin !== origin || u.search || u.hash || u.username || u.password) return null;
+    // `//host/...` would be a network-path reference to another origin in the browser.
+    return u.pathname.startsWith('/') && !u.pathname.startsWith('//') ? u.pathname : null;
   } catch {
     return null;
   }

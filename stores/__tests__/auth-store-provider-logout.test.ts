@@ -9,6 +9,7 @@ import {
   saveRedirectAfterLogin,
 } from '../auth-store';
 import { useAccountStore, type AccountEntry } from '../account-store';
+import { usePasskeyGateStore } from '../passkey-gate-store';
 
 // Sign-out ordering and RP-initiated logout (#905).
 
@@ -407,5 +408,36 @@ describe('after leaving for the provider logout', () => {
 
     expect(replaceSpy).toHaveBeenCalledTimes(1);
     expect(sessionStorage.getItem('redirect_after_login')).toBeNull();
+  });
+});
+
+// Fork (Wnt/webmail): with the in-page passkey sign-in mounted, only a page
+// that found itself signed out signs in where it is; a sign-out - in this tab
+// or another - still leaves the document, so nothing of the signed-in page
+// stays in memory.
+describe('the in-page passkey sign-in and leaving the page', () => {
+  beforeEach(() => {
+    usePasskeyGateStore.setState({ active: true, requested: false, reason: null, returnTo: null, epoch: 0 });
+  });
+  afterEach(() => {
+    usePasskeyGateStore.setState({ active: false, requested: false });
+  });
+
+  it('a sign-out in another tab leaves the document', () => {
+    signIn([account()]);
+    window.dispatchEvent(new StorageEvent('storage', { key: 'bulwark:signed-out', newValue: String(Date.now()) }));
+    expect(replaceSpy).toHaveBeenCalledWith('/en/login');
+    expect(usePasskeyGateStore.getState().requested).toBe(false);
+  });
+
+  it('an explicit sign-out leaves the document', async () => {
+    signIn([account()]);
+    mockFetch({
+      'DELETE /api/auth/session?slot=0': () => ok(),
+      'DELETE /api/auth/token?slot=0&end_session=true': () => ok({ ok: true }),
+    });
+    await useAuthStore.getState().logout();
+    expect(replaceSpy).toHaveBeenCalledWith('/en/login');
+    expect(usePasskeyGateStore.getState().requested).toBe(false);
   });
 });

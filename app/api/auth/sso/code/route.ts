@@ -16,12 +16,23 @@ import { exchangeCodeForTokens } from '@/lib/oauth/token-exchange';
 import { writeLoginCookies } from '@/lib/oauth/login-cookies';
 import { rejectCrossOriginRequest } from '@/lib/security/same-origin';
 import { MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
-import { wopiBrowserOrigin } from '@/lib/wopi/origin';
 import { SIGNED_OUT_COOKIE } from '@/lib/auth/passkey-entry-shared';
 import { knownLocale, passkeyEntryEnabled, passkeyEntryServerId } from '@/lib/auth/passkey-entry';
 
 /** RFC 7636 verifier: 43-128 unreserved characters. */
 const CODE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
+
+/** `x-forwarded-proto` + `x-forwarded-host` from the edge (else Host): the browser's origin. */
+function edgeOrigin(request: NextRequest): string | null {
+  const host = (request.headers.get('x-forwarded-host') ?? request.headers.get('host') ?? '').split(',')[0].trim();
+  const proto = (request.headers.get('x-forwarded-proto') ?? request.nextUrl.protocol.replace(/:$/, '')).split(',')[0].trim();
+  if (!host || (proto !== 'http' && proto !== 'https')) return null;
+  try {
+    return new URL(`${proto}://${host}`).origin;
+  } catch {
+    return null;
+  }
+}
 
 /** The callback URI the page signed in for: this origin's `<base>/<locale>/auth/callback`, nothing else. */
 function callbackUri(request: NextRequest, raw: unknown): string | null {
@@ -33,7 +44,12 @@ function callbackUri(request: NextRequest, raw: unknown): string | null {
     return null;
   }
   if (url.href !== raw || url.search || url.hash || url.username || url.password) return null;
-  if (url.origin !== wopiBrowserOrigin(request)) return null;
+  // The origin the edge says the browser is on - not one taken from the
+  // request's own Origin header - and an Origin header, if sent, must be it.
+  const expected = edgeOrigin(request);
+  if (!expected || url.origin !== expected) return null;
+  const sent = request.headers.get('origin');
+  if (sent !== null && sent !== expected) return null;
   const basePath = request.nextUrl.basePath ?? '';
   const m = url.pathname.match(/^(.*)\/([^/]+)\/auth\/callback$/);
   if (!m || m[1] !== basePath || !knownLocale(m[2])) return null;
@@ -47,12 +63,16 @@ export async function POST(request: NextRequest) {
   await configManager.ensureLoaded();
   if (!passkeyEntryEnabled()) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  let body: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    body = (await request.json()) as Record<string, unknown>;
+    parsed = await request.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request' }, { status: 400 });
   }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return NextResponse.json({ error: 'Invalid request' }, { status: 400 });
+  }
+  const body = parsed as Record<string, unknown>;
   const code = typeof body.code === 'string' && body.code.length <= 512 ? body.code : '';
   const codeVerifier = typeof body.code_verifier === 'string' && CODE_VERIFIER.test(body.code_verifier) ? body.code_verifier : '';
   const redirectUri = callbackUri(request, body.redirect_uri);

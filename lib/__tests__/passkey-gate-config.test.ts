@@ -56,6 +56,8 @@ describe('passkeyGateConfig', () => {
   it('never points the page at another origin: then the redirect flow', async () => {
     metadata = { ...metadata!, passkey_challenge_endpoint: 'https://evil.example/auth/fp/options' };
     expect((await passkeyGateConfig('en'))!.firstParty).toBeNull();
+    metadata = { ...metadata!, passkey_challenge_endpoint: `${GW}//elsewhere.invalid/options` };
+    expect((await passkeyGateConfig('en'))!.firstParty, 'a //host path is another origin in the browser').toBeNull();
     metadata = { ...metadata!, passkey_challenge_endpoint: `${GW}/auth/fp/options` };
     reqHeaders.set('x-forwarded-host', 'other.example.org');
     expect((await passkeyGateConfig('en'))!.firstParty).toBeNull();

@@ -27,7 +27,7 @@ export function PasskeyLoginRoute({ target, reason }: { target: string; reason: 
     useAuthStore.getState().checkAuth().finally(() => {
       if (cancelled) return;
       if (useAuthStore.getState().isAuthenticated) router.replace(toRouterPath(target) as never);
-      else usePasskeyGateStore.getState().request(reason);
+      else usePasskeyGateStore.getState().request(reason, target);
     });
     return () => { cancelled = true; };
   }, [isAuthenticated, target, reason, router]);

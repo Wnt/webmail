@@ -33,9 +33,13 @@ const VERIFIER = 'v'.repeat(43);
 const CALLBACK = `${ORIGIN}/en/auth/callback`;
 
 function call(body: unknown, headers: Record<string, string> = {}) {
+  const h: Record<string, string> = { 'content-type': 'application/json', 'sec-fetch-site': 'same-origin', origin: ORIGIN,
+    'x-forwarded-host': 'mail.example.org', 'x-forwarded-proto': 'https', ...headers };
+  // Without Fetch Metadata (older browsers): only the Origin header.
+  if ('origin' in headers && headers.origin !== ORIGIN && !('sec-fetch-site' in headers)) delete h['sec-fetch-site'];
   return POST(new NextRequest('http://0.0.0.0:3000/api/auth/sso/code', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'sec-fetch-site': 'same-origin', origin: ORIGIN, ...headers },
+    headers: h,
     body: typeof body === 'string' ? body : JSON.stringify(body),
   }));
 }
@@ -78,6 +82,23 @@ describe('/api/auth/sso/code', () => {
     expect(res.status).toBe(400);
     expect(exchangeCodeForTokens).not.toHaveBeenCalled();
     expect(jar.has('jmap_rt')).toBe(false);
+  });
+
+  it.each(['null', '[]', '"x"', '42', '{bad json'])('answers 400 to the body %s', async (raw) => {
+    const res = await call(raw);
+    expect(res.status).toBe(400);
+    expect(exchangeCodeForTokens).not.toHaveBeenCalled();
+  });
+
+  it('takes the expected origin from the edge, not from the Origin header', async () => {
+    // Without Fetch Metadata the shared guard compares hosts only: an http
+    // Origin must still not make an http callback acceptable.
+    const res = await call({ code: 'c', code_verifier: VERIFIER, redirect_uri: 'http://mail.example.org/en/auth/callback' },
+      { origin: 'http://mail.example.org' });
+    expect(res.status).toBe(400);
+    expect(exchangeCodeForTokens).not.toHaveBeenCalled();
+    const mismatch = await call({ code: 'c', code_verifier: VERIFIER, redirect_uri: CALLBACK }, { origin: 'http://mail.example.org' });
+    expect(mismatch.status).toBe(400);
   });
 
   it('refuses a cross-origin request', async () => {
