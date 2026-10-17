@@ -3598,33 +3598,51 @@ export class JMAPClient implements IJMAPClient {
   async getThreadEmails(threadId: string, accountId?: string): Promise<Email[]> {
     try {
       const targetAccountId = accountId || this.accountId;
-      const thread = await this.getThread(threadId, accountId);
+      const emailGetArgs = {
+        accountId: targetAccountId,
+        properties: [
+          ...EMAIL_LIST_PROPERTIES,
+          "textBody", "htmlBody", "bodyValues",
+          "attachments", "blobId", "sentAt", "bcc", "replyTo",
+          "messageId", "inReplyTo", "references", "headers", "bodyStructure",
+        ],
+        fetchTextBodyValues: true,
+        fetchHTMLBodyValues: true,
+        fetchAllBodyValues: true,
+        maxBodyValueBytes: 256000,
+      };
+
+      // One round trip: Thread/get, and Email/get on its emailIds through a
+      // result reference (RFC 8620 §3.7). Opening a conversation used to wait
+      // for the Thread/get response before sending the Email/get.
+      const response = await this.request([
+        ["Thread/get", { accountId: targetAccountId, ids: [threadId] }, "t"],
+        ["Email/get", {
+          ...emailGetArgs,
+          "#ids": { resultOf: "t", name: "Thread/get", path: "/list/*/emailIds" },
+        }, "e"],
+      ]);
+
+      const threadResp = response.methodResponses?.[0];
+      const thread = threadResp?.[0] === "Thread/get" ? (threadResp[1].list || [])[0] as Thread | undefined : undefined;
       if (!thread?.emailIds?.length) {
         return [];
       }
 
-      const emails: Email[] = [];
-
-      for (const batchIds of batched(thread.emailIds, this.getMaxObjectsInGet())) {
-        const response = await this.request([
-          ["Email/get", {
-            accountId: targetAccountId,
-            ids: batchIds,
-            properties: [
-              ...EMAIL_LIST_PROPERTIES,
-              "textBody", "htmlBody", "bodyValues",
-              "attachments", "blobId", "sentAt", "bcc", "replyTo",
-              "messageId", "inReplyTo", "references", "headers", "bodyStructure",
-            ],
-            fetchTextBodyValues: true,
-            fetchHTMLBodyValues: true,
-            fetchAllBodyValues: true,
-            maxBodyValueBytes: 256000,
-          }, "0"],
-        ]);
-
-        if (response.methodResponses?.[0]?.[0] === "Email/get") {
-          emails.push(...(response.methodResponses[0][1].list || []));
+      let emails: Email[] = [];
+      const getResp = response.methodResponses?.[1];
+      if (getResp?.[0] === "Email/get") {
+        emails = getResp[1].list || [];
+      } else {
+        // The combined Email/get was refused (e.g. a thread larger than
+        // maxObjectsInGet): fetch the members in batches the server accepts.
+        for (const batchIds of batched(thread.emailIds, this.getMaxObjectsInGet())) {
+          const batch = await this.request([
+            ["Email/get", { ...emailGetArgs, ids: batchIds }, "0"],
+          ]);
+          if (batch.methodResponses?.[0]?.[0] === "Email/get") {
+            emails.push(...(batch.methodResponses[0][1].list || []));
+          }
         }
       }
 
