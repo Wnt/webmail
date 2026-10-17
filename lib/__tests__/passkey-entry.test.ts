@@ -24,7 +24,7 @@ vi.mock('@/lib/admin/csp-frame-origins', () => ({ getEnabledPluginFrameOrigins: 
 vi.mock('next-intl/middleware', async () => {
   const { NextResponse } = await import('next/server');
   // Like the real one with localePrefix "always": add the locale.
-  return { default: () => (req: NextRequest) => NextResponse.redirect(new URL(`/en${req.nextUrl.pathname}`, req.url)) };
+  return { default: () => (req: NextRequest) => NextResponse.redirect(new URL(`/en${req.nextUrl.pathname === '/' ? '' : req.nextUrl.pathname}${req.nextUrl.search}`, req.url)) };
 });
 vi.mock('@/lib/logger', () => ({ logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() } }));
 vi.mock('@/lib/auth/session-secret', () => ({ getSessionSecret: () => 's'.repeat(64), hasSessionSecret: () => true }));
@@ -36,7 +36,7 @@ vi.mock('@/lib/oauth/token-exchange', () => ({
   getDiscoveryValidator: () => undefined,
 }));
 
-import { proxy } from '@/proxy';
+import { proxy, localeRedirectAsRewrite } from '@/proxy';
 import { safeReturnPath } from '@/lib/auth/passkey-entry-shared';
 import { decryptPayload, encryptPayload } from '@/lib/auth/crypto';
 import { GET as begin } from '@/app/api/auth/sso/begin/route';
@@ -99,66 +99,56 @@ describe('safeReturnPath', () => {
   });
 });
 
-describe('proxy: signed-out page loads go to the passkey sign-in before any HTML', () => {
-  it('redirects the app root to the SSO begin route with no body', async () => {
-    const res = await load('/en');
-    expect(res.status).toBe(303);
-    expect(res.headers.get('cache-control')).toBe('no-store');
-    const { path, q } = location(res);
-    expect(path).toBe('/api/auth/sso/begin');
-    expect(q.get('locale')).toBe('en');
-    expect(q.get('return')).toBe('/en');
-    expect(await res.text()).toBe('');
+describe('proxy: opening the app is one document, no redirect', () => {
+  const rewriteOf = (res: Response) => res.headers.get('x-middleware-rewrite');
+
+  it.each(['/en', '/en/mail/message/M123?slot=0', '/en/login', '/en/settings'])('renders %s signed out, with no redirect', async (path) => {
+    const res = await load(path);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
   });
 
-  it('carries a deep link along', async () => {
-    const { path, q } = location(await load('/en/mail/message/M123?slot=0'));
-    expect(path).toBe('/api/auth/sso/begin');
-    expect(q.get('return')).toBe('/en/mail/message/M123?slot=0');
+  it.each([
+    ['/', '/en'],
+    ['/mail/message/M1', '/en/mail/message/M1'],
+    ['/mail/message/M1?slot=2', '/en/mail/message/M1?slot=2'],
+  ])('serves %s in place for its locale (a rewrite, not a redirect)', async (path, target) => {
+    const res = await load(path);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
+    const rewrite = new URL(rewriteOf(res)!);
+    expect(rewrite.pathname + rewrite.search).toBe(target);
+    // the root layout reads the locale from the served path
+    expect(res.headers.get('x-middleware-request-x-pathname')).toBe(target.split('?')[0]);
   });
 
-  it('adds the locale first for paths without one (one more redirect, still no HTML)', async () => {
+  it('keeps next-intl\'s redirect outside passkey-entry mode', async () => {
+    directMode(false);
     const res = await load('/mail/message/M1');
     expect(res.status).toBe(307);
     expect(new URL(res.headers.get('location')!).pathname).toBe('/en/mail/message/M1');
   });
 
-  it('sends the login page on too, keeping a valid return and dropping a foreign one', async () => {
-    expect(location(await load('/en/login')).path).toBe('/api/auth/sso/begin');
-    expect(location(await load('/en/login?return=%2Fen%2Fmail%2Finbox')).q.get('return')).toBe('/en/mail/inbox');
-    expect(location(await load('/en/login?return=%2F%2Fevil.example%2Fen')).q.has('return')).toBe(false);
-  });
-
-  it.each(['jmap_rt=x', 'jmap_rt_2=x', 'a=1; jmap_rt_1=y'])('renders the page when a session cookie exists (%s)', async (cookies) => {
-    const res = await load('/en/mail/inbox', { cookies });
-    expect(res.status).toBe(200);
-    expect(res.headers.get('location')).toBeNull();
+  it('turns only the "add the locale" redirect into a rewrite', async () => {
+    const { NextResponse } = await import('next/server');
+    const req = new NextRequest(`${ORIGIN}/mail/x?a=1`);
+    const elsewhere = NextResponse.redirect(new URL(`${ORIGIN}/en/other`), 307);
+    expect(localeRedirectAsRewrite(elsewhere, req)).toBeNull();
+    const otherQuery = NextResponse.redirect(new URL(`${ORIGIN}/en/mail/x?a=2`), 307);
+    expect(localeRedirectAsRewrite(otherQuery, req)).toBeNull();
+    const foreign = NextResponse.redirect(new URL('https://evil.example/en/mail/x?a=1'), 307);
+    expect(localeRedirectAsRewrite(foreign, req)).toBeNull();
+    expect(localeRedirectAsRewrite(NextResponse.next(), req)).toBeNull();
+    const same = NextResponse.redirect(new URL(`${ORIGIN}/de/mail/x?a=1`), 307);
+    same.cookies.set('NEXT_LOCALE', 'de');
+    const out = localeRedirectAsRewrite(same, req)!;
+    expect(out.pathname).toBe('/de/mail/x');
+    expect(out.response.headers.getSetCookie().join()).toContain('NEXT_LOCALE=de');
   });
 
   it('leaves router fetches, prefetches and non-GET requests alone', async () => {
-    expect((await load('/en/mail/inbox', { headers: { rsc: '1' } })).status).toBe(200);
-    expect((await load('/en/mail/inbox', { headers: { 'next-router-prefetch': '1' } })).status).toBe(200);
-    expect((await load('/en/mail/inbox', { method: 'POST', headers: { 'sec-fetch-site': 'same-origin' } })).status).toBe(200);
-  });
-
-  it('serves the branded page after a failed sign-in instead of starting another', async () => {
-    const res = await load('/en/login?sso_error=access_denied');
-    expect(res.status).toBe(200);
-  });
-
-  it('keeps the upstream flows it does not take over', async () => {
-    expect((await load('/en/login?mode=add-account')).status).toBe(200);
-    expect((await load('/en/login?mobile_redirect_uri=bulwarkmobile%3A%2F%2Fx')).status).toBe(200);
-  });
-
-  it('after an explicit sign-out: the branded page, no automatic sign-in, the deep link kept', async () => {
-    const cookies = 'bulwark_signed_out=1';
-    expect((await load('/en/login', { cookies })).status).toBe(200);
-    const res = await load('/en/mail/message/M9', { cookies });
-    expect(res.status).toBe(303);
-    const { path, q } = location(res);
-    expect(path).toBe('/en/login');
-    expect(q.get('return')).toBe('/en/mail/message/M9');
+    expect((await load('/en/auth/callback?error=access_denied', { headers: { rsc: '1' } })).status).toBe(200);
+    expect((await load('/en/auth/callback?error=access_denied', { method: 'POST', headers: { 'sec-fetch-site': 'same-origin' } })).status).toBe(200);
   });
 
   it('sends provider errors at the callback to the branded page, with a sanitised code', async () => {
@@ -186,17 +176,13 @@ describe('proxy: signed-out page loads go to the passkey sign-in before any HTML
   });
 
   it('is off unless OAuth-only with auto-SSO and a single server', async () => {
-    directMode(false);
-    expect((await load('/en/mail/inbox')).status).toBe(200);
-    directMode();
-    config.autoSsoEnabled = false;
-    expect((await load('/en/mail/inbox')).status).toBe(200);
-    directMode();
-    config.jmapServers = [
-      { id: 'a', name: 'A', url: 'https://a.example' },
-      { id: 'b', name: 'B', url: 'https://b.example' },
-    ];
-    expect((await load('/en/mail/inbox')).status).toBe(200);
+    for (const tweak of [() => directMode(false), () => { config.autoSsoEnabled = false; }, () => {
+      config.jmapServers = [{ id: 'a', name: 'A', url: 'https://a.example' }, { id: 'b', name: 'B', url: 'https://b.example' }];
+    }]) {
+      directMode();
+      tweak();
+      expect((await load('/en/auth/callback?error=access_denied&state=s')).status).toBe(200);
+    }
   });
 });
 

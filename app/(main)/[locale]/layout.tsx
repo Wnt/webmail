@@ -17,6 +17,9 @@ import { PushNotificationPrompt } from "@/components/push-notification-prompt";
 import { setRequestLocale } from "next-intl/server";
 import { locales } from "@/i18n/routing";
 import { generateLiteLocaleParams } from "@/lib/lite-static-params";
+import { IS_LITE } from "@/lib/lite";
+import { passkeyGateConfig } from "@/lib/auth/passkey-entry";
+import { PasskeyGate } from "@/components/auth/passkey-gate";
 
 // The static Lite export enumerates every locale here. In the server build the
 // export is `undefined`, which Next treats as absent, so the routes stay
@@ -44,6 +47,10 @@ export default async function LocaleLayout({
     notFound();
   }
 
+  // Fork (Wnt/webmail): the in-page passkey sign-in (lib/auth/passkey-entry.ts).
+  // The static Lite export has no server to ask.
+  const passkeyGate = IS_LITE ? null : await passkeyGateConfig(locale);
+
   return (
     <IntlProvider locale={locale} messages={messages}>
       <ThemeProvider>
@@ -54,7 +61,7 @@ export default async function LocaleLayout({
                 <ProtocolLaunchHandlerProvider>
                   <ProInterfaceRedirect />
                   <ImpersonationReconciler />
-                  {children}
+                  {passkeyGate ? <PasskeyGate config={passkeyGate}>{children}</PasskeyGate> : children}
                   <PluginDialogHost />
                   <QuickRuleHost />
                   <PluginConsentDialog />

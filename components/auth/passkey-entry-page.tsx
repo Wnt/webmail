@@ -1,9 +1,8 @@
-// Fork (Wnt/webmail): the login page in passkey-entry mode
-// (lib/auth/passkey-entry.ts). A server component with no script: one button
-// that starts the sign-in (/api/auth/sso/begin), which goes straight on to
-// the provider's passkey prompt. Shown only where signing in automatically
-// would be wrong - after an explicit sign-out, after a failed or cancelled
-// sign-in - so the upstream login form never renders in this mode.
+// Fork (Wnt/webmail): the passkey screen of the passkey entry
+// (lib/auth/passkey-entry.ts). Presentational, for the server and the client:
+// the in-page sign-in (components/auth/passkey-gate.tsx) passes `onSignIn`
+// and a status line; without it the one button is a plain link into the
+// redirect flow (/api/auth/sso/begin), which needs no script at all.
 //
 // The wording is Finnish and English side by side, as on the gateway's pages:
 // the owner's locale (fi) is not one of the app's.
@@ -21,6 +20,11 @@ export interface PasskeyEntryPageProps {
   locale: string;
   returnTo: string | null;
   reason: PasskeyEntryReason;
+  /** In-page sign-in: the button runs this instead of linking to the redirect flow. */
+  onSignIn?: () => void;
+  busy?: boolean;
+  /** A live status line under the button (waiting, cancelled, ...). */
+  status?: { text: string; error: boolean } | null;
 }
 
 const NOTICES: Record<Exclude<PasskeyEntryReason, null>, { text: string; error: boolean }> = {
@@ -50,7 +54,7 @@ export function beginHref(beginAction: string, locale: string, returnTo: string 
 
 export const PASSKEY_BUTTON_LABEL = 'Kirjaudu passkeyllä / Sign in with passkey';
 
-export function PasskeyEntryPage({ appName, logoUrl, beginAction, locale, returnTo, reason }: PasskeyEntryPageProps) {
+export function PasskeyEntryPage({ appName, logoUrl, beginAction, locale, returnTo, reason, onSignIn, busy, status }: PasskeyEntryPageProps) {
   const notice = reason ? NOTICES[reason] : null;
   return (
     <main className={styles.page} data-passkey-entry="">
@@ -67,13 +71,21 @@ export function PasskeyEntryPage({ appName, logoUrl, beginAction, locale, return
         ) : (
           <p className={styles.text}>Jatka passkeyllä. / Continue with your passkey.</p>
         )}
-        {/* A plain link, not a form: the page's CSP limits form targets to
-            this origin, and a browser applies that to the redirect on to an
-            identity provider elsewhere. No script needed; the passkey prompt
-            on the next page follows this tap. */}
-        <a href={beginHref(beginAction, locale, returnTo)} className={styles.button} autoFocus>
-          {PASSKEY_BUTTON_LABEL}
-        </a>
+        {onSignIn ? (
+          <button type="button" className={styles.button} onClick={onSignIn} disabled={busy} autoFocus>
+            {PASSKEY_BUTTON_LABEL}
+          </button>
+        ) : (
+          /* A plain link, not a form: the page's CSP limits form targets to
+             this origin, and a browser applies that to the redirect on to an
+             identity provider elsewhere. */
+          <a href={beginHref(beginAction, locale, returnTo)} className={styles.button} autoFocus>
+            {PASSKEY_BUTTON_LABEL}
+          </a>
+        )}
+        <p className={styles.status} data-kind={status?.error ? 'error' : 'info'} role="status" aria-live="polite" id="passkey-status">
+          {status?.text ?? ''}
+        </p>
       </div>
     </main>
   );

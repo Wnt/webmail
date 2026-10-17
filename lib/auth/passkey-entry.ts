@@ -1,22 +1,28 @@
-// Fork (Wnt/webmail): straight to the passkey sign-in.
+// Fork (Wnt/webmail): the passkey entry - signing in where the user is.
 //
 // With OAuth as the only sign-in and auto-SSO on (one identity provider, one
-// server), the login form has nothing to offer: every signed-out visit goes to
-// the provider. Upstream gets there from the client - the app boots, finds no
-// session, loads /login, which loads its config and the provider metadata and
-// then navigates away - so the login page renders (and flashes) on every
-// visit, and its 30 s loop guard leaves it standing with an SSO button. Here
-// the proxy answers a signed-out page request with a redirect before any HTML
-// (passkeyEntryRedirect) to /api/auth/sso/begin, which starts the same
-// server-side SSO flow as /api/auth/sso/start and sends the browser on to the
-// provider. The page the visit asked for rides along in the encrypted
-// sso_pending cookie and is where the app opens after the callback.
+// server), the login form has nothing to offer. Upstream gets to the provider
+// from the client: the app boots, finds no session, loads /login, which loads
+// its config and the provider metadata and then navigates away - a page that
+// flashes, then four redirects to the provider's page.
 //
-// The login page itself becomes a small branded page with one button
-// (components/auth/passkey-entry-page.tsx), shown only where an automatic
-// sign-in would be wrong: after an explicit sign-out (no loop back in), after
-// a failed or cancelled sign-in, and while a session cookie exists that the
-// app could not use.
+// Here the page the user opened stays. The locale layout mounts the passkey
+// gate (components/auth/passkey-gate.tsx) with what the server knows
+// (passkeyGateConfig): whether a session cookie exists at all - so a
+// signed-out load has the passkey screen in its first HTML - an explicit
+// sign-out, and the provider's first-party endpoints. Against those (same
+// origin, draft-ietf-oauth-first-party-apps) the page runs the passkey
+// ceremony itself, trades the assertion for a code and redeems it at
+// /api/auth/sso/code: signed in with no redirect and no second document. The
+// stores' "go to the login page" shows the gate instead
+// (stores/passkey-gate-store.ts).
+//
+// Without first-party endpoints the gate falls back to the redirect flow:
+// /api/auth/sso/begin (the same server-side SSO as /api/auth/sso/start, as a
+// navigation) with the page's path carried in the encrypted pending cookie.
+// That flow's provider errors come back to the callback, which the proxy
+// sends to the login route (passkeyEntryRedirect), where the gate offers the
+// retry.
 
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
@@ -25,6 +31,9 @@ import { parseJmapServers } from '@/lib/admin/jmap-servers';
 import { IS_LITE } from '@/lib/lite';
 import { decryptPayload } from '@/lib/auth/crypto';
 import { locales } from '@/i18n/routing';
+import { discoverOAuth } from '@/lib/oauth/discovery';
+import { getDiscoveryValidator, getRequiredConfig } from '@/lib/oauth/token-exchange';
+import { getOauthScopes } from '@/lib/oauth/tokens';
 import { SIGNED_OUT_COOKIE, safeReturnPath } from '@/lib/auth/passkey-entry-shared';
 
 export { SIGNED_OUT_COOKIE };
@@ -90,46 +99,22 @@ function redirect(request: NextRequest, path: string, params: Record<string, str
 
 /**
  * The proxy's answer to a page request under `/<locale>/...` in passkey-entry
- * mode, or null to render the page. `pathname` is the decoded route path
- * (without the base path). Only top-level document loads are redirected: RSC
- * fetches and prefetches of a signed-in app pass through untouched.
+ * mode, or null to render the page: only the redirect flow's provider errors
+ * at the callback (access_denied, ...) go to the login route, keeping the
+ * page that sign-in was for. Every other page renders, signed in or not.
  */
 export function passkeyEntryRedirect(request: NextRequest, pathname: string, locale: string): NextResponse | null {
   const method = request.method.toUpperCase();
   if (method !== 'GET' && method !== 'HEAD') return null;
   if (request.headers.has('rsc') || request.headers.has('next-router-prefetch')) return null;
   const rest = pathname.slice(locale.length + 1).replace(/\/+$/, '');
-  const loginPath = `/${locale}/login`;
-
-  // The provider sends errors (access_denied, ...) back to the callback: to
-  // the branded page with its button, never to an automatic retry.
-  if (rest === '/auth/callback') {
-    const q = request.nextUrl.searchParams;
-    if (!q.has('error')) return null;
-    return redirect(request, loginPath, {
-      sso_error: ssoErrorCode(q.get('error')),
-      return: pendingReturnPath(request, q.get('state')),
-    });
-  }
-  if (rest.startsWith('/auth/')) return null;
-
-  if (hasSessionCookie(request.cookies.getAll().map((c) => c.name))) return null;
-  const signedOut = request.cookies.has(SIGNED_OUT_COOKIE);
-  const basePath = request.nextUrl.basePath ?? '';
-
-  if (rest === '/login') {
-    const q = request.nextUrl.searchParams;
-    // Shown as a page: after a sign-out or a failed sign-in, and the upstream
-    // flows this mode does not take over (adding an account, the mobile app).
-    if (signedOut || q.has('sso_error') || q.has('mode') || q.has('mobile_redirect_uri')) return null;
-    return redirect(request, SSO_BEGIN_PATH, { locale, return: safeReturnPath(q.get('return'), basePath) });
-  }
-
-  const here = safeReturnPath(`${basePath}${request.nextUrl.pathname}${request.nextUrl.search}`, basePath);
-  // A visit after an explicit sign-out shows the page with the button, still
-  // remembering where the visit was going.
-  if (signedOut) return redirect(request, loginPath, { return: here });
-  return redirect(request, SSO_BEGIN_PATH, { locale, return: here });
+  if (rest !== '/auth/callback') return null;
+  const q = request.nextUrl.searchParams;
+  if (!q.has('error')) return null;
+  return redirect(request, `/${locale}/login`, {
+    sso_error: ssoErrorCode(q.get('error')),
+    return: pendingReturnPath(request, q.get('state')),
+  });
 }
 
 /**
@@ -150,4 +135,100 @@ function pendingReturnPath(request: NextRequest, state: string | null): string |
 /** `locale` if the app has it, else null. */
 export function knownLocale(locale: string | null): string | null {
   return locale && (locales as readonly string[]).includes(locale) ? locale : null;
+}
+
+/** What the in-page passkey sign-in needs from the server (components/auth/passkey-gate.tsx). */
+export interface PasskeyGateConfig {
+  appName: string;
+  logoUrl: string;
+  locale: string;
+  /** The redirect flow's entry (fallback): `<base>/api/auth/sso/begin`. */
+  beginAction: string;
+  /** The provider's first-party passkey sign-in on this origin, or null (then the redirect flow). */
+  firstParty: {
+    optionsPath: string;
+    authorizePath: string;
+    clientId: string;
+    scope: string;
+    redirectUri: string;
+  } | null;
+  /** No session cookie at all: the passkey screen is part of the first HTML. */
+  noSession: boolean;
+  /** Signed out on purpose: the screen waits for the tap. */
+  signedOut: boolean;
+  /**
+   * The user opened this page themselves or from this origin
+   * (Sec-Fetch-Site none/same-origin): only then may it ask for the passkey
+   * without a tap - another site linking here gets the button.
+   */
+  autostart: boolean;
+}
+
+/** The origin the browser has this page open on (the edge forwards it; cf. wopiBrowserOrigin). */
+function browserOrigin(h: Headers): string | null {
+  const host = (h.get('x-forwarded-host') ?? h.get('host') ?? '').split(',')[0].trim();
+  const proto = (h.get('x-forwarded-proto') ?? '').split(',')[0].trim() || 'http';
+  if (!host || (proto !== 'http' && proto !== 'https')) return null;
+  try {
+    return new URL(`${proto}://${host}`).origin;
+  } catch {
+    return null;
+  }
+}
+
+/** A provider endpoint as a path on `origin`, or null when it lives anywhere else. */
+function sameOriginPath(endpoint: string | undefined, origin: string): string | null {
+  if (!endpoint) return null;
+  try {
+    const u = new URL(endpoint);
+    return u.origin === origin && !u.search && !u.hash ? u.pathname : null;
+  } catch {
+    return null;
+  }
+}
+
+/** For the locale layout; null outside passkey-entry mode. */
+export async function passkeyGateConfig(locale: string): Promise<PasskeyGateConfig | null> {
+  await configManager.ensureLoaded();
+  if (!passkeyEntryEnabled()) return null;
+  const { headers, cookies } = await import('next/headers');
+  const h = await headers();
+  const jar = await cookies();
+  const basePath = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, '');
+  const asset = (url: string) => (url.startsWith('/') && !url.startsWith('//') ? `${basePath}${url}` : url);
+  const site = h.get('sec-fetch-site');
+
+  let firstParty: PasskeyGateConfig['firstParty'] = null;
+  const origin = browserOrigin(h);
+  if (origin) {
+    try {
+      const serverId = passkeyEntryServerId();
+      const { clientId, discoveryUrl } = getRequiredConfig(serverId);
+      const metadata = await discoverOAuth(discoveryUrl, { validateEndpoint: getDiscoveryValidator(discoveryUrl) });
+      const optionsPath = sameOriginPath(metadata?.passkey_challenge_endpoint, origin);
+      const authorizePath = sameOriginPath(metadata?.authorization_challenge_endpoint, origin);
+      if (optionsPath && authorizePath && clientId) {
+        firstParty = {
+          optionsPath,
+          authorizePath,
+          clientId,
+          scope: getOauthScopes(),
+          redirectUri: `${origin}${basePath}/${locale}/auth/callback`,
+        };
+      }
+    } catch {
+      firstParty = null; // the redirect flow still works
+    }
+  }
+
+  return {
+    appName: configManager.get<string>('appName', '') || process.env.NEXT_PUBLIC_APP_NAME || 'Webmail',
+    logoUrl: asset(configManager.get<string>('faviconUrl', '') || '/branding/Bulwark_Favicon.svg'),
+    locale,
+    beginAction: `${basePath}${SSO_BEGIN_PATH}`,
+    firstParty,
+    noSession: !hasSessionCookie(jar.getAll().map((c) => c.name)),
+    signedOut: jar.has(SIGNED_OUT_COOKIE),
+    autostart: site === 'none' || site === 'same-origin',
+  };
 }

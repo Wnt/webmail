@@ -9,9 +9,7 @@ import {
   hasClientSecret,
 } from '@/lib/oauth/token-exchange';
 import { buildRedeemBundle } from '@/lib/auth/pair-bundle';
-import { refreshTokenCookieName, refreshTokenServerCookieName } from '@/lib/oauth/tokens';
-import { getCookieOptions } from '@/lib/oauth/cookie-config';
-import { storeIdToken } from '@/lib/oauth/end-session';
+import { writeLoginCookies } from '@/lib/oauth/login-cookies';
 import { rejectCrossOriginRequest } from '@/lib/security/same-origin';
 import { MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
 import { SIGNED_OUT_COOKIE, safeReturnPath } from '@/lib/auth/passkey-entry-shared';
@@ -113,17 +111,7 @@ export async function POST(request: NextRequest) {
     // redirect anyway, but the cookie would still get committed to the
     // user's main webmail session if they happened to be logged in there).
     if (!isMobileFlow) {
-      if (tokens.refresh_token) {
-        const cookieName = refreshTokenCookieName(slot);
-        cookieStore.set(cookieName, tokens.refresh_token, getCookieOptions());
-      }
-      const serverCookieName = refreshTokenServerCookieName(slot);
-      if (pendingServerId) {
-        cookieStore.set(serverCookieName, pendingServerId, getCookieOptions());
-      } else {
-        cookieStore.delete(serverCookieName);
-      }
-      storeIdToken(cookieStore, slot, tokens.id_token, request.nextUrl.basePath, [tokens.refresh_token, pendingServerId]);
+      writeLoginCookies(cookieStore, slot, tokens, pendingServerId, request.nextUrl.basePath);
     }
 
     // Delete pending cookie

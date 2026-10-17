@@ -5,6 +5,14 @@ export interface OAuthMetadata {
   revocation_endpoint?: string;
   end_session_endpoint?: string;
   scopes_supported?: string[];
+  /**
+   * Fork (Wnt/webmail): the provider's first-party sign-in
+   * (draft-ietf-oauth-first-party-apps; webmail-gateway /auth/fp/*). Only
+   * the browser calls them, and only on this webmail's own origin
+   * (lib/auth/passkey-entry.ts passkeyGateConfig).
+   */
+  authorization_challenge_endpoint?: string;
+  passkey_challenge_endpoint?: string;
 }
 
 // Validates that a discovered endpoint URL is safe to follow. Server-side
@@ -124,6 +132,9 @@ async function attemptDiscovery(
           token_endpoint: data.token_endpoint,
           revocation_endpoint: data.revocation_endpoint,
           end_session_endpoint: data.end_session_endpoint,
+          ...(typeof data.authorization_challenge_endpoint === 'string' && typeof data.passkey_challenge_endpoint === 'string'
+            ? { authorization_challenge_endpoint: data.authorization_challenge_endpoint, passkey_challenge_endpoint: data.passkey_challenge_endpoint }
+            : {}),
           ...(Array.isArray(data.scopes_supported)
             ? { scopes_supported: data.scopes_supported.filter((s: unknown): s is string => typeof s === 'string') }
             : {}),

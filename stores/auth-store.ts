@@ -17,6 +17,7 @@ import { setServerAuthIssue } from '@/lib/server-auth-status';
 import { generateAccountId, MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
 import { replaceWindowLocation, getPathPrefix, getLocaleFromPath, apiFetch } from '@/lib/browser-navigation';
 import { SIGNED_OUT_COOKIE, SIGNED_OUT_MAX_AGE, safeReturnPath } from '@/lib/auth/passkey-entry-shared';
+import { requestPasskeyGate } from '@/stores/passkey-gate-store';
 import { isEmbedded, notifyParent } from '@/lib/iframe-bridge';
 import { snapshotAccount, restoreAccount, clearAllStores, evictAccount, evictAll } from '@/lib/account-state-manager';
 import { clearAllPluginStorage, clearPluginStorageForAccount } from '@/lib/plugin-sandbox/storage-scope';
@@ -91,7 +92,13 @@ interface AuthState {
    */
   loginWithToken: (serverUrl: string, token: string, rememberMe?: boolean) => Promise<boolean>;
   loginWithOAuth: (serverUrl: string, code: string, codeVerifier: string, redirectUri: string, serverId?: string) => Promise<boolean>;
-  loginWithServerSso: (code: string, state: string) => Promise<boolean>;
+  /**
+   * `firstParty` (fork, Wnt/webmail): a code from the provider's first-party
+   * passkey endpoint (components/auth/passkey-gate.tsx), redeemed with the
+   * page's own PKCE verifier at /api/auth/sso/code instead of the redirect
+   * flow's pending cookie.
+   */
+  loginWithServerSso: (code: string, state: string | null, firstParty?: { codeVerifier: string; redirectUri: string }) => Promise<boolean>;
   loginDemo: () => Promise<boolean>;
   /**
    * Obtain a usable access token for the active account.
@@ -893,6 +900,9 @@ export function redirectToLogin(): void {
 
 function navigateToLogin(): void {
   if (typeof window === 'undefined') return;
+  // Fork (Wnt/webmail): with the in-page passkey sign-in mounted, signing in
+  // happens where the user is - no navigation to a login page.
+  if (requestPasskeyGate()) return;
 
   const loginPath = getLocaleLoginPath();
   if (window.location.pathname === loginPath) return;
@@ -1971,7 +1981,7 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      loginWithServerSso: async (code, state) => {
+      loginWithServerSso: async (code, state, firstParty) => {
         set({ isLoading: true, error: null, isRateLimited: false, rateLimitUntil: null });
 
         try {
@@ -1986,12 +1996,19 @@ export const useAuthStore = create<AuthState>()(
           // SSO token exchange and config fetch are independent - fire both
           // up front and let them resolve in parallel.
           const [ssoRes, config] = await Promise.all([
-            apiFetch('/api/auth/sso/complete', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              credentials: 'include',
-              body: JSON.stringify({ code, state, slot }),
-            }),
+            firstParty
+              ? apiFetch('/api/auth/sso/code', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  credentials: 'include',
+                  body: JSON.stringify({ code, code_verifier: firstParty.codeVerifier, redirect_uri: firstParty.redirectUri, slot }),
+                })
+              : apiFetch('/api/auth/sso/complete', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  credentials: 'include',
+                  body: JSON.stringify({ code, state, slot }),
+                }),
             fetchConfig(),
           ]);
 

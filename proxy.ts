@@ -151,6 +151,38 @@ function isSetupPath(pathname: string): boolean {
   );
 }
 
+/**
+ * Fork (Wnt/webmail): next-intl's answer for an address without a locale is a
+ * redirect to the same address with the locale in front. Turn exactly that
+ * redirect into a rewrite to the same target (keeping the locale cookie it
+ * sets); anything else stays as it is.
+ */
+export function localeRedirectAsRewrite(
+  intlResponse: NextResponse,
+  request: NextRequest,
+): { response: NextResponse; pathname: string } | null {
+  if (intlResponse.status !== 307 && intlResponse.status !== 308) return null;
+  const location = intlResponse.headers.get("location");
+  if (!location) return null;
+  let target: URL;
+  try {
+    target = new URL(location, request.nextUrl.href);
+  } catch {
+    return null;
+  }
+  const basePath = request.nextUrl.basePath ?? "";
+  const asked = request.nextUrl.pathname;
+  const locale = (routing.locales as readonly string[]).find((l) =>
+    asked === "/"
+      ? target.pathname === `${basePath}/${l}` || target.pathname === `${basePath}/${l}/`
+      : target.pathname === `${basePath}/${l}${asked}`,
+  );
+  if (!locale || target.origin !== request.nextUrl.origin || target.search !== request.nextUrl.search) return null;
+  const response = NextResponse.rewrite(target);
+  for (const cookie of intlResponse.headers.getSetCookie()) response.headers.append("set-cookie", cookie);
+  return { response, pathname: target.pathname.slice(basePath.length) || "/" };
+}
+
 export async function proxy(request: NextRequest) {
   // Resolve setup state before deciding what to skip. The first call after
   // boot triggers the config load; subsequent calls are in-memory.
@@ -382,7 +414,7 @@ export async function proxy(request: NextRequest) {
     if (entry) return entry;
   }
 
-  let intlResponse: ReturnType<typeof intlMiddleware> | null = null;
+  let intlResponse: NextResponse | null = null;
   if (
     !isAdminRoute &&
     !isProtocolRoute &&
@@ -397,6 +429,19 @@ export async function proxy(request: NextRequest) {
       console.error('Locale middleware error:', error);
     }
   }
+  // Fork (Wnt/webmail): in passkey-entry mode an address without a locale is
+  // served in place - next-intl's redirect to `/<locale>/...` becomes a
+  // rewrite - so opening the app (or a notification's `/mail/message/<id>`)
+  // is one document with no redirect. The app keeps its addresses without a
+  // locale anyway (it pushes `/mail/...` itself), so the address bar stays.
+  let servedPathname = rawPathname;
+  if (intlResponse && passkeyEntryEnabled()) {
+    const inPlace = localeRedirectAsRewrite(intlResponse, request);
+    if (inPlace) {
+      intlResponse = inPlace.response;
+      servedPathname = inPlace.pathname;
+    }
+  }
   const response = intlResponse ?? NextResponse.next();
 
   // Expose the nonce AND the request pathname to server components as request
@@ -404,7 +449,7 @@ export async function proxy(request: NextRequest) {
   // so getLocale() can't resolve the active locale there and falls back to the
   // default - emitting <html lang="en"> on e.g. /de pages, which makes browsers
   // offer to "translate this page". The layout reads x-pathname to recover it.
-  forwardRequestHeaders(response, request, { "x-nonce": nonce, "x-pathname": rawPathname });
+  forwardRequestHeaders(response, request, { "x-nonce": nonce, "x-pathname": servedPathname });
 
   response.headers.set("X-Content-Type-Options", "nosniff");
 
