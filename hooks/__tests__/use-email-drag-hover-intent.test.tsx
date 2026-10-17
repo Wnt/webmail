@@ -28,13 +28,13 @@ describe('useEmailDrag hover intent', () => {
 
   it('does not download for a pointer that only crosses the row', () => {
     const h = handlers();
-    act(() => { h.onPointerEnter!(); vi.advanceTimersByTime(HOVER_INTENT_MS / 2); h.onPointerLeave!(); vi.advanceTimersByTime(HOVER_INTENT_MS * 2); });
+    act(() => { h.onPointerEnter?.(); vi.advanceTimersByTime(HOVER_INTENT_MS / 2); h.onPointerLeave?.(); vi.advanceTimersByTime(HOVER_INTENT_MS * 2); });
     expect(fetchBlobAsObjectUrl).not.toHaveBeenCalled();
   });
 
   it('downloads once the pointer rests on the row', () => {
     const h = handlers();
-    act(() => { h.onPointerEnter!(); vi.advanceTimersByTime(HOVER_INTENT_MS - 50); h.onPointerMove!(); vi.advanceTimersByTime(HOVER_INTENT_MS - 50); });
+    act(() => { h.onPointerEnter?.(); vi.advanceTimersByTime(HOVER_INTENT_MS - 50); h.onPointerMove?.(); vi.advanceTimersByTime(HOVER_INTENT_MS - 50); });
     expect(fetchBlobAsObjectUrl).not.toHaveBeenCalled();
     act(() => { vi.advanceTimersByTime(100); });
     expect(fetchBlobAsObjectUrl).toHaveBeenCalledTimes(1);
@@ -42,7 +42,24 @@ describe('useEmailDrag hover intent', () => {
 
   it('does not download for a row that is clicked', () => {
     const h = handlers();
-    act(() => { h.onPointerEnter!(); vi.advanceTimersByTime(100); h.onPointerDown!(); vi.advanceTimersByTime(HOVER_INTENT_MS * 4); });
+    act(() => { h.onPointerEnter?.(); vi.advanceTimersByTime(100); h.onPointerDown?.(); vi.advanceTimersByTime(HOVER_INTENT_MS * 4); });
     expect(fetchBlobAsObjectUrl).not.toHaveBeenCalled();
+  });
+
+  // A drag event as Chromium delivers it; only what handleDragStart touches.
+  const dragEvent = () => ({ dataTransfer: { effectAllowed: '', setData: vi.fn(), setDragImage: vi.fn() } }) as never;
+
+  it('does not download for a hover just under the intent window', () => {
+    const h = handlers();
+    act(() => { h.onPointerEnter?.(); vi.advanceTimersByTime(HOVER_INTENT_MS - 1); h.onPointerLeave?.(); vi.runAllTimers(); });
+    expect(fetchBlobAsObjectUrl).not.toHaveBeenCalled();
+  });
+
+  it('a real drag downloads the file, even without a hover', () => {
+    expect(HOVER_INTENT_MS).toBe(500);
+    const h = handlers();
+    act(() => { h.onPointerEnter?.(); vi.advanceTimersByTime(50); h.onPointerDown?.(); h.onDragStart(dragEvent()); });
+    expect(fetchBlobAsObjectUrl).toHaveBeenCalledTimes(1);
+    expect(fetchBlobAsObjectUrl).toHaveBeenCalledWith('b1', expect.any(String), 'message/rfc822');
   });
 });
