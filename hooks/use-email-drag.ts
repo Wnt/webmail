@@ -20,6 +20,9 @@ import {
 } from "@/lib/download-filename";
 import { useSettingsStore } from "@/stores/settings-store";
 
+/** How long the pointer must rest on a row before its drag-out file is fetched. */
+export const HOVER_INTENT_MS = 500;
+
 interface UseEmailDragOptions {
   email: Email;
   sourceMailboxId: string;
@@ -30,6 +33,9 @@ interface UseEmailDragReturn {
   dragHandlers: {
     draggable: boolean;
     onPointerEnter?: () => void;
+    onPointerMove?: () => void;
+    onPointerLeave?: () => void;
+    onPointerDown?: () => void;
     onDragStart: (e: DragEvent<HTMLDivElement>) => void;
     onDragEnd: (e: DragEvent<HTMLDivElement>) => void;
   };
@@ -194,7 +200,7 @@ export function useEmailDrag({ email, sourceMailboxId, threadEmails }: UseEmailD
       });
   }, [dragOutEnabled, client, email, filenameOptions]);
 
-  const handlePointerEnter = useCallback(() => {
+  const warmUp = useCallback(() => {
     if (!dragOutEnabled || !client) return;
     const isSelected = selectedEmailKeys.has(emailKeyFor(email));
     const isMulti = isSelected && selectedEmailKeys.size > 1;
@@ -208,6 +214,45 @@ export function useEmailDrag({ email, sourceMailboxId, threadEmails }: UseEmailD
       prefetchSingle();
     }
   }, [dragOutEnabled, client, selectedEmailKeys, email, emails, prefetchSingle, filenameOptions, bundleOptions]);
+
+  // Warming the drag-out file downloads the whole raw message (or a bundle
+  // of them). Doing that on every pointerenter downloaded each row the
+  // pointer merely crossed, and every row clicked to read it, each through
+  // the mail server. Now it waits for the pointer to rest on the row for
+  // HOVER_INTENT_MS; a press cancels it (a click opens the message, and a
+  // drag warms up in handleDragStart, so the next drag-out has the file).
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pressedRef = useRef(false);
+  const clearHoverTimer = useCallback(() => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = null;
+  }, []);
+  const armHoverTimer = useCallback(() => {
+    clearHoverTimer();
+    if (pressedRef.current) return;
+    hoverTimerRef.current = setTimeout(() => {
+      hoverTimerRef.current = null;
+      warmUp();
+    }, HOVER_INTENT_MS);
+  }, [clearHoverTimer, warmUp]);
+  useEffect(() => clearHoverTimer, [clearHoverTimer]);
+
+  const handlePointerEnter = useCallback(() => {
+    pressedRef.current = false;
+    armHoverTimer();
+  }, [armHoverTimer]);
+  // Moving restarts the wait: only a pointer at rest counts as intent.
+  const handlePointerMove = useCallback(() => {
+    if (hoverTimerRef.current) armHoverTimer();
+  }, [armHoverTimer]);
+  const handlePointerLeave = useCallback(() => {
+    pressedRef.current = false;
+    clearHoverTimer();
+  }, [clearHoverTimer]);
+  const handlePointerDown = useCallback(() => {
+    pressedRef.current = true;
+    clearHoverTimer();
+  }, [clearHoverTimer]);
 
   const handleDragStart = useCallback((e: DragEvent<HTMLDivElement>) => {
     // Determine which emails to drag:
@@ -308,6 +353,9 @@ export function useEmailDrag({ email, sourceMailboxId, threadEmails }: UseEmailD
       : {
           draggable: true,
           onPointerEnter: dragOutEnabled ? handlePointerEnter : undefined,
+          onPointerMove: dragOutEnabled ? handlePointerMove : undefined,
+          onPointerLeave: dragOutEnabled ? handlePointerLeave : undefined,
+          onPointerDown: dragOutEnabled ? handlePointerDown : undefined,
           onDragStart: handleDragStart,
           onDragEnd: handleDragEnd,
         },
