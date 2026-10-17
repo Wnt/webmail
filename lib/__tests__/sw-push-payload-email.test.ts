@@ -84,7 +84,7 @@ describe('service worker push payload email fallback', () => {
     expect(shown[0].options).toMatchObject({
       body: 'Lunch?\nAre you free at noon?',
       tag: 'bulwark-mail:acc1',
-      data: { kind: 'mail-list', accountId: 'acc1' },
+      data: { kind: 'email', emailId: 'e1', accountId: 'acc1' },
     });
   });
 

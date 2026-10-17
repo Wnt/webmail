@@ -277,7 +277,22 @@ async function handlePush(event, work) {
   // headlines, so a later summary can tell whether it belongs here.
   const headlineEmailId = (email && typeof email.id === "string" && email.id)
     || (freshIds.length > 0 ? freshIds[freshIds.length - 1] : "");
-  let data = { kind: "mail-list", accountId, slot, headlineEmailId };
+  // Fork patch (Wnt/webmail): a tap opens the message the notification
+  // names whenever its id is known: from the preview, or else the newest id
+  // the push itself carried (the preview API failed, e.g. 401 after the
+  // session expired). That includes a "+N more" group: it headlines its
+  // newest message, and the inbox is one step back from there. Only a push
+  // with no id at all (an older server's bare state change) opens the list.
+  const data = headlineEmailId
+    ? {
+      kind: "email",
+      emailId: headlineEmailId,
+      threadId: email && typeof email.threadId === "string" ? email.threadId : undefined,
+      slot,
+      accountId,
+      headlineEmailId,
+    }
+    : { kind: "mail-list", accountId, slot, headlineEmailId };
 
   if (email) {
     const sender = email.from && email.from[0];
@@ -286,12 +301,9 @@ async function handlePush(event, work) {
     body = email.subject || email.preview || "(no subject)";
     const more = unreadTotal > 1 ? unreadTotal - 1 : 0;
     if (more > 0) {
-      // Several unread: this is a group. Keep the newest as the headline, add
-      // the "+N more" count, and open the inbox (not one message) on click.
+      // Several unread: this is a group. Keep the newest as the headline and
+      // add the "+N more" count; a tap still opens the headline message.
       body += "\n" + (more === 1 ? "+1 more message" : `+${more} more messages`);
-    } else {
-      // Exactly one unread: deep-link straight to that message on click.
-      data = { kind: "email", emailId: email.id, threadId: email.threadId, slot, accountId, headlineEmailId };
     }
   } else {
     const fallback = !previewOk ? buildPayloadEmailContent(payload && payload.email) : null;
@@ -547,6 +559,8 @@ function delay(ms) {
 async function showReplacing(title, options, work) {
   const shownId = newShownId();
   options = { ...options, data: { ...(options.data || {}), shownId, shownAt: Date.now() } };
+  const navigate = notificationNavigateUrl(options.data);
+  if (navigate) options.navigate = navigate;
   await self.registration.showNotification(title, options);
   if (work) work.displayed = true;
   await closeOthersWithTag(options.tag, shownId, work);
@@ -771,12 +785,20 @@ async function handleNotificationClick(event) {
 
   const targetUrl = buildClickUrl(data);
 
+  // Fork patch (Wnt/webmail): leave the message this tap is for where the
+  // app reads it when it shows (lib/notification-open.ts), in case neither
+  // navigate() nor openWindow() below gets the app there: WebKit may open
+  // the Home Screen app at its start page, and navigate() fails on a client
+  // this worker does not control.
+  await rememberNotificationOpen(data, targetUrl);
+
   const allClients = await self.clients.matchAll({
     type: "window",
     includeUncontrolled: true,
   });
 
   // Notify any in-app clients so plugins listening on toastHooks.onNotificationClick fire.
+  // The mail app also takes it as its cue to open the message (see above).
   for (const client of allClients) {
     try {
       client.postMessage({ kind: "notificationclick", tag, data });
@@ -955,6 +977,46 @@ function getReusableClientScore(state) {
   if (isMailSection) return 1;
   if (state.standalone) return 2;
   return 3;
+}
+
+// Fork patch (Wnt/webmail): where a tap on a mail notification goes, as the
+// notification's `navigate` URL (WHATWG Notifications). WebKit (Safari 18.4+,
+// iOS Home Screen web apps) then opens that URL in the app itself on a tap and
+// skips notificationclick, whose WebKit implementation is unreliable for
+// Home Screen apps (bugs.webkit.org 268797, 279456, 259212). Browsers without
+// it ignore the member and run notificationclick as before.
+function notificationNavigateUrl(data) {
+  if (!data || (data.kind !== "email" && data.kind !== "mail-list")) return "";
+  try {
+    return new URL(buildClickUrl(data), self.location.origin).href;
+  } catch (_) {
+    return "";
+  }
+}
+
+// Fork patch (Wnt/webmail): the message a tap asked for, kept for a few
+// minutes in the push-state cache. The app takes it (once) when it shows:
+// on start, after a sign-in, on focus, or on this worker's message.
+function notificationOpenKey() {
+  return `${self.location.origin}${BASE_PATH}/__push-state/notification-open`;
+}
+
+async function rememberNotificationOpen(data, url) {
+  if (!data || data.kind !== "email" || typeof data.emailId !== "string" || !data.emailId) return;
+  try {
+    const cache = await caches.open(PUSH_STATE_CACHE);
+    await cache.put(
+      notificationOpenKey(),
+      new Response(JSON.stringify({
+        emailId: data.emailId,
+        slot: Number.isInteger(data.slot) ? data.slot : undefined,
+        url,
+        at: Date.now(),
+      }), { headers: { "Content-Type": "application/json" } }),
+    );
+  } catch (_) {
+    // Best effort: navigate() and openWindow() still carry the link.
+  }
 }
 
 function buildClickUrl(data) {

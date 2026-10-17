@@ -132,6 +132,7 @@ import {
   type MailDeepLink,
 } from "@/lib/deep-links";
 import { consumePendingDeepLink, subscribePendingDeepLink } from "@/lib/deep-link-handoff";
+import { takeNotificationOpen } from "@/lib/notification-open";
 import { useProInterfaceActive } from "@/components/pro/pro-interface-redirect";
 import type { QuoteHeader } from "@/lib/plugin-types";
 import { useLiteLinkSegments } from "@/hooks/use-lite-link-segments";
@@ -1713,6 +1714,58 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       selectEmail(newestUnread);
     }
   }, [isAuthenticated, client, mailboxes.length, emails, linkSegments, initialMailLoadDone, selectEmail]);
+
+  // Fork patch (Wnt/webmail): a tapped push notification whose message the
+  // service worker could not bring the app to (lib/notification-open.ts).
+  // Checked once the mailbox is up - on start, so also right after a
+  // sign-in - and whenever the app comes to the front or the worker says a
+  // notification was tapped. The standard view under an active Pro shell is
+  // only passing through (it redirects to /pro), so it leaves the tap to the
+  // Pro mail tab.
+  const notificationOpenReady = isAuthenticated && !!client && mailboxes.length > 0 && initialMailLoadDone
+    && (isEmbedded || !proInterfaceActive);
+  useEffect(() => {
+    if (!notificationOpenReady) return;
+    let busy = false;
+    const check = async () => {
+      if (busy || document.visibilityState === 'hidden') return;
+      busy = true;
+      try {
+        const pending = await takeNotificationOpen();
+        if (!pending || !mailAppMountedRef.current) return;
+        // This page was opened at that very message (openWindow, navigate,
+        // or WebKit's notification URL): its deep link already opens it.
+        const pageStart = typeof performance !== 'undefined' ? performance.timeOrigin : 0;
+        const initialLink = parseMailPath(linkSegments ?? [], new URLSearchParams(initialSearchRef.current ?? ''));
+        if (pending.at <= pageStart && initialLink?.kind === 'message' && initialLink.id === pending.emailId) return;
+        if (useEmailStore.getState().selectedEmail?.id === pending.emailId) {
+          if (isMobile) setActiveView('viewer');
+          return;
+        }
+        await applyMailDeepLinkRef.current({ kind: 'message', id: pending.emailId, slot: pending.slot });
+      } finally {
+        busy = false;
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') void check(); };
+    const onSwMessage = (e: MessageEvent) => {
+      const msg = e.data as { kind?: string } | null;
+      if (msg && msg.kind === 'notificationclick') void check();
+    };
+    void check();
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    window.addEventListener('pageshow', onVisible);
+    const sw = typeof navigator !== 'undefined' ? navigator.serviceWorker : undefined;
+    sw?.addEventListener('message', onSwMessage);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+      window.removeEventListener('pageshow', onVisible);
+      sw?.removeEventListener('message', onSwMessage);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notificationOpenReady]);
 
   // Auto-fetch full email content when an email is auto-selected (e.g. after delete/archive)
   useEffect(() => {
