@@ -99,6 +99,33 @@ describe('/api/auth/sso/complete', () => {
   });
 });
 
+// Fork (Wnt/webmail): the passkey entry (lib/auth/passkey-entry.ts) carries
+// the page a signed-out visit asked for in the pending cookie.
+describe('/api/auth/sso/complete after the passkey entry', () => {
+  it('hands back the page the visit asked for', async () => {
+    pending({ return_to: '/en/mail/message/M1?slot=0' });
+    const res = await complete();
+    expect(res.status).toBe(200);
+    expect(res.body.return_to).toBe('/en/mail/message/M1?slot=0');
+  });
+
+  it('re-checks it: never another origin or a sign-in page', async () => {
+    for (const bad of ['//evil.example/en', 'https://evil.example/en', '/en/login', '/en/auth/callback']) {
+      pending({ return_to: bad });
+      const res = await complete();
+      expect(res.status).toBe(200);
+      expect(res.body.return_to).toBeUndefined();
+    }
+  });
+
+  it('ends an explicit sign-out', async () => {
+    jar.set('bulwark_signed_out', '1');
+    pending();
+    await complete();
+    expect(jar.has('bulwark_signed_out')).toBe(false);
+  });
+});
+
 describe('/api/auth/sso/complete for the mobile app handoff', () => {
   // The app renews with client_id only, at a token endpoint on the mail
   // server's or the webmail's host. Anything else goes through the webmail.

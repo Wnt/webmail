@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useAuthStore } from "@/stores/auth-store";
+import { useConfig } from "@/hooks/use-config";
 import { apiFetch, getPathPrefix, toRouterPath } from "@/lib/browser-navigation";
 import { buildSettingsPath } from "@/lib/deep-links";
 import { LITE_OAUTH_AVAILABLE, getLiteOAuthRedirectUri } from "@/lib/auth/lite-oauth";
@@ -22,6 +23,7 @@ function OAuthCallbackInner() {
   // ran this twice: the second pass no longer saw the pairing re-auth flag
   // (the first had removed it) and spent the code on the login flow instead.
   const handledRef = useRef(false);
+  const { oauthOnly, autoSsoEnabled, jmapServers, isLoading: configLoading } = useConfig();
 
   useEffect(() => {
     if (handledRef.current) return;
@@ -220,7 +222,17 @@ function OAuthCallbackInner() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (error) {
+  // Fork (Wnt/webmail): with the passkey entry (lib/auth/passkey-entry.ts)
+  // a failed sign-in lands on the branded page with its one button, like the
+  // provider's own errors (which the proxy sends there before this page loads).
+  const passkeyEntry = oauthOnly && autoSsoEnabled && jmapServers.length <= 1;
+  useEffect(() => {
+    if (!error || configLoading || !passkeyEntry) return;
+    const prefix = getPathPrefix(params.locale as string);
+    window.location.replace(`${prefix}/${params.locale}/login?sso_error=${encodeURIComponent(error)}`);
+  }, [error, configLoading, passkeyEntry, params.locale]);
+
+  if (error && !configLoading && !passkeyEntry) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background via-background to-muted/20">
         <div className="w-full max-w-sm mx-auto px-4 text-center">

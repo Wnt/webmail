@@ -16,6 +16,7 @@ import { debug } from '@/lib/debug';
 import { setServerAuthIssue } from '@/lib/server-auth-status';
 import { generateAccountId, MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
 import { replaceWindowLocation, getPathPrefix, getLocaleFromPath, apiFetch } from '@/lib/browser-navigation';
+import { SIGNED_OUT_COOKIE, SIGNED_OUT_MAX_AGE, safeReturnPath } from '@/lib/auth/passkey-entry-shared';
 import { isEmbedded, notifyParent } from '@/lib/iframe-bridge';
 import { snapshotAccount, restoreAccount, clearAllStores, evictAccount, evictAll } from '@/lib/account-state-manager';
 import { clearAllPluginStorage, clearPluginStorageForAccount } from '@/lib/plugin-sandbox/storage-scope';
@@ -911,6 +912,22 @@ function markSessionExpired(): void {
 const SIGNED_OUT_KEY = 'signed_out';
 
 /**
+ * Fork (Wnt/webmail): the server-side half of the flag above. The passkey
+ * entry redirects signed-out page loads to the provider before any script
+ * runs, so it cannot read sessionStorage; this cookie tells it the user signed
+ * out on purpose and gets the page with the sign-in button instead
+ * (lib/auth/passkey-entry.ts). The next sign-in clears it.
+ */
+function markSignedOutCookie(): void {
+  try {
+    const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+    document.cookie = `${SIGNED_OUT_COOKIE}=1; Path=${getPathPrefix()}/; Max-Age=${SIGNED_OUT_MAX_AGE}; SameSite=Lax${secure}`;
+  } catch {
+    /* noop */
+  }
+}
+
+/**
  * True once after the user signed out on purpose. The login page then skips
  * automatic SSO: it would sign the user straight back in whenever the
  * provider's session outlived the sign-out (#905).
@@ -936,6 +953,7 @@ function finishSignOut(endSessionUrl: string | null, userInitiated: boolean): vo
     } catch {
       /* noop */
     }
+    markSignedOutCookie();
   }
   if (endSessionUrl) {
     leavingForProviderLogout = true;
@@ -1982,7 +2000,14 @@ export const useAuthStore = create<AuthState>()(
             throw new Error(errorData.error || 'token_exchange_failed');
           }
 
-          const { access_token, expires_in } = await ssoRes.json();
+          const { access_token, expires_in, return_to } = await ssoRes.json();
+          // Fork (Wnt/webmail): the page a signed-out visit asked for, carried
+          // through the passkey entry (lib/auth/passkey-entry.ts). The callback
+          // page opens it once signed in, like any saved redirect.
+          const returnTo = safeReturnPath(return_to, getPathPrefix());
+          if (returnTo) {
+            try { sessionStorage.setItem('redirect_after_login', returnTo); } catch { /* unavailable */ }
+          }
 
           const ssoServerUrl = config.jmapServerUrl;
 

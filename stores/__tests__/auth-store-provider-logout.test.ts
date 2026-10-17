@@ -79,6 +79,7 @@ let warnSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   vi.restoreAllMocks();
   sessionStorage.clear();
+  document.cookie = 'bulwark_signed_out=; Path=/; Max-Age=0';
   localStorage.clear();
   window.history.pushState({}, '', '/en/mail');
   useAccountStore.setState({ accounts: [], activeAccountId: null, defaultAccountId: null });
@@ -163,6 +164,8 @@ describe('single-account sign-out and the identity provider', () => {
 
     expect(replaceSpy).toHaveBeenCalledWith('/en/login');
     expect(sessionStorage.getItem('signed_out')).toBe('true');
+    // Fork (Wnt/webmail): the passkey entry's server-side copy of the flag.
+    expect(document.cookie).toMatch(/(?:^|; )bulwark_signed_out=1(?:;|$)/);
   });
 
   it.each([
@@ -198,6 +201,7 @@ describe('single-account sign-out and the identity provider', () => {
     expect(sessionStorage.getItem('session_expired')).toBe('true');
     // Signing in again should stay one click (auto-SSO allowed).
     expect(sessionStorage.getItem('signed_out')).toBeNull();
+    expect(document.cookie).not.toMatch(/bulwark_signed_out=/);
   });
 
   it('leaves the provider alone for a password sign-in', async () => {

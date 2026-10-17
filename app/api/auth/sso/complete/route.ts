@@ -14,6 +14,7 @@ import { getCookieOptions } from '@/lib/oauth/cookie-config';
 import { storeIdToken } from '@/lib/oauth/end-session';
 import { rejectCrossOriginRequest } from '@/lib/security/same-origin';
 import { MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
+import { SIGNED_OUT_COOKIE, safeReturnPath } from '@/lib/auth/passkey-entry-shared';
 
 const SSO_PENDING_COOKIE = 'sso_pending';
 const SSO_PENDING_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
@@ -163,9 +164,15 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // Fork (Wnt/webmail): the page the passkey entry was asked for
+    // (lib/auth/passkey-entry.ts), re-checked like every other value from the
+    // cookie; and an explicit sign-out no longer holds once signed in again.
+    const returnTo = safeReturnPath(pending.return_to, request.nextUrl.basePath ?? '');
+    cookieStore.delete({ name: SIGNED_OUT_COOKIE, path: `${request.nextUrl.basePath ?? ''}/` });
     return NextResponse.json({
       access_token: tokens.access_token,
       expires_in: tokens.expires_in,
+      ...(returnTo ? { return_to: returnTo } : {}),
     });
   } catch (error) {
     // Clean up pending cookie on any error

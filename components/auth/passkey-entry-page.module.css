@@ -1,0 +1,94 @@
+/* Fork (Wnt/webmail): the passkey entry page. The same look as the gateway's
+   sign-in pages (webmail-gateway static/auth/auth.css), so the whole sign-in
+   reads as one product: Madekivi Mail palette, stone #2E5A6B, light stone
+   #7FB0C1, cream #F4EFE6, night #13202A. Like the gateway, it follows the
+   system colour scheme. */
+.page {
+  --bg: #f4efe6;
+  --card: #ffffff;
+  --fg: #1c262c;
+  --muted: #5a666d;
+  --line: #ddd6ca;
+  --accent: #2e5a6b;
+  --accent-fg: #f4efe6;
+  --danger: #b42318;
+  color-scheme: light;
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  overflow-y: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  .page {
+    --bg: #13202a;
+    --card: #1a2a35;
+    --fg: #e8edf0;
+    --muted: #9fb0ba;
+    --line: #2c3e4a;
+    --accent: #7fb0c1;
+    --accent-fg: #13202a;
+    --danger: #ff7b72;
+    color-scheme: dark;
+  }
+}
+.card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 28px 24px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 20px;
+  font-weight: 600;
+  font-size: 1.05rem;
+  letter-spacing: 0.01em;
+}
+.brand img {
+  display: block;
+  width: 32px;
+  height: 32px;
+}
+.title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  margin: 0 0 12px;
+}
+.text {
+  margin: 0 0 12px;
+}
+.notice {
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+.notice[data-kind="error"] {
+  color: var(--danger);
+}
+.button {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

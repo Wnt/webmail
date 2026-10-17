@@ -15,6 +15,7 @@ import { buildConnectSrc } from "./lib/security/csp-connect-src";
 import { parseJmapServers } from "./lib/admin/jmap-servers";
 import { DEFAULT_RELAY_BASE_URL } from "./lib/push-relays";
 import { detectSetupState } from "./lib/setup/state";
+import { passkeyEntryEnabled, passkeyEntryRedirect } from "./lib/auth/passkey-entry";
 
 const intlMiddleware = createIntlMiddleware(routing);
 
@@ -371,6 +372,15 @@ export async function proxy(request: NextRequest) {
   const hasLocalePrefix = locales.some(
     (l) => pathname === `/${l}` || pathname.startsWith(`/${l}/`)
   );
+
+  // Fork (Wnt/webmail): a signed-out page load goes straight to the passkey
+  // sign-in, before any HTML renders (lib/auth/passkey-entry.ts). Paths
+  // without a locale get it from the intl middleware's redirect first.
+  if (hasLocalePrefix && passkeyEntryEnabled()) {
+    const locale = pathname.split('/')[1];
+    const entry = passkeyEntryRedirect(request, pathname, locale);
+    if (entry) return entry;
+  }
 
   let intlResponse: ReturnType<typeof intlMiddleware> | null = null;
   if (
