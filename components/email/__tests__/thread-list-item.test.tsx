@@ -560,3 +560,42 @@ describe('ThreadListItem Mountain View desktop row', () => {
     expect(onToggleExpand).not.toHaveBeenCalled();
   });
 });
+
+describe('ThreadListItem phone preview with a long link', () => {
+  // jsdom has no layout, so this pins the classes that keep the preview in
+  // its row: the clamp, and breaking anywhere so a long link cannot run past
+  // the row's edge (the clamp then ends the last line with an ellipsis).
+  const LONG = 'This newsletter is in HTML only. Read it at https://news.examplepaja.test/v/'
+    + 'aGVsbG8td29ybGQtZXhhbXBsZXBhamEtdG9rZW4'.repeat(4);
+
+  beforeEach(() => {
+    useSettingsStore.setState({ showPreview: true, mailLayout: 'split', interfaceLayout: 'default', density: 'regular' } as never);
+    useUIStore.setState({ isMobile: true, isTablet: false, isDesktop: false });
+    useEmailStore.setState({ selectedEmailKeys: new Set<string>(), selectedMailbox: 'inbox' });
+  });
+
+  const previewP = (container: HTMLElement) =>
+    [...container.querySelectorAll('p')].find((p) => p.textContent?.includes('examplepaja.test'))!;
+
+  it('clamps and wraps a single-message row', () => {
+    const { container } = renderRow(makeEmail({ preview: LONG, from: [{ name: 'Examplepaja', email: 'info@examplepaja.test' }] }));
+    expect(previewP(container)).toHaveClass('line-clamp-2', 'wrap-anywhere');
+  });
+
+  it('clamps and wraps a conversation row', () => {
+    const [thread] = groupEmailsByThread([
+      makeEmail({ id: 'e1', threadId: 't1', preview: 'Earlier message' }),
+      makeEmail({ id: 'e2', threadId: 't1', preview: LONG, receivedAt: '2024-01-16T10:00:00Z' }),
+    ]);
+    const { container } = render(
+      <ThreadListItem thread={thread} isExpanded={false} onToggleExpand={() => {}} onEmailSelect={() => {}} />,
+    );
+    expect(previewP(container)).toHaveClass('line-clamp-2', 'wrap-anywhere');
+  });
+
+  it('clamps and wraps the one-line Mountain View phone row', () => {
+    useSettingsStore.setState({ interfaceLayout: 'mountain-view' });
+    const { container } = renderRow(makeEmail({ preview: LONG }));
+    expect(previewP(container)).toHaveClass('line-clamp-1', 'wrap-anywhere', 'min-w-0');
+  });
+});

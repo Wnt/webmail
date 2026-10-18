@@ -741,7 +741,10 @@ const SingleEmailItem = React.forwardRef<HTMLDivElement, SingleEmailItemProps>(
                 {showPreview && density !== 'extra-compact' && density !== 'compact' && (
                   <div className={cn("flex min-w-0 items-center gap-1", !mvMobileRow && "contents")}>
                     <p className={cn(
-                      "text-sm leading-relaxed",
+                      // A long link or token breaks inside the row, so the
+                      // clamp ends the last line with an ellipsis instead of
+                      // cutting the link off at the edge.
+                      "text-sm leading-relaxed wrap-anywhere",
                       mvMobileRow ? "line-clamp-1 min-w-0 flex-1" : "line-clamp-2",
                       isUnread
                         ? "text-muted-foreground"
@@ -1336,7 +1339,8 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
                   {showPreview && density !== 'extra-compact' && density !== 'compact' && (
                     <div className={cn("flex min-w-0 items-center gap-1", !mvMobileRow && "contents")}>
                       <p className={cn(
-                        "text-sm leading-relaxed",
+                        // As in the single-message row: long links break, the clamp ends in an ellipsis.
+                        "text-sm leading-relaxed wrap-anywhere",
                         mvMobileRow ? "line-clamp-1 min-w-0 flex-1" : "line-clamp-2",
                         hasUnread
                           ? "text-muted-foreground"
