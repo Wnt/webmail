@@ -4792,11 +4792,13 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
             {/* Plugin-registered category tabs (Gmail-style). Renders nothing
                 unless an enabled plugin registered tabs via api.tabs.set. */}
             {!isScheduledView && <MessageListTabs />}
-            <WelcomeBanner />
 
             {!deferShell && (
             <ErrorBoundary fallback={EmailListErrorFallback}>
               <EmailList
+                // The welcome card scrolls with the rows, like a list item,
+                // instead of staying fixed above them.
+                header={<WelcomeBanner />}
                 onFindFromSender={mvShell ? (sender) => void handleSelectContactSuggestion(sender, 'from') : undefined}
                 hideBatchToolbar={mvShell}
                 emails={activeEmails}

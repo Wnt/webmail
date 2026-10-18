@@ -10,7 +10,7 @@ import { EmailContextMenu, type CopyTargetAccount } from "./email-context-menu";
 import { BatchTagButton } from "./batch-tag-button";
 import { cn, cleanPreview } from "@/lib/utils";
 import { Trash2, Mail, MailX, MailOpen, Loader2, SearchX, AlertTriangle, CalendarClock, ShieldCheck } from "@/components/icons";
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type MouseEvent as ReactMouseEvent } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useEmailStore, ArchiveMailboxNotFoundError, resolveSelectedEmails } from "@/stores/email-store";
@@ -70,6 +70,12 @@ interface EmailListProps {
    * list, so the separate bar that would otherwise slide in here is redundant.
    */
   hideBatchToolbar?: boolean;
+  /**
+   * Content above the first row that scrolls with the rows, like a list item
+   * (the onboarding welcome card). Outside the list it stayed fixed above it
+   * and took a third of a phone screen for as long as it was up.
+   */
+  header?: ReactNode;
 }
 
 export function EmailList({
@@ -104,6 +110,7 @@ export function EmailList({
   onLoadMoreScheduled,
   onCancelScheduledForEdit,
   onRescheduleScheduled,
+  header,
 }: EmailListProps) {
   const t = useTranslations('email_list');
   const tContextMenu = useTranslations('context_menu');
@@ -239,6 +246,27 @@ export function EmailList({
 
   const [isProcessing, setIsProcessing] = useState(false);
   const parentRef = useRef<HTMLDivElement>(null);
+  // The header sits in the scroll container above the rows, so the
+  // virtualizer has to know how far down the first row starts (its
+  // scrollMargin), or it would draw the rows for a scroll position off by the
+  // header's height. Layout height: the card collapses by max-height, and a
+  // transform does not move the rows.
+  const headerRef = useRef<HTMLDivElement>(null);
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const hasHeader = header != null;
+  useLayoutEffect(() => {
+    const el = headerRef.current;
+    if (!el) {
+      setHeaderHeight(0);
+      return;
+    }
+    const measure = () => setHeaderHeight(el.offsetHeight);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasHeader]);
   const batchToolbarRef = useRef<HTMLDivElement>(null);
   // The batch toolbar sits above the scroll container, so as it animates
   // open it shrinks the list and would shove every row downwards. Feed each
@@ -311,6 +339,7 @@ export function EmailList({
     estimateSize,
     overscan: 5,
     getItemKey,
+    scrollMargin: headerHeight,
     // Keep sub-pixel row heights. The default measurer rounds them, so a
     // row could start up to half a pixel inside the one above it and paint
     // over that row's divider (at 125% or 150% display scaling).
@@ -722,6 +751,8 @@ export function EmailList({
 
       {/* Email List */}
       <div ref={parentRef} className="flex-1 overflow-y-auto bg-background relative" data-tour="email-list">
+        {hasHeader && <div ref={headerRef} data-list-header="">{header}</div>}
+
         {/* Loading overlay */}
         {isLoading && emails.length > 0 && (
           <div className="absolute inset-0 bg-background/50 z-10 flex items-center justify-center animate-in fade-in duration-150">
@@ -784,8 +815,10 @@ export function EmailList({
                     style={{
                       position: 'absolute',
                       // `top`, not translateY: layout snaps it to device
-                      // pixels, so the fractional offsets stay crisp.
-                      top: virtualItem.start,
+                      // pixels, so the fractional offsets stay crisp. The
+                      // rows box starts below the header, so its height
+                      // (scrollMargin) comes off.
+                      top: virtualItem.start - headerHeight,
                       left: 0,
                       width: '100%',
                     }}
