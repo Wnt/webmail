@@ -209,7 +209,11 @@ async function handlePush(event, work) {
   try {
     const query = new URLSearchParams();
     if (accountId) query.set("accountId", accountId);
-    if (freshIds.length > 0) query.set("emailId", freshIds[freshIds.length - 1]);
+    if (freshIds.length > 0) {
+      query.set("emailId", freshIds[freshIds.length - 1]);
+      // Fork patch (Wnt/webmail): the whole message too, kept for the tap.
+      query.set("full", "1");
+    }
     const qs = query.toString();
     const previewUrl = `${BASE_PATH}/api/push/preview${qs ? `?${qs}` : ""}`;
     // Fork patch (Wnt/webmail): pushes for an account run one at a time, so
@@ -338,6 +342,15 @@ async function handlePush(event, work) {
   const announced = freshIds.length > 0 ? freshIds : (email ? [email.id] : []);
   if (announced.length > 0) {
     await writeNotifiedIds(accountId, notified.concat(announced));
+  }
+
+  // Fork patch (Wnt/webmail): the message this notification opens, kept so a
+  // tap shows it without fetching it again (lib/push-prefetch.ts). After the
+  // notification is up, so keeping it never delays the alert; not when the
+  // account was signed out meanwhile.
+  if (preview && preview.full && typeof preview.full === "object" && preview.full.id === headlineEmailId
+    && work.displayed && await pushSignedOut(accountId) !== true) {
+    await rememberPrefetchedEmail(accountId, preview.full);
   }
 }
 
@@ -469,6 +482,8 @@ async function handlePushSignOut(event) {
     ? await Promise.race([drain, new Promise((resolve) => setTimeout(() => resolve(false), SIGNOUT_DRAIN_MS))])
     : await drain;
   await closeShown();
+  // Fork patch (Wnt/webmail): no kept message outlives a sign-out.
+  await forgetPrefetchedEmails(everyAccount ? null : accountIds);
   if (port) port.postMessage({ done: drained === true });
   if (!drained) {
     // Still part of this message's lifetime (waitUntil above).
@@ -1088,6 +1103,56 @@ async function rememberNotificationOpen(data, url) {
     );
   } catch (_) {
     // Best effort: navigate() and openWindow() still carry the link.
+  }
+}
+
+// Fork patch (Wnt/webmail): the whole message a notification opens, fetched
+// with its preview (/api/push/preview?full=1) and kept in the push-state
+// cache, so a tap shows it at once: the app takes it once (lib/push-prefetch.ts).
+// The newest few only, for a day at most, and none after a sign-out.
+const PREFETCH_KEEP = 5;
+const PREFETCH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function prefetchedPrefix() {
+  return `${self.location.origin}${BASE_PATH}/__push-state/prefetched/`;
+}
+
+function prefetchedKey(accountId, emailId) {
+  return `${prefetchedPrefix()}${encodeURIComponent(accountId || "default")}/${encodeURIComponent(emailId)}`;
+}
+
+async function rememberPrefetchedEmail(accountId, email) {
+  try {
+    const cache = await caches.open(PUSH_STATE_CACHE);
+    await cache.put(prefetchedKey(accountId, email.id), new Response(JSON.stringify({ at: Date.now(), accountId, email }), {
+      headers: { "Content-Type": "application/json" },
+    }));
+    // Oldest out: keys() lists in insertion order.
+    const kept = (await cache.keys()).filter((r) => r.url.startsWith(prefetchedPrefix()));
+    for (const r of kept.slice(0, Math.max(0, kept.length - PREFETCH_KEEP))) await cache.delete(r);
+    const now = Date.now();
+    for (const r of kept.slice(-PREFETCH_KEEP)) {
+      const res = await cache.match(r);
+      const at = res ? Number((await res.json()).at) : 0;
+      if (!(now - at < PREFETCH_MAX_AGE_MS)) await cache.delete(r);
+    }
+  } catch (_) {
+    // Best effort: the tap fetches the message as before.
+  }
+}
+
+/** Drops the kept messages of `accountIds` (null: of every account). */
+async function forgetPrefetchedEmails(accountIds) {
+  try {
+    const cache = await caches.open(PUSH_STATE_CACHE);
+    const prefixes = accountIds === null
+      ? [prefetchedPrefix()]
+      : accountIds.map((id) => `${prefetchedPrefix()}${encodeURIComponent(id || "default")}/`);
+    for (const r of await cache.keys()) {
+      if (prefixes.some((p) => r.url.startsWith(p))) await cache.delete(r);
+    }
+  } catch (_) {
+    // Nothing kept.
   }
 }
 

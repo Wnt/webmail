@@ -87,13 +87,16 @@ function loadWorker({ preview = { ok: false, status: 401 } as Preview, webkit = 
   };
   const caches = {
     open: async () => ({
-      match: async (key: string) => {
-        const value = cacheStore.get(key);
+      match: async (key: string | { url: string }) => {
+        const value = cacheStore.get(typeof key === 'string' ? key : key.url);
         return value === undefined ? undefined : { json: async () => JSON.parse(value) };
       },
       put: async (key: string, res: { text: () => Promise<string> }) => {
+        cacheStore.delete(key);
         cacheStore.set(key, await res.text());
       },
+      keys: async () => [...cacheStore.keys()].map((url) => ({ url })),
+      delete: async (key: string | { url: string }) => cacheStore.delete(typeof key === 'string' ? key : key.url),
     }),
   };
   const fetchMock = vi.fn(async () => {
@@ -334,5 +337,46 @@ describe('notificationclick', () => {
     await w.click(w.latest());
     expect(w.openWindow).toHaveBeenCalledWith('/?openLatestUnread=1');
     expect(w.pendingOpen()).toBeNull();
+  });
+});
+
+
+// Fork (Wnt/webmail): the whole message a notification opens is kept for the
+// tap (lib/push-prefetch.ts), fetched with the preview.
+describe('the message kept for the tap', () => {
+  const PREFIX = `${ORIGIN}/__push-state/prefetched/acc1/`;
+  const whole = (id: string) => ({ id, threadId: `t-${id}`, bodyValues: { '1': { value: 'Hello', isTruncated: false } } });
+  const kept = (w: { cacheStore: Map<string, string> }) => [...w.cacheStore.keys()].filter((k) => k.startsWith(PREFIX));
+
+  it('asks the preview for the whole message and keeps it once the notification is up', async () => {
+    const w = loadWorker({
+      preview: { ok: true, body: { email: { id: 'e2', threadId: 't2', from: [{ name: 'Alice' }], subject: 'Hi' }, unreadTotal: 1, slot: 0, full: whole('e2') } },
+    });
+    await w.push(payload());
+    expect(w.latest().options.data).toMatchObject({ emailId: 'e2' });
+    const fetchMock = (w.context as unknown as { fetch: { mock: { calls: [string][] } } }).fetch;
+    expect(String(fetchMock.mock.calls[0][0])).toContain('full=1');
+    expect(kept(w)).toEqual([`${PREFIX}e2`]);
+    expect(JSON.parse(w.cacheStore.get(`${PREFIX}e2`)!)).toMatchObject({ accountId: 'acc1', email: { id: 'e2' } });
+  });
+
+  it('keeps nothing for a different message than the notification opens', async () => {
+    const w = loadWorker({
+      preview: { ok: true, body: { email: { id: 'e2', threadId: 't2', from: [{ name: 'Alice' }], subject: 'Hi' }, unreadTotal: 1, full: whole('other') } },
+    });
+    await w.push(payload());
+    expect(kept(w)).toEqual([]);
+  });
+
+  it('keeps the newest five', async () => {
+    let n = 0;
+    const w = loadWorker({ preview: { ok: true, body: {} } });
+    const fetchMock = (w.context as unknown as { fetch: { mockImplementation: (f: () => unknown) => void } }).fetch;
+    fetchMock.mockImplementation(async () => {
+      const id = `m${n++}`;
+      return { ok: true, status: 200, json: async () => ({ email: { id, threadId: `t${id}`, from: [{ name: 'A' }], subject: 'S' }, unreadTotal: 1, full: whole(id) }) };
+    });
+    for (let i = 0; i < 7; i++) await w.push(payload({ emailIds: [`m${i}`] }));
+    expect(kept(w)).toEqual(['m2', 'm3', 'm4', 'm5', 'm6'].map((id) => `${PREFIX}${id}`));
   });
 });

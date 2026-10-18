@@ -15,6 +15,7 @@ import { sanitizeDisplayName, splitMailbox } from "@/lib/rfc5322-mailbox";
 import { decodeFileNodeName } from "./filenode-name";
 import { contactFromWire, contactToWire } from "./contact-wire";
 import { SchedulingDeniedError } from "./scheduling-error";
+import { FULL_EMAIL_BODY_OPTIONS, FULL_EMAIL_PROPERTIES } from "./full-email";
 
 export { SchedulingDeniedError };
 import { acceptedFileName, fileNameRulesFrom, type FileNameRules } from "@/lib/file-name-rules";
@@ -342,6 +343,9 @@ const DEFAULT_MAILBOX_RIGHTS = {
 
 // How long a getThreadEmails result may stand in for getEmail of one of its members.
 const THREAD_FETCH_REUSE_MS = 5_000;
+// Fork (Wnt/webmail): how long a primed message (primeEmail) stands in for an
+// Email/get - only for the open that primed it.
+const PRIMED_EMAIL_MAX_AGE_MS = 60_000;
 const threadFetchKey = (accountId: string, threadId: string) => `${accountId}\u0000${threadId}`;
 
 const EMAIL_LIST_PROPERTIES = [
@@ -2354,6 +2358,16 @@ export class JMAPClient implements IJMAPClient {
     return result;
   }
 
+  /**
+   * Fork (Wnt/webmail): hands getEmail a message fetched elsewhere with the
+   * same properties (FULL_EMAIL_PROPERTIES) - the push worker's copy for a
+   * tapped notification. Used once, within PRIMED_EMAIL_MAX_AGE_MS.
+   */
+  primeEmail(email: Email, accountId?: string): void {
+    if (!email?.id || !email.bodyValues) return;
+    this.primedEmails.set(`${accountId || this.accountId}\u0000${email.id}`, { email, at: Date.now() });
+  }
+
   async getEmail(emailId: string, accountId?: string, opts?: { threadId?: string }): Promise<Email | null> {
     try {
       const targetAccountId = accountId || this.accountId;
@@ -2375,29 +2389,30 @@ export class JMAPClient implements IJMAPClient {
         }
       }
 
-      const response = await this.request([
-        ["Email/get", {
-          accountId: targetAccountId,
-          ids: [emailId],
-          properties: [
-            "id", "threadId", "mailboxIds", "keywords", "size",
-            "receivedAt", "sentAt", "from", "to", "cc", "bcc", "replyTo",
-            "subject", "preview", "textBody", "htmlBody", "bodyValues",
-            "hasAttachment", "attachments", "messageId", "inReplyTo",
-            "references", "headers", "bodyStructure", "blobId",
-          ],
-          fetchTextBodyValues: true,
-          fetchHTMLBodyValues: true,
-          fetchAllBodyValues: true,
-          maxBodyValueBytes: 256000,
-        }, "0"],
-      ]);
+      // Fork (Wnt/webmail): a message the push worker already fetched for a
+      // notification's tap (primeEmail) is shown without another round trip.
+      const primedKey = `${targetAccountId}\u0000${emailId}`;
+      const primed = this.primedEmails.get(primedKey);
+      this.primedEmails.delete(primedKey);
+      let email: Email | undefined;
+      if (primed && Date.now() - primed.at < PRIMED_EMAIL_MAX_AGE_MS) {
+        email = primed.email;
+      } else {
+        const response = await this.request([
+          ["Email/get", {
+            accountId: targetAccountId,
+            ids: [emailId],
+            properties: [...FULL_EMAIL_PROPERTIES],
+            ...FULL_EMAIL_BODY_OPTIONS,
+          }, "0"],
+        ]);
 
-      if (response.methodResponses?.[0]?.[0] !== "Email/get") {
-        return null;
+        if (response.methodResponses?.[0]?.[0] !== "Email/get") {
+          return null;
+        }
+
+        email = (response.methodResponses[0][1].list || [])[0];
       }
-
-      const email = (response.methodResponses[0][1].list || [])[0];
       if (!email) return null;
 
       if (accountId && accountId !== this.accountId) {
@@ -8677,6 +8692,8 @@ export class JMAPClient implements IJMAPClient {
   private static readonly POLLING_INTERVAL = 3_000;
   /** getThreadEmails calls getEmail may reuse (see getEmail), by account and thread. */
   private threadFetches = new Map<string, { at: number; promise: Promise<Email[]> }>();
+  // Fork (Wnt/webmail): messages handed in by primeEmail, keyed by account and id.
+  private primedEmails = new Map<string, { email: Email; at: number }>();
   // Shared/secondary accounts get no SSE push (Stalwart pushes the primary
   // account only), so poll them on a slow cadence alongside SSE to keep their
   // folder + unified/All-Mail counters from going stale between focus events.

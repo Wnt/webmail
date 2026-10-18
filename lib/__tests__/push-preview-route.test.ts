@@ -65,10 +65,10 @@ function mockJmap() {
   });
 }
 
-async function callRoute(accountId: string, emailId: string | null = null) {
+async function callRoute(accountId: string, emailId: string | null = null, full = false) {
   const { GET } = await import('@/app/api/push/preview/route');
   const request = {
-    nextUrl: { searchParams: { get: (k: string) => (k === 'accountId' ? accountId : k === 'emailId' ? emailId : null) } },
+    nextUrl: { searchParams: { get: (k: string) => (k === 'accountId' ? accountId : k === 'emailId' ? emailId : k === 'full' && full ? '1' : null) } },
   };
   const res = (await GET(request as unknown as Parameters<typeof GET>[0])) as unknown as {
     status: number;
@@ -212,5 +212,55 @@ it('names no message when the delivered one cannot be read, rather than another'
     ] }));
   expect(await callRoute('a', 'gone')).toEqual({
     status: 200, body: { email: null, unreadTotal: 3, slot: 0 },
+  });
+});
+
+
+// Fork (Wnt/webmail): `full=1` hands the worker the delivered message whole,
+// as the reading pane's Email/get would load it, for the notification's tap.
+describe('push preview: the whole message for the tap', () => {
+  const whole = {
+    id: 'd', threadId: 'td', from: [{ name: 'Examplepaja', email: 'info@examplepaja.test' }], subject: 'Synthetic', preview: 'p',
+    receivedAt: '2026-10-18T10:00:00Z', keywords: {}, mailboxIds: { inbox: true },
+    htmlBody: [{ partId: '1', type: 'text/html' }], textBody: [], bodyValues: { '1': { value: '<p>Hello</p>', isTruncated: false } },
+  };
+  function respondWith(delivered: unknown) {
+    fetchJmapServer.mockReset()
+      .mockResolvedValueOnce(jsonResponse(SESSION))
+      .mockResolvedValueOnce(jsonResponse({ methodResponses: [['Mailbox/query', { ids: ['inbox'] }, 'mb']] }))
+      .mockResolvedValueOnce(jsonResponse({ methodResponses: [
+        ['Email/query', { ids: ['d'], total: 1 }, 'eq'],
+        ['Email/get', { list: [{ id: 'd', threadId: 'td' }] }, 'eg'],
+        ['Email/get', { list: [delivered] }, 'delivered'],
+      ] }));
+  }
+  const deliveredCall = () => {
+    const bodies = fetchJmapServer.mock.calls.map(([, init]) => (init as { body?: string })?.body).filter(Boolean) as string[];
+    const last = JSON.parse(bodies[bodies.length - 1]) as { methodCalls: [string, Record<string, unknown>, string][] };
+    return last.methodCalls.find(([, , id]) => id === 'delivered')![1];
+  };
+
+  it('asks for the reading pane properties and returns the message whole; the notification fields stay lite', async () => {
+    respondWith(whole);
+    const { status, body } = await callRoute('a', 'd', true);
+    expect(status).toBe(200);
+    expect(deliveredCall()).toMatchObject({ ids: ['d'], fetchHTMLBodyValues: true, fetchTextBodyValues: true });
+    expect(deliveredCall().properties).toEqual(expect.arrayContaining(['bodyValues', 'htmlBody', 'headers', 'attachments']));
+    expect(body.full).toEqual(whole);
+    expect(body.email).toEqual({ id: 'd', threadId: 'td', from: whole.from, subject: 'Synthetic', preview: 'p', receivedAt: whole.receivedAt });
+  });
+
+  it('without full=1 nothing extra is fetched or returned', async () => {
+    respondWith({ id: 'd', threadId: 'td' });
+    const { body } = await callRoute('a', 'd');
+    expect(deliveredCall().properties).not.toContain('bodyValues');
+    expect(body.full).toBeUndefined();
+  });
+
+  it('a very large message is not handed over', async () => {
+    respondWith({ ...whole, bodyValues: { '1': { value: 'x'.repeat(700_000), isTruncated: false } } });
+    const { body } = await callRoute('a', 'd', true);
+    expect(body.full).toBeUndefined();
+    expect(body.email).toMatchObject({ id: 'd' });
   });
 });

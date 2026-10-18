@@ -10,8 +10,11 @@ import {
 } from '@/lib/stalwart/credentials';
 import { fetchJmapServer, isTrustedJmapServerUrl } from '@/lib/stalwart/server-fetch';
 import { DisallowedUrlError } from '@/lib/security/url-guard';
+import { FULL_EMAIL_BODY_OPTIONS, FULL_EMAIL_PROPERTIES } from '@/lib/jmap/full-email';
 
 export const runtime = 'nodejs';
+/** Fork (Wnt/webmail): the largest whole message handed to the worker (JSON characters). */
+const MAX_FULL_EMAIL_CHARS = 600_000;
 export const dynamic = 'force-dynamic';
 
 interface ResolvedTarget {
@@ -111,6 +114,10 @@ export async function GET(request: NextRequest) {
     // asks for that one instead of guessing "newest unread in the Inbox" -
     // which is wrong whenever Sieve filed the new message into a folder.
     const requestedEmailId = request.nextUrl.searchParams.get('emailId');
+    // Fork (Wnt/webmail): `full=1` also returns the delivered message whole
+    // (the reading pane's Email/get), which the worker keeps so a tap on the
+    // notification opens it without another round trip (lib/push-prefetch.ts).
+    const wantsFull = request.nextUrl.searchParams.get('full') === '1' && !!requestedEmailId;
 
     let target: ResolvedTarget | null = null;
     let authHeader: string;
@@ -221,7 +228,9 @@ export async function GET(request: NextRequest) {
     if (requestedEmailId) {
       methodCalls.push([
         'Email/get',
-        { accountId, ids: [requestedEmailId], properties: emailProperties },
+        wantsFull
+          ? { accountId, ids: [requestedEmailId], properties: [...FULL_EMAIL_PROPERTIES], ...FULL_EMAIL_BODY_OPTIONS }
+          : { accountId, ids: [requestedEmailId], properties: emailProperties },
         'delivered',
       ]);
     }
@@ -271,6 +280,7 @@ export async function GET(request: NextRequest) {
 
     let email: EmailLite | null = null;
     let delivered: EmailLite | null = null;
+    let deliveredFull: Record<string, unknown> | null = null;
     let unreadTotal = 0;
     for (const [method, body, callId] of data.methodResponses) {
       if (method === 'Email/query') {
@@ -280,7 +290,10 @@ export async function GET(request: NextRequest) {
       }
       if (method === 'Email/get') {
         const list = (body as { list?: EmailLite[] }).list ?? [];
-        if (callId === 'delivered') delivered = list[0] ?? null;
+        if (callId === 'delivered') {
+          delivered = list[0] ?? null;
+          if (wantsFull && delivered) deliveredFull = delivered as unknown as Record<string, unknown>;
+        }
         else email = list[0] ?? null;
       }
     }
@@ -305,10 +318,18 @@ export async function GET(request: NextRequest) {
     // Some servers build the preview from HTML without skipping <style>; a
     // notification that opens on a style sheet says nothing.
     if (email?.preview) email = { ...email, preview: cleanPreview(email.preview) };
+    // Only the lite fields name the notification; the whole message rides
+    // along for the tap, unless it is very large.
+    if (email && deliveredFull) {
+      email = { id: email.id, threadId: email.threadId, from: email.from, subject: email.subject, preview: email.preview, receivedAt: email.receivedAt };
+    }
+    const full = deliveredFull && email && deliveredFull.id === email.id
+      && JSON.stringify(deliveredFull).length <= MAX_FULL_EMAIL_CHARS ? deliveredFull : undefined;
 
     return NextResponse.json({
       email,
       unreadTotal,
+      ...(full ? { full } : {}),
       ...(target.slot !== undefined ? { slot: target.slot } : {}),
     }, {
       headers: {

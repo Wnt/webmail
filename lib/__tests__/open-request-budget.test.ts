@@ -120,3 +120,22 @@ describe('conversation open request budget', () => {
     expect(posts).toHaveLength(1);
   });
 });
+
+// Fork (Wnt/webmail): a tapped notification's message, kept by the push
+// worker (lib/push-prefetch.ts), opens without a JMAP request - once.
+describe('notification tap request budget', () => {
+  it('a primed message opens with no Email/get; the next open of it fetches again', async () => {
+    client.primeEmail(fullEmail('m2') as unknown as Email);
+    const first = await client.getEmail('m2');
+    expect(first?.bodyValues?.['1']?.value).toBe('Body');
+    expect(posts).toHaveLength(0);
+    await client.getEmail('m2');
+    expect(emailGetsFor('m2')).toBe(1);
+  });
+
+  it('a primed message of another account is not used', async () => {
+    client.primeEmail(fullEmail('m1') as unknown as Email, 'acct-other');
+    await client.getEmail('m1');
+    expect(emailGetsFor('m1')).toBe(1);
+  });
+});

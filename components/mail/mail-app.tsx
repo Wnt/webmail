@@ -133,6 +133,7 @@ import {
 } from "@/lib/deep-links";
 import { consumePendingDeepLink, subscribePendingDeepLink } from "@/lib/deep-link-handoff";
 import { takeNotificationOpen } from "@/lib/notification-open";
+import { takePrefetchedEmail } from "@/lib/push-prefetch";
 import { afterBodyPainted, beginOpen, bodyPainted, markOpen } from "@/lib/open-timing";
 import { useProInterfaceActive } from "@/components/pro/pro-interface-redirect";
 import type { QuoteHeader } from "@/lib/plugin-types";
@@ -1674,6 +1675,10 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       // first and then replaced).
       if (isMobile) setActiveView('viewer');
       try {
+        // A tapped notification's message, kept by the push worker: shown
+        // without fetching it again (lib/push-prefetch.ts).
+        const prefetched = await takePrefetchedEmail(activeClient.getAccountId(), link.id);
+        if (prefetched) activeClient.primeEmail?.(prefetched);
         const email = await fetchEmailContent(activeClient, link.id);
         if (!email) {
           if (isMobile) setActiveView('list');
