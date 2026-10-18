@@ -67,3 +67,49 @@ describe('WelcomeBanner and the corner cards', () => {
     expect(document.documentElement.dataset.welcomeOpen).toBeUndefined();
   });
 });
+
+// The card listened for Escape on the whole window, so the Escape that
+// closed a dialog, a menu or the open message also dismissed the card for
+// good (found in the live Chrome check, 2026-10-18). It now takes Escape only
+// while the focus is inside it, and the key stops there.
+describe('WelcomeBanner and the Escape key', () => {
+  beforeEach(() => {
+    device.isMobile = false;
+    localStorage.clear();
+    useSettingsStore.setState({ onboardingCompleted: false });
+  });
+
+  it('stays when Escape is meant for something else (a dialog, a menu, the page)', () => {
+    render(
+      <>
+        <WelcomeBanner />
+        <div role="dialog" aria-label="Some dialog"><button type="button">in the dialog</button></div>
+      </>,
+    );
+    const inDialog = screen.getByRole('button', { name: 'in the dialog' });
+    inDialog.focus();
+    fireEvent.keyDown(inDialog, { key: 'Escape' });
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(useSettingsStore.getState().onboardingCompleted).toBe(false);
+    expect(localStorage.getItem('onboarding_completed')).toBeNull();
+    expect(screen.getByRole('complementary', { name: 'title' })).toBeInTheDocument();
+  });
+
+  it('is dismissed by Escape while the focus is in it, and the key goes no further', () => {
+    const onWindowKey = vi.fn();
+    window.addEventListener('keydown', onWindowKey);
+    try {
+      render(<WelcomeBanner />);
+      const gotIt = screen.getByRole('button', { name: 'got_it' });
+      gotIt.focus();
+      fireEvent.keyDown(gotIt, { key: 'Escape' });
+      expect(useSettingsStore.getState().onboardingCompleted).toBe(true);
+      // The same Escape does not also reach the window's keyboard shortcuts
+      // (which close the open message).
+      expect(onWindowKey).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', onWindowKey);
+    }
+  });
+});

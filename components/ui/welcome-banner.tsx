@@ -70,15 +70,6 @@ export function WelcomeBanner() {
     return holdWelcomeOpen();
   }, [shown]);
 
-  useEffect(() => {
-    if (!visible) return;
-    const handle = (e: KeyboardEvent) => {
-      if (e.key === "Escape") dismiss();
-    };
-    window.addEventListener("keydown", handle);
-    return () => window.removeEventListener("keydown", handle);
-  }, [visible, dismiss]);
-
   if (!visible) return null;
 
   return (
@@ -90,6 +81,15 @@ export function WelcomeBanner() {
       }`}
       onTransitionEnd={() => {
         if (dismissed) setVisible(false);
+      }}
+      // Escape dismisses the card only while the focus is in it. A listener on
+      // the window took every Escape, so closing a dialog, a menu or the open
+      // message with it marked onboarding done for good. Stopped here, the
+      // same key does not also close the message behind (keyboard shortcuts).
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        e.stopPropagation();
+        dismiss();
       }}
     >
       <div className="px-4 py-3">
