@@ -1002,6 +1002,11 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
           {...dragHandlers}
           {...threadLongPressHandlers}
           aria-current={isSelected ? 'true' : undefined}
+          data-testid="thread-list-item"
+          data-thread-id={thread.threadId}
+          data-latest-email-id={latestEmail.id}
+          data-subject={latestEmail.subject || ''}
+          data-email-count={emailCount}
           data-unread={hasUnread ? 'true' : 'false'}
           data-mv-mobile-row={mvMobileRow ? "" : undefined}
           data-mv-row={mvRow && !rowTint ? "" : undefined}

@@ -199,6 +199,27 @@ describe('ThreadListItem multi-message thread', () => {
     // Once on the header and once on the message that carries it.
     expect(screen.getAllByText('Red').length).toBeGreaterThan(1);
   });
+
+  it('marks the conversation row with its own test id, apart from single rows', () => {
+    renderThread([
+      makeEmail({ id: 'e1', threadId: 't1', subject: 'Hello', receivedAt: '2024-01-15T10:00:00Z' }),
+      makeEmail({ id: 'e2', threadId: 't1', subject: 'Re: Hello', receivedAt: '2024-01-16T10:00:00Z' }),
+    ]);
+
+    const rows = screen.getAllByTestId('thread-list-item');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveAttribute('data-thread-id', 't1');
+    expect(rows[0]).toHaveAttribute('data-latest-email-id', 'e2');
+    expect(rows[0]).toHaveAttribute('data-email-count', '2');
+    expect(screen.queryByTestId('email-list-item')).not.toBeInTheDocument();
+  });
+
+  it('keeps the single-message test id on one-message rows', () => {
+    renderThread([makeEmail({ id: 'solo', threadId: 'ts' })]);
+
+    expect(screen.getByTestId('email-list-item')).toHaveAttribute('data-email-id', 'solo');
+    expect(screen.queryByTestId('thread-list-item')).not.toBeInTheDocument();
+  });
 });
 
 describe('ThreadListItem row content', () => {

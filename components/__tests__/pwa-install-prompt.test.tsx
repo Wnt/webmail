@@ -66,4 +66,57 @@ describe("PWAInstallPrompt", () => {
       window.removeEventListener(PWA_INSTALL_PROMPT_VISIBILITY_EVENT, listener);
     }
   });
+
+  function offerInstall() {
+    const event = new Event("beforeinstallprompt");
+    Object.assign(event, {
+      prompt: vi.fn(),
+      userChoice: Promise.resolve({ outcome: "dismissed" }),
+    });
+    act(() => window.dispatchEvent(event));
+  }
+
+  it("steps aside while a composer is open and returns when it closes", async () => {
+    render(<PWAInstallPrompt />);
+    offerInstall();
+    expect(screen.getByTestId("pwa-install-prompt")).toBeInTheDocument();
+
+    // EmailComposer ref-counts this attribute while it is mounted.
+    await act(async () => {
+      document.documentElement.dataset.composerOpen = "1";
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId("pwa-install-prompt")).not.toBeInTheDocument();
+
+    await act(async () => {
+      delete document.documentElement.dataset.composerOpen;
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("pwa-install-prompt")).toBeInTheDocument();
+  });
+
+  it("stays hidden when it is offered while composing", () => {
+    document.documentElement.dataset.composerOpen = "1";
+    try {
+      render(<PWAInstallPrompt />);
+      offerInstall();
+      expect(screen.queryByTestId("pwa-install-prompt")).not.toBeInTheDocument();
+    } finally {
+      delete document.documentElement.dataset.composerOpen;
+    }
+  });
+
+  it("clears the mobile bottom bar and Compose button, and keeps the desktop corner", () => {
+    render(<PWAInstallPrompt />);
+    offerInstall();
+    const card = screen.getByTestId("pwa-install-prompt");
+    expect(card.className).toContain(
+      "bottom-[calc(9rem+env(safe-area-inset-bottom))]",
+    );
+    expect(card.className).toContain("md:bottom-4");
+    expect(card.className).toContain("md:right-4");
+    // Still dismissible.
+    fireEvent.click(screen.getByLabelText("dismiss_aria"));
+    expect(screen.queryByTestId("pwa-install-prompt")).not.toBeInTheDocument();
+  });
 });

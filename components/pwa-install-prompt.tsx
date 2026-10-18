@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { X, Download } from "@/components/icons";
 import { useConfig } from "@/hooks/use-config";
 import { withBasePath } from "@/lib/browser-navigation";
+import { CORNER_CARD_POSITION, useComposerOpen } from "@/hooks/use-composer-open";
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -29,6 +30,7 @@ export function PWAInstallPrompt() {
   const [showPrompt, setShowPrompt] = useState(false);
   const { appName, faviconUrl, appLogoLightUrl, appLogoDarkUrl } = useConfig();
   const t = useTranslations("pwa_install");
+  const composing = useComposerOpen();
 
   useEffect(() => {
     if (localStorage.getItem(DISMISSED_KEY)) return;
@@ -80,7 +82,9 @@ export function PWAInstallPrompt() {
     setShowPrompt(false);
   };
 
-  if (!showPrompt || !deferredPrompt) {
+  // Hidden, not dismissed, while a composer is open: the card would cover
+  // Send. It comes back when the composer closes.
+  if (!showPrompt || !deferredPrompt || composing) {
     return null;
   }
 
@@ -88,7 +92,10 @@ export function PWAInstallPrompt() {
   const darkLogoSrc = withBasePath(appLogoDarkUrl || faviconUrl);
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 bg-white dark:bg-neutral-900 rounded-lg shadow-lg border border-neutral-200 dark:border-neutral-800 p-4 max-w-sm animate-in slide-in-from-bottom-4">
+    <div
+      data-testid="pwa-install-prompt"
+      className={`${CORNER_CARD_POSITION} bg-white dark:bg-neutral-900 rounded-lg shadow-lg border border-neutral-200 dark:border-neutral-800 p-4 md:max-w-sm animate-in slide-in-from-bottom-4`}
+    >
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-start gap-3">
           {logoSrc ? (

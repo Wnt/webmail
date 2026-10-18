@@ -17,6 +17,7 @@ import {
 import { resolveActiveRelayUrl } from "@/lib/push-relays";
 import { currentRelayUrl } from "@/lib/push-relay-current";
 import { signOutGeneration } from "@/lib/push-signout-state";
+import { CORNER_CARD_POSITION, useComposerOpen } from "@/hooks/use-composer-open";
 import {
   isPWAInstallPromptVisible,
   PWA_INSTALL_PROMPT_VISIBILITY_EVENT,
@@ -110,6 +111,7 @@ export function PushNotificationPrompt() {
   const userPushRelayUrl = useSettingsStore((state) => state.pushRelayUrl);
 
   const [showPrompt, setShowPrompt] = useState(false);
+  const composing = useComposerOpen();
   const [isEnabling, setIsEnabling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Session-only dismissal is per account: dismissing on one account must not
@@ -274,10 +276,13 @@ export function PushNotificationPrompt() {
     setShowPrompt(false);
   };
 
-  if (!showPrompt) return null;
+  if (!showPrompt || composing) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 bg-white dark:bg-neutral-900 rounded-lg shadow-lg border border-neutral-200 dark:border-neutral-800 p-4 max-w-sm animate-in slide-in-from-bottom-4">
+    <div
+      data-testid="push-notification-prompt"
+      className={`${CORNER_CARD_POSITION} bg-white dark:bg-neutral-900 rounded-lg shadow-lg border border-neutral-200 dark:border-neutral-800 p-4 md:max-w-sm animate-in slide-in-from-bottom-4`}
+    >
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-start gap-3">
           <Bell className="w-5 h-5 mt-0.5 text-blue-600 dark:text-blue-400 shrink-0" />
