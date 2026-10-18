@@ -106,8 +106,8 @@ const payload = (extra: Record<string, unknown> = {}) => ({
   changed: { acc1: { EmailDelivery: 's1' } },
   ...extra,
 });
-const email = { from: 'Ruuvi <noreply@ruuvi.example>', subject: 'Weekly report', preview: 'Your sensors this week' };
-const withSummary = { ...email, summary: 'Ruuvi sent the weekly sensor report.' };
+const email = { from: 'Examplesensor <noreply@examplesensor.example>', subject: 'Weekly report', preview: 'Your sensors this week' };
+const withSummary = { ...email, summary: 'Examplesensor sent the weekly sensor report.' };
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
@@ -123,8 +123,8 @@ describe('WebKit: one notification per email', () => {
     await push(payload({ email }));
     await push(payload({ email: withSummary, renotify: false }));
     expect(onScreen()).toHaveLength(1);
-    expect(onScreen()[0].title).toBe('Ruuvi <noreply@ruuvi.example>');
-    expect(onScreen()[0].options.body).toBe('Weekly report\nRuuvi sent the weekly sensor report.');
+    expect(onScreen()[0].title).toBe('Examplesensor <noreply@examplesensor.example>');
+    expect(onScreen()[0].options.body).toBe('Weekly report\nExamplesensor sent the weekly sensor report.');
     expect(onScreen()[0].options).toMatchObject({ silent: true, tag: 'bulwark-mail:acc1' });
   });
 
@@ -140,7 +140,7 @@ describe('WebKit: one notification per email', () => {
     expect(onScreen()).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(11_000);
     await second;
-    expect(onScreen().map((n) => n.options.body)).toEqual(['Weekly report\nRuuvi sent the weekly sensor report.']);
+    expect(onScreen().map((n) => n.options.body)).toEqual(['Weekly report\nExamplesensor sent the weekly sensor report.']);
   });
 
   it('a delayed close does not hold up the next push for the account', async () => {
@@ -153,7 +153,7 @@ describe('WebKit: one notification per email', () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(all.map((n) => n.options.body)).toEqual([
       'Weekly report\nYour sensors this week',
-      'Weekly report\nRuuvi sent the weekly sensor report.',
+      'Weekly report\nExamplesensor sent the weekly sensor report.',
       'Second',
     ]);
   });
@@ -178,7 +178,7 @@ describe('WebKit: one notification per email', () => {
     await push(payload({ email: withSummary, renotify: false }));
     expect(all).toHaveLength(2);
     expect(onScreen()).toHaveLength(1);
-    expect(onScreen()[0].options).toMatchObject({ body: 'Weekly report\nRuuvi sent the weekly sensor report.', silent: true, renotify: false });
+    expect(onScreen()[0].options).toMatchObject({ body: 'Weekly report\nExamplesensor sent the weekly sensor report.', silent: true, renotify: false });
   });
 });
 
@@ -189,7 +189,7 @@ describe('WebKit: every push shows a notification', () => {
     onScreen()[0].closed = true; // swiped away by the user
     expect(await push(payload({ email: withSummary, renotify: false }))).toBe(1);
     expect(onScreen()).toHaveLength(1);
-    expect(onScreen()[0].options).toMatchObject({ body: 'Weekly report\nRuuvi sent the weekly sensor report.', silent: true });
+    expect(onScreen()[0].options).toMatchObject({ body: 'Weekly report\nExamplesensor sent the weekly sensor report.', silent: true });
     expect(onScreen()[0].options.data).toMatchObject({ kind: 'email', emailId: 'e1', accountId: 'acc1' });
     expect(all).toHaveLength(2);
   });
@@ -223,7 +223,7 @@ describe('WebKit: every push shows a notification', () => {
     expect(await push(payload({ email }))).toBe(1);
     expect(all[0].title).toBe('New mail');
     expect(all[0].options.tag).toBe('bulwark-push-ack');
-    expect(JSON.stringify(all)).not.toMatch(/Ruuvi|Weekly|sensor/);
+    expect(JSON.stringify(all)).not.toMatch(/Examplesensor|Weekly|sensor/);
     // and a second one replaces the first
     await push(payload({ email }));
     expect(all.filter((n) => !n.closed)).toHaveLength(1);
