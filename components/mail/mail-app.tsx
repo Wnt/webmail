@@ -133,7 +133,7 @@ import {
 } from "@/lib/deep-links";
 import { consumePendingDeepLink, subscribePendingDeepLink } from "@/lib/deep-link-handoff";
 import { takeNotificationOpen } from "@/lib/notification-open";
-import { afterBodyPainted, beginOpen, markOpen } from "@/lib/open-timing";
+import { afterBodyPainted, beginOpen, bodyPainted, markOpen } from "@/lib/open-timing";
 import { useProInterfaceActive } from "@/components/pro/pro-interface-redirect";
 import type { QuoteHeader } from "@/lib/plugin-types";
 import { useLiteLinkSegments } from "@/hooks/use-lite-link-segments";
@@ -229,13 +229,32 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
   // Whether the bootstrap fetch for the default mailbox has landed. Deep links
   // wait for it so their folder switch isn't overwritten (#733).
   const [initialMailLoadDone, setInitialMailLoadDone] = useState(false);
+  // Fork (Wnt/webmail): the message this page was opened at, if any (read
+  // once, by the initial-load effect).
+  const startLinkIdRef = useRef<string | null | undefined>(undefined);
+  if (startLinkIdRef.current === undefined) {
+    let id: string | null = null;
+    if (typeof window !== 'undefined' && linkSegments) {
+      const link = parseMailPath(linkSegments, new URLSearchParams(window.location.search));
+      if (link?.kind === 'message' && !link.accountId) id = link.id;
+    }
+    startLinkIdRef.current = id;
+    // Its viewer is code-split: fetch the chunk now, not when the message arrives.
+    if (id) void import("@/components/email/email-viewer");
+  }
+  /** A message link opens before the bootstrap (see the deep-link effect): not in the Pro shell's tab. */
+  const earlyMessageLinkApplies = () => !isEmbedded;
   const { isAuthenticated, client, logout, checkAuth, switchAccount, activeAccountId, isLoading: authLoading, connectionLost, isRateLimited, rateLimitUntil } = useAuthStore();
   const { identities } = useIdentityStore();
   const multiAccountIdentities = useProMultiAccountIdentities();
   useIdentitySync();
   const trustedSendersAddressBook = useSettingsStore((state) => state.trustedSendersAddressBook);
   const sendDelaySeconds = useSettingsStore((state) => state.sendDelaySeconds);
-  const { loadTrustedSendersBook, trustedSendersLoaded, loadRecentRecipients } = useContactStore();
+  // Fork (Wnt/webmail): selectors - the whole-store subscription re-rendered
+  // the mail app on every contact-store write (contacts arriving at start).
+  const loadTrustedSendersBook = useContactStore((s) => s.loadTrustedSendersBook);
+  const trustedSendersLoaded = useContactStore((s) => s.trustedSendersLoaded);
+  const loadRecentRecipients = useContactStore((s) => s.loadRecentRecipients);
 
   const promptForRescheduleDelayedUntil = useCallback((): string | null => {
     const value = window.prompt(t('email_viewer.reschedule_prompt'));
@@ -503,12 +522,24 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
 
   // Load recent recipients (from the Sent folder) for compose autocomplete.
   // Runs once when the Sent mailbox is known; the store guards against reloads.
+  // Fork (Wnt/webmail): once per client, and only when the browser is idle
+  // after the start-up load: it reads 300 sent messages, which competed with
+  // showing the first message (and ran twice when the folder list refreshed
+  // while the first read was still out).
+  const recentRecipientsClientRef = useRef<object | null>(null);
   useEffect(() => {
+    if (!client || !initialMailLoadDone || recentRecipientsClientRef.current === client) return;
     const sent = mailboxes.find((m) => m.role === 'sent');
-    if (client && sent) {
-      loadRecentRecipients(client, sent.originalId || sent.id);
+    if (!sent) return;
+    recentRecipientsClientRef.current = client;
+    const run = () => { loadRecentRecipients(client, sent.originalId || sent.id); };
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(run, { timeout: 5000 });
+      return () => { window.cancelIdleCallback(id); recentRecipientsClientRef.current = null; };
     }
-  }, [client, mailboxes, loadRecentRecipients]);
+    const id = setTimeout(run, 1500);
+    return () => { clearTimeout(id); recentRecipientsClientRef.current = null; };
+  }, [client, mailboxes, loadRecentRecipients, initialMailLoadDone]);
 
   // Pro shell: populate per-account mailbox cache so the sidebar can render
   // every connected account Thunderbird-style.
@@ -1354,10 +1385,26 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
         setInitialMailLoadDone(true);
       }
     };
-    loadData();
+    // Fork (Wnt/webmail): a page opened at a message (a notification tap, a
+    // cold start at its link) shows that message first. The folder list, the
+    // Inbox page and their rendering competed with it for the network and the
+    // main thread; they follow once its body is on screen (1.5 s at most).
+    const linkedId = startLinkIdRef.current;
+    startLinkIdRef.current = null;
+    let cancelWait: (() => void) | null = null;
+    let started = false;
+    const start = () => { started = true; if (!cancelled) void loadData(); };
+    if (linkedId && earlyMessageLinkApplies() && !bodyPainted(linkedId)) {
+      cancelWait = afterBodyPainted(linkedId, start, 1500);
+    } else {
+      start();
+    }
 
     return () => {
       cancelled = true;
+      cancelWait?.();
+      // Cancelled before it began: let the next run load.
+      if (!started) initialMailLoadClientRef.current = null;
       if (retryTimer) clearTimeout(retryTimer);
     };
   }, [isAuthenticated, client, fetchMailboxes, fetchEmails, fetchQuota, fetchTagCounts, refreshScheduledMetadata]);
