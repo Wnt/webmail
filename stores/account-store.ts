@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { generateAccountId, generateAvatarColor, getMaxAccounts } from '@/lib/account-utils';
+import { forgetCachedSession } from '@/lib/jmap/session-cache';
 
 export interface AccountEntry {
   /** Unique key: `${username}@${serverHostname}` */
@@ -180,6 +181,8 @@ export const useAccountStore = create<AccountState>()(
       },
 
       removeAccount: (accountId) => {
+        // Fork (Wnt/webmail): the JMAP session kept for the next start goes with the login.
+        forgetCachedSession(accountId);
         set((s) => {
           const remaining = s.accounts.filter((a) => a.id !== accountId);
           const wasDefault = s.defaultAccountId === accountId;

@@ -16,6 +16,7 @@ import {
 import { withBasePath } from "@/lib/browser-navigation";
 import { locales, defaultLocale } from "@/i18n/routing";
 import { IS_LITE, LITE_MOUNT_GLOBAL } from "@/lib/lite";
+import { earlyTokenScript } from "@/lib/early-auth";
 import "../globals.css";
 
 // This layout renders <html> and sits ABOVE the [locale] segment, so
@@ -299,7 +300,7 @@ export default async function RootLayout({
           suppressHydrationWarning
           dangerouslySetInnerHTML={{
             __html: `
-              (function() {${IS_LITE ? liteLocaleBootstrap() : ""}
+              (function() {${IS_LITE ? liteLocaleBootstrap() : earlyTokenScript((process.env.NEXT_PUBLIC_BASE_PATH ?? "").replace(/\/+$/, ""))}
                 try {
                   const stored = localStorage.getItem('theme-storage');
                   const theme = stored ? JSON.parse(stored).state.theme : 'system';

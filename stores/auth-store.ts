@@ -25,9 +25,14 @@ import { broadcastSignOut, onSignedOutElsewhere, purgeSignedOutData } from '@/li
 import { useSearchHistoryStore } from './search-history-store';
 import { useCalendarNotificationStore } from './calendar-notification-store';
 import { usePolicyStore } from './policy-store';
-import type { Identity } from '@/lib/jmap/types';
+import type { Email, Identity } from '@/lib/jmap/types';
 import { authHooks } from '@/lib/plugin-hooks';
 import { IS_LITE, IS_LITE_STALWART } from '@/lib/lite';
+import { takeEarlyAccessToken } from '@/lib/early-auth';
+import { readCachedSession, writeCachedSession } from '@/lib/jmap/session-cache';
+import { startMessageLink, takeStartMessageLink } from '@/lib/start-link';
+import { takePrefetchedEmail } from '@/lib/push-prefetch';
+import { afterBodyPainted } from '@/lib/open-timing';
 import { toAsciiEmail } from '@/lib/idn';
 import {
   LiteLoginError,
@@ -559,6 +564,15 @@ async function fetchSlotAccessToken(slot: number, opts: { force?: boolean } = {}
   // Renewing would write the tokens of a slot being signed out back.
   if (closingSlots.has(slot)) return jsonResponse({ error: 'signed_out' }, 401);
   if (!IS_LITE) {
+    // Fork (Wnt/webmail): the page's head script already sent this request
+    // (lib/early-auth.ts); take its answer instead of asking again.
+    const early = opts.force ? null : takeEarlyAccessToken(slot);
+    if (early) {
+      return trackSessionWrite(slot, (signal) => {
+        signal.addEventListener('abort', () => early.abort(), { once: true });
+        return early.response;
+      });
+    }
     return trackSessionWrite(slot, (signal) => apiFetch(`/api/auth/token?slot=${slot}${opts.force ? '&force=true' : ''}`, { method: 'PUT', signal }));
   }
   // Like the route's cookie cache: a restore resumes with the token it had,
@@ -984,6 +998,66 @@ function finishSignOut(endSessionUrl: string | null, userInitiated: boolean): vo
     return;
   }
   navigateToLogin();
+}
+
+// Fork (Wnt/webmail): the message a page was opened at (a notification tap's
+// link), once its fetch has been started at the session; the feature stores
+// wait for its body on screen (see checkAuth).
+let startMessagePrefetched: string | null = null;
+/** How long the start waits for the push worker's kept copy before asking the server. */
+const KEPT_COPY_WAIT_MS = 150;
+
+/**
+ * Fork (Wnt/webmail): the push worker's kept copy of the message the page
+ * was opened at, looked up while the token request is out. Its key needs the
+ * mail account id, which the session kept from the last visit names; without
+ * one the lookup waits for the session (prefetchStartMessage).
+ */
+function lookUpStartMessage(account: AccountEntry | undefined): { id: string; kept: Promise<Email | null> | null } | null {
+  if (!account) return null;
+  const link = startMessageLink();
+  if (!link || (link.slot !== undefined && link.slot !== account.cookieSlot)) return null;
+  const saved = account.authMode === 'oauth' ? readCachedSession(account.id, account.serverUrl, account.username) : null;
+  const mailAccountId = (saved?.primaryAccounts as Record<string, string> | undefined)?.['urn:ietf:params:jmap:mail'];
+  return { id: link.id, kept: mailAccountId ? takePrefetchedEmail(mailAccountId, link.id) : null };
+}
+
+/**
+ * Fork (Wnt/webmail): the kept session named another mail account or API URL
+ * than the server's: what the page loaded so far belongs to the old one, so
+ * it starts again (the server's session is kept now). Once a minute at most.
+ */
+function restartWithNewSession(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const last = Number(sessionStorage.getItem('jmap-session-restart-at'));
+    if (Number.isFinite(last) && Date.now() - last < 60_000) return;
+    sessionStorage.setItem('jmap-session-restart-at', String(Date.now()));
+  } catch {
+    // No session storage: restart anyway (the kept session is the server's now).
+  }
+  window.location.reload();
+}
+
+function withinMs<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([promise, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]);
+}
+
+/**
+ * Fork (Wnt/webmail): a page opened at a message link starts fetching that
+ * message as soon as the login's session is up - the push worker's kept copy
+ * if it has one, otherwise one Email/get, sent before the app's first
+ * signed-in render - and the mail app's deep link then takes it instead of
+ * asking again (JMAPClient.prefetchEmail). Once per page, for the login the
+ * link is for.
+ */
+async function prefetchStartMessage(client: IJMAPClient, slot: number | undefined, early: { id: string; kept: Promise<Email | null> | null } | null): Promise<void> {
+  const link = takeStartMessageLink(slot);
+  if (!link || !client.prefetchEmail) return;
+  startMessagePrefetched = link.id;
+  const lookup = early?.id === link.id && early.kept ? early.kept : takePrefetchedEmail(client.getAccountId(), link.id);
+  const kept = await withinMs(lookup.catch(() => null), KEPT_COPY_WAIT_MS, null);
+  client.prefetchEmail(link.id, kept);
 }
 
 function initializeFeatureStores(client: IJMAPClient): void {
@@ -2822,6 +2896,9 @@ export const useAuthStore = create<AuthState>()(
           const defaultAccount = accountStore.getDefaultAccount();
           const activeId = get().activeAccountId;
           const targetId = activeId || defaultAccount?.id || accounts[0].id;
+          // Fork (Wnt/webmail): a page opened at a message link looks for the
+          // push worker's copy of it while the token request is out.
+          const startLookup = lookUpStartMessage(accounts.find((account) => account.id === targetId));
 
           // Restore one account: decrypt the stored credential/token, connect,
           // and sync the passthrough auth context. The context write never
@@ -2857,7 +2934,21 @@ export const useAuthStore = create<AuthState>()(
                   const client = JMAPClient.withBearer(account.serverUrl, access_token, account.username, () => refreshFn());
                   bindClientStatusHandlers(client, set, get, account.id);
                   const contextSync = syncStalwartAuthContext(account.serverUrl, account.username, client.getAuthHeader(), account.cookieSlot);
-                  await client.connect();
+                  // Fork (Wnt/webmail): the session kept from the last visit
+                  // makes the client ready with no round trip (the token above
+                  // was just issued for this login); it is checked against the
+                  // server right after, and a different mail account or API
+                  // URL starts the page again with the server's session.
+                  client.setSessionListener((session) => writeCachedSession(account.id, account.serverUrl, account.username, session));
+                  const saved = readCachedSession(account.id, account.serverUrl, account.username);
+                  if (saved && client.adoptSession(saved)) {
+                    void client.revalidateSession().then((check) => {
+                      if (check === 'replaced' && clients.get(account.id) === client) restartWithNewSession();
+                    });
+                  } else {
+                    await client.connect();
+                  }
+                  if (account.id === targetId) await prefetchStartMessage(client, account.cookieSlot, startLookup);
                   clients.set(account.id, client);
                   scheduleRefresh(expires_in, get().refreshAccessToken, account.id);
                   // Fork (Wnt/webmail): not waited for here - the session is up;
@@ -2881,6 +2972,7 @@ export const useAuthStore = create<AuthState>()(
                   bindClientStatusHandlers(client, set, get, account.id);
                   const contextSync = syncStalwartAuthContext(session.serverUrl, session.username, client.getAuthHeader(), account.cookieSlot);
                   await client.connect();
+                  if (account.id === targetId) await prefetchStartMessage(client, account.cookieSlot, startLookup);
                   clients.set(account.id, client);
                   // Fork (Wnt/webmail): not waited for here - the session is up;
                   // the settings sync that reads this context waits for it.
@@ -2966,7 +3058,19 @@ export const useAuthStore = create<AuthState>()(
           const targetAccount = accountStore.getAccountById(targetId);
           if (targetClient && targetAccount) {
             accountStore.setActiveAccount(targetId);
-            initializeFeatureStores(targetClient);
+            // Fork (Wnt/webmail): a page opened at a message link loads the
+            // contacts, calendars, vacation notice and the rest once that
+            // message's body is on screen (1.5 s at most): their answers
+            // competed with showing it.
+            const linked = startMessagePrefetched;
+            startMessagePrefetched = null;
+            if (linked) {
+              afterBodyPainted(linked, () => {
+                if (get().client === targetClient) initializeFeatureStores(targetClient);
+              }, 1500);
+            } else {
+              initializeFeatureStores(targetClient);
+            }
 
             // Identities only feed the composer's From picker and the settings
             // pages - not the mail list. Load them in the background instead of

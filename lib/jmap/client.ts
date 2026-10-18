@@ -266,6 +266,19 @@ interface JMAPSession {
   primaryAccounts?: Record<string, string>;
   accounts?: Record<string, JMAPAccount>;
   capabilities?: Record<string, unknown>;
+  state?: string;
+}
+
+/** Fork (Wnt/webmail): the outcome of JMAPClient.revalidateSession. */
+export type SessionCheck = 'same' | 'changed' | 'replaced' | 'failed';
+
+function cloneSession(session: unknown): Record<string, unknown> | null {
+  if (!session || typeof session !== 'object') return null;
+  try {
+    return JSON.parse(JSON.stringify(session)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 interface JMAPAccount {
@@ -1046,6 +1059,11 @@ export class JMAPClient implements IJMAPClient {
   private downloadUrl: string = "";
   private capabilities: Record<string, unknown> = {};
   private session: JMAPSession | null = null;
+  // Fork (Wnt/webmail): the session as the server sent it (before the URL
+  // rewrite), for the session cache; see adoptSession / revalidateSession.
+  private sessionRaw: Record<string, unknown> | null = null;
+  private sessionListener: ((session: Record<string, unknown>) => void) | null = null;
+  private sessionRevalidation: Promise<SessionCheck> | null = null;
   private lastPingTime: number = 0;
   private pingInterval: NodeJS.Timeout | null = null;
   // Set by disconnect() so async callbacks that were already in flight
@@ -1373,12 +1391,109 @@ export class JMAPClient implements IJMAPClient {
     }
 
     const session = await response.json();
+    const raw = cloneSession(session);
     this.rewriteSessionUrls(session);
     this.session = session;
     this.capabilities = session.capabilities || {};
     this.apiUrl = session.apiUrl;
     this.downloadUrl = session.downloadUrl;
     this.accounts = session.accounts || {};
+    this.noteSession(raw);
+  }
+
+  /**
+   * Fork (Wnt/webmail): called with the server's session (as sent, before
+   * the URL rewrite) whenever this client fetches it - connect(), a refresh,
+   * a revalidation - so the caller can keep it for the next page start.
+   */
+  setSessionListener(listener: ((session: Record<string, unknown>) => void) | null): void {
+    this.sessionListener = listener;
+  }
+
+  private noteSession(raw: Record<string, unknown> | null): void {
+    if (!raw) return;
+    this.sessionRaw = raw;
+    try {
+      this.sessionListener?.(raw);
+    } catch {
+      // The listener's problem.
+    }
+  }
+
+  /**
+   * Fork (Wnt/webmail): starts with a session kept from an earlier visit
+   * (lib/jmap/session-cache.ts) instead of fetching it: the client is ready
+   * with no round trip. Returns false (and changes nothing) for a session it
+   * cannot use. The caller checks it against the server right after
+   * (revalidateSession), and every JMAP response's sessionState is compared
+   * with it from then on.
+   */
+  adoptSession(saved: Record<string, unknown>): boolean {
+    const session = cloneSession(saved) as unknown as JMAPSession | null;
+    if (!session || typeof session.apiUrl !== 'string' || !session.apiUrl
+      || typeof session.downloadUrl !== 'string' || !session.accounts || typeof session.accounts !== 'object') {
+      return false;
+    }
+    const accountId = session.primaryAccounts?.["urn:ietf:params:jmap:mail"] || Object.keys(session.accounts)[0];
+    if (!accountId || !session.accounts[accountId]) return false;
+    const raw = cloneSession(saved);
+    this.intentionallyDisconnected = false;
+    this.rewriteSessionUrls(session);
+    this.session = session;
+    this.capabilities = session.capabilities || {};
+    this.apiUrl = session.apiUrl;
+    this.downloadUrl = session.downloadUrl;
+    this.accounts = session.accounts || {};
+    this.accountId = accountId;
+    this.sessionRaw = raw;
+    this.startKeepAlive();
+    return true;
+  }
+
+  /**
+   * Fork (Wnt/webmail): fetches the session again and takes the server's
+   * version. 'replaced' means the mail account or the API URL changed (the
+   * data on screen belongs to the old one); 'changed' that something else did
+   * (capabilities, state); 'same' that nothing did; 'failed' that the server
+   * did not answer with a session (the current one stays).
+   */
+  revalidateSession(): Promise<SessionCheck> {
+    if (this.sessionRevalidation) return this.sessionRevalidation;
+    const run = (async (): Promise<SessionCheck> => {
+      try {
+        const response = await this.fetchSessionResponse();
+        if (!response.ok || this.intentionallyDisconnected) return 'failed';
+        const session = await response.json() as JMAPSession | null;
+        if (!session || typeof session.apiUrl !== 'string' || !session.apiUrl || !session.accounts) return 'failed';
+        const accountId = session.primaryAccounts?.["urn:ietf:params:jmap:mail"] || Object.keys(session.accounts)[0];
+        if (!accountId || this.intentionallyDisconnected) return 'failed';
+        const raw = cloneSession(session as unknown as Record<string, unknown>);
+        const unchanged = !!raw && !!this.sessionRaw && JSON.stringify(raw) === JSON.stringify(this.sessionRaw);
+        this.rewriteSessionUrls(session);
+        const replaced = accountId !== this.accountId || session.apiUrl !== this.apiUrl;
+        this.session = session;
+        this.capabilities = session.capabilities || {};
+        this.apiUrl = session.apiUrl;
+        this.downloadUrl = session.downloadUrl;
+        this.accounts = session.accounts || {};
+        this.accountId = accountId;
+        this.noteSession(raw);
+        if (replaced) return 'replaced';
+        return unchanged ? 'same' : 'changed';
+      } catch {
+        return 'failed';
+      }
+    })().finally(() => { this.sessionRevalidation = null; });
+    this.sessionRevalidation = run;
+    return run;
+  }
+
+  /** A JMAP response named this session state: a different one means the session changed (RFC 8620 3.4). */
+  private noteSessionState(sessionState: unknown): void {
+    if (typeof sessionState !== 'string' || !sessionState) return;
+    const known = this.session?.state;
+    if (!known || known === sessionState || this.sessionRevalidation || this.intentionallyDisconnected) return;
+    void this.revalidateSession();
   }
 
   async connect(): Promise<void> {
@@ -1411,6 +1526,7 @@ export class JMAPClient implements IJMAPClient {
       }
 
       const session = await sessionResponse.json();
+      const raw = cloneSession(session);
       this.rewriteSessionUrls(session);
 
       this.session = session;
@@ -1427,6 +1543,7 @@ export class JMAPClient implements IJMAPClient {
         throw new Error('No mail account found in session');
       }
 
+      this.noteSession(raw);
       this.startKeepAlive();
     } catch (error) {
       if (error instanceof TypeError && (
@@ -1526,6 +1643,7 @@ export class JMAPClient implements IJMAPClient {
     this.apiUrl = "";
     this.accountId = "";
     this.session = null;
+    this.sessionRaw = null;
     this.capabilities = {};
   }
 
@@ -1608,12 +1726,15 @@ export class JMAPClient implements IJMAPClient {
         throw new Error(`Request failed: ${response.status} - ${responseText.substring(0, 200)}`);
       }
 
+      let parsed: JMAPResponse;
       try {
-        return JSON.parse(responseText);
+        parsed = JSON.parse(responseText);
       } catch {
         console.error('Failed to parse response:', responseText);
         throw new Error('Invalid JSON response from server');
       }
+      this.noteSessionState((parsed as { sessionState?: unknown } | null)?.sessionState);
+      return parsed;
     }
   }
 
@@ -2368,6 +2489,42 @@ export class JMAPClient implements IJMAPClient {
     this.primedEmails.set(`${accountId || this.accountId}\u0000${email.id}`, { email, at: Date.now() });
   }
 
+  /**
+   * Fork (Wnt/webmail): starts the Email/get getEmail would send for
+   * `emailId`, ahead of the code that shows it - a page opened at a message
+   * link asks for it as soon as the session is up, while the app is still
+   * drawing. With `kept` (the push worker's copy of it) nothing is sent.
+   * getEmail then takes this (or waits for it) instead of asking again. Used
+   * once, within PRIMED_EMAIL_MAX_AGE_MS. The request leaves before this
+   * returns.
+   */
+  prefetchEmail(emailId: string, kept?: Email | null): void {
+    if (!emailId || !this.apiUrl) return;
+    const accountId = this.accountId;
+    const key = `${accountId}\u0000${emailId}`;
+    if (this.primedEmails.has(key)) return;
+    if (kept?.id === emailId && kept.bodyValues) {
+      this.primedEmails.set(key, { email: kept, at: Date.now() });
+      return;
+    }
+    const pending = this.fetchFullEmail(accountId, emailId).catch(() => null);
+    this.primedEmails.set(key, { pending, at: Date.now() });
+  }
+
+  /** One Email/get with the properties and body options getEmail shows a message with. */
+  private async fetchFullEmail(accountId: string, emailId: string): Promise<Email | null> {
+    const response = await this.request([
+      ["Email/get", {
+        accountId,
+        ids: [emailId],
+        properties: [...FULL_EMAIL_PROPERTIES],
+        ...FULL_EMAIL_BODY_OPTIONS,
+      }, "0"],
+    ]);
+    if (response.methodResponses?.[0]?.[0] !== "Email/get") return null;
+    return ((response.methodResponses[0][1].list || [])[0] as Email | undefined) ?? null;
+  }
+
   async getEmail(emailId: string, accountId?: string, opts?: { threadId?: string }): Promise<Email | null> {
     try {
       const targetAccountId = accountId || this.accountId;
@@ -2391,13 +2548,15 @@ export class JMAPClient implements IJMAPClient {
 
       // Fork (Wnt/webmail): a message the push worker already fetched for a
       // notification's tap (primeEmail) is shown without another round trip.
+      // A prefetch in flight for it (prefetchEmail) is waited for.
       const primedKey = `${targetAccountId}\u0000${emailId}`;
       const primed = this.primedEmails.get(primedKey);
       this.primedEmails.delete(primedKey);
-      let email: Email | undefined;
+      let email: Email | null | undefined;
       if (primed && Date.now() - primed.at < PRIMED_EMAIL_MAX_AGE_MS) {
-        email = primed.email;
-      } else {
+        email = primed.email ?? (primed.pending ? await primed.pending : null);
+      }
+      if (!email) {
         const response = await this.request([
           ["Email/get", {
             accountId: targetAccountId,
@@ -8693,7 +8852,7 @@ export class JMAPClient implements IJMAPClient {
   /** getThreadEmails calls getEmail may reuse (see getEmail), by account and thread. */
   private threadFetches = new Map<string, { at: number; promise: Promise<Email[]> }>();
   // Fork (Wnt/webmail): messages handed in by primeEmail, keyed by account and id.
-  private primedEmails = new Map<string, { email: Email; at: number }>();
+  private primedEmails = new Map<string, { email?: Email; pending?: Promise<Email | null>; at: number }>();
   // Shared/secondary accounts get no SSE push (Stalwart pushes the primary
   // account only), so poll them on a slow cadence alongside SSE to keep their
   // folder + unified/All-Mail counters from going stale between focus events.

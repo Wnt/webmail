@@ -1,4 +1,5 @@
 import { fileStorage } from '@/lib/plugin-storage';
+import { forgetAllCachedSessions } from '@/lib/jmap/session-cache';
 
 /**
  * What a full sign-out removes from this browser beyond the stores that
@@ -38,6 +39,8 @@ export function purgeSignedOutData(): void {
       /* storage unavailable */
     }
   }
+  // Fork (Wnt/webmail): the JMAP sessions kept for the next start.
+  forgetAllCachedSessions();
   // Attachment bytes a plugin staged for an upload that never started.
   void fileStorage.clearFiles().catch(() => {});
 }

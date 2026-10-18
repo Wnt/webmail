@@ -129,7 +129,7 @@ import type { AttachmentInfo, AttachmentPreview } from "@/lib/plugin-types";
 import { useAttachmentDrag, isDragOutSupported, type AttachmentDragSource } from "@/hooks/use-attachment-drag";
 import { useMessageSwipe } from "@/hooks/use-message-swipe";
 import type { IJMAPClient } from "@/lib/jmap/client-interface";
-import { bodyReady } from "@/lib/open-timing";
+import { afterBodyPainted, bodyReady } from "@/lib/open-timing";
 
 /** The More menu's two drill-downs: a folder list and a tag list. */
 type MoreMenuSub = 'move' | 'tag' | 'rules';
@@ -1475,11 +1475,18 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
       return;
     }
 
-    // Instant mark
+    // Instant mark.
+    // Fork (Wnt/webmail): once the body is on screen (1.5 s at the latest),
+    // as the mail app's own instant mark does: the write, its store update
+    // and the refreshes it sets off held back the first paint of the body.
+    // Moving on before that still marks it.
     if (markAsReadDelay === 0) {
-      autoMarkedEmailRef.current = email.id;
-      onMarkAsRead(email.id, true);
-      return;
+      const emailId = email.id;
+      autoMarkedEmailRef.current = emailId;
+      let marked = false;
+      const mark = () => { if (marked) return; marked = true; onMarkAsRead(emailId, true); };
+      const cancel = afterBodyPainted(emailId, mark, 1500);
+      return () => { cancel(); mark(); };
     }
 
     // Delayed mark

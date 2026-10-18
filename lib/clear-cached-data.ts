@@ -1,4 +1,5 @@
 import { evictAll } from '@/lib/account-state-manager';
+import { forgetAllCachedSessions } from '@/lib/jmap/session-cache';
 
 // localStorage keys holding server-derived, re-fetchable caches. The "Refresh
 // cached data" action clears these so a stale or wrong-account view can be
@@ -33,6 +34,9 @@ export function clearCachedData(): void {
   }
 
   if (typeof window === 'undefined') return;
+
+  // Fork (Wnt/webmail): the JMAP sessions kept for the next start, too.
+  forgetAllCachedSessions();
 
   for (const key of CACHE_STORAGE_KEYS) {
     try {

@@ -188,6 +188,8 @@ export interface IJMAPClient {
   /** `threadId` lets the client reuse a getThreadEmails fetch of that thread in flight. */
   /** Fork (Wnt/webmail): a message fetched elsewhere (the push worker) for the next getEmail of it. */
   primeEmail?(email: Email, accountId?: string): void;
+  /** Fork (Wnt/webmail): see JMAPClient.prefetchEmail. */
+  prefetchEmail?(emailId: string, kept?: Email | null): void;
   getEmail(emailId: string, accountId?: string, opts?: { threadId?: string }): Promise<Email | null>;
   getSomeEmails(emailsId: string[], accountId?: string): Promise<Email[]>
   /**
