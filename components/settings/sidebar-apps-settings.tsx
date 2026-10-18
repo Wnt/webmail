@@ -355,12 +355,16 @@ export function SidebarAppsSettings() {
                 <button
                   onClick={() => setEditingApp(app.id)}
                   className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label={tApps("edit_app")}
+                  title={tApps("edit_app")}
                 >
                   <Pencil className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={() => handleDelete(app)}
                   className="p-1.5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                  aria-label={tApps("delete")}
+                  title={tApps("delete")}
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>

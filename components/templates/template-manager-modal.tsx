@@ -20,6 +20,7 @@ export function TemplateManagerModal({ isOpen, onClose }: TemplateManagerModalPr
   const t = useTranslations('templates');
   const tSettings = useTranslations('settings.templates');
   const tCommon = useTranslations('common');
+  const tFiles = useTranslations('files');
 
   const {
     templates,
@@ -152,6 +153,9 @@ export function TemplateManagerModal({ isOpen, onClose }: TemplateManagerModalPr
                   type="button"
                   onClick={() => toggleFavorite(template.id)}
                   className="flex-shrink-0"
+                  aria-label={tSettings('favorite')}
+                  aria-pressed={!!template.isFavorite}
+                  title={tSettings('favorite')}
                 >
                   <Star
                     className={cn(
@@ -188,6 +192,8 @@ export function TemplateManagerModal({ isOpen, onClose }: TemplateManagerModalPr
                     onClick={() => { setEditingId(template.id); setIsCreating(false); }}
                     disabled={!!editingId || isCreating}
                     className="h-8 w-8 p-0"
+                    aria-label={tSettings('edit')}
+                    title={tSettings('edit')}
                   >
                     <Pencil className="w-3.5 h-3.5" />
                   </Button>
@@ -197,6 +203,8 @@ export function TemplateManagerModal({ isOpen, onClose }: TemplateManagerModalPr
                     onClick={() => duplicateTemplate(template.id, t('copy_suffix'))}
                     disabled={!!editingId || isCreating}
                     className="h-8 w-8 p-0"
+                    aria-label={tFiles('duplicate')}
+                    title={tFiles('duplicate')}
                   >
                     <Copy className="w-3.5 h-3.5" />
                   </Button>
@@ -226,6 +234,8 @@ export function TemplateManagerModal({ isOpen, onClose }: TemplateManagerModalPr
                       onClick={() => setDeleteConfirmId(template.id)}
                       disabled={!!editingId || isCreating}
                       className="h-8 w-8 p-0 hover:text-red-600 dark:hover:text-red-400"
+                      aria-label={tCommon('delete')}
+                      title={tCommon('delete')}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>

@@ -831,6 +831,7 @@
     "delete": "Șterge",
     "edit": "Editare",
     "close": "Închide",
+    "remove_item": "Elimină {name}",
     "search": "Căutare",
     "refresh": "Reîmprospătează",
     "settings": "Setări",

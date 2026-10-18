@@ -3614,7 +3614,8 @@ export function EmailComposer({
                     <button
                       onClick={() => removeAttachment(index)}
                       className="ms-1 hover:text-red-500 min-w-[20px] min-h-[20px] flex items-center justify-center"
-                      title={att.uploading ? t('upload_cancel') : undefined}
+                      title={att.uploading ? t('upload_cancel') : tCommon('remove_item', { name: att.name })}
+                      aria-label={att.uploading ? t('upload_cancel') : tCommon('remove_item', { name: att.name })}
                     >
                       <X className="w-3 h-3" />
                     </button>
@@ -4609,6 +4610,7 @@ function RecipientChipInput({
                   }
                 }}
                 tabIndex={-1}
+                aria-label={isEditing ? tCommon('save') : tCommon('remove_item', { name: chipDisplay })}
               >
                 {isEditing ? (
                   <Check className="w-3 h-3" />

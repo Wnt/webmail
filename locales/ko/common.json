@@ -831,6 +831,7 @@
     "delete": "삭제",
     "edit": "수정",
     "close": "닫기",
+    "remove_item": "{name} 제거",
     "search": "검색",
     "refresh": "새로고침",
     "settings": "설정",

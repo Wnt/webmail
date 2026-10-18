@@ -831,6 +831,7 @@
     "delete": "Delete",
     "edit": "Edit",
     "close": "Close",
+    "remove_item": "Remove {name}",
     "search": "Search",
     "refresh": "Refresh",
     "settings": "Settings",

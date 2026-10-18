@@ -831,6 +831,7 @@
     "delete": "Sil",
     "edit": "Düzenle",
     "close": "Kapat",
+    "remove_item": "Kaldır: {name}",
     "search": "Ara",
     "refresh": "Yenile",
     "settings": "Ayarlar",

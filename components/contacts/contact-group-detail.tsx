@@ -33,6 +33,7 @@ export function ContactGroupDetail({
   className,
 }: ContactGroupDetailProps) {
   const t = useTranslations("contacts");
+  const tCommon = useTranslations("common");
   const groupName = getContactDisplayName(group);
   const hasEmailMembers = members.some((m) => getContactPrimaryEmail(m).trim());
 
@@ -61,6 +62,8 @@ export function ContactGroupDetail({
               size="sm"
               onClick={onDelete}
               className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-950 touch-manipulation"
+              aria-label={t("groups.delete_confirm_title")}
+              title={t("groups.delete_confirm_title")}
             >
               <Trash2 className="w-4 h-4" />
             </Button>
@@ -125,6 +128,8 @@ export function ContactGroupDetail({
                       isMobile ? "opacity-100" : "opacity-0 group-hover:opacity-100"
                     )}
                     onClick={() => onRemoveMember(member.id)}
+                    aria-label={tCommon("remove_item", { name: mName })}
+                    title={tCommon("remove_item", { name: mName })}
                   >
                     <UserMinus className="w-4 h-4 text-muted-foreground" />
                   </Button>

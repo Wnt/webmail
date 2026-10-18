@@ -831,6 +831,7 @@
     "delete": "Устгах",
     "edit": "Засварлах",
     "close": "Хаах",
+    "remove_item": "{name}-г хасах",
     "search": "Хайлт",
     "refresh": "Сэргээх",
     "settings": "Тохиргоо",

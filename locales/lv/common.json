@@ -831,6 +831,7 @@
     "delete": "Dzēst",
     "edit": "Rediģēt",
     "close": "Aizvērt",
+    "remove_item": "Noņemt {name}",
     "search": "Meklēt",
     "refresh": "Atsvaidzināt",
     "settings": "Iestatījumi",

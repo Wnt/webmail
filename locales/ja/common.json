@@ -831,6 +831,7 @@
     "delete": "削除",
     "edit": "編集",
     "close": "閉じる",
+    "remove_item": "{name}を削除",
     "search": "検索",
     "refresh": "更新",
     "settings": "設定",

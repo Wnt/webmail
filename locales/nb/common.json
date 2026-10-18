@@ -831,6 +831,7 @@
     "delete": "Slett",
     "edit": "Rediger",
     "close": "Lukk",
+    "remove_item": "Fjern {name}",
     "search": "Søk",
     "refresh": "Oppdater",
     "settings": "Innstillinger",

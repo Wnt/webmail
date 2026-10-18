@@ -15,6 +15,7 @@ interface IconPickerProps {
 
 export function IconPicker({ value, onChange, className }: IconPickerProps) {
   const t = useTranslations('sidebar_apps');
+  const tSidebar = useTranslations('sidebar');
   const [search, setSearch] = useState('');
   const [showAll, setShowAll] = useState(false);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -61,6 +62,7 @@ export function IconPicker({ value, onChange, className }: IconPickerProps) {
             <button
               onClick={() => setSearch('')}
               className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              aria-label={tSidebar('clear_search')}
             >
               <X className="w-3 h-3" />
             </button>

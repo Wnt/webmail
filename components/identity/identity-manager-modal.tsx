@@ -362,6 +362,8 @@ export function IdentityManagerModal({ isOpen, onClose }: IdentityManagerModalPr
                           size="sm"
                           onClick={() => setEditingId(identity.id)}
                           disabled={!!editingId || isCreating}
+                          aria-label={t('edit_identity')}
+                          title={t('edit_identity')}
                         >
                           <Pencil className="w-4 h-4" />
                         </Button>
@@ -376,6 +378,8 @@ export function IdentityManagerModal({ isOpen, onClose }: IdentityManagerModalPr
                             deletingId === identity.id
                           }
                           className={!identity.mayDelete ? 'opacity-30' : ''}
+                          aria-label={t('delete_button')}
+                          title={t('delete_button')}
                         >
                           {!identity.mayDelete ? (
                             <AlertTriangle className="w-4 h-4 text-yellow-500" />

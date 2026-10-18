@@ -375,6 +375,8 @@ export function SidebarAppsModal({ isOpen, onClose }: SidebarAppsModalProps) {
                       size="sm"
                       onClick={() => setEditingId(app.id)}
                       disabled={!!editingId || isCreating}
+                      aria-label={t('edit_app')}
+                      title={t('edit_app')}
                     >
                       <Pencil className="w-4 h-4" />
                     </Button>
@@ -383,6 +385,8 @@ export function SidebarAppsModal({ isOpen, onClose }: SidebarAppsModalProps) {
                       size="sm"
                       onClick={() => handleDelete(app)}
                       disabled={!!editingId || isCreating}
+                      aria-label={t('delete')}
+                      title={t('delete')}
                     >
                       <Trash2 className="w-4 h-4 text-destructive" />
                     </Button>

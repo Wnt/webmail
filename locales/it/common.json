@@ -831,6 +831,7 @@
     "delete": "Elimina",
     "edit": "Modifica",
     "close": "Chiudi",
+    "remove_item": "Rimuovi {name}",
     "search": "Cerca",
     "refresh": "Aggiorna",
     "settings": "Impostazioni",

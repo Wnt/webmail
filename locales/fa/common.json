@@ -831,6 +831,7 @@
     "delete": "حذف",
     "edit": "ویرایش",
     "close": "بستن",
+    "remove_item": "حذف {name}",
     "search": "جستجو",
     "refresh": "بازنشانی",
     "settings": "تنظیمات",

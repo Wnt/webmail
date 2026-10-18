@@ -36,6 +36,7 @@ export function ThreadEmailItem({
   onContextMenu,
 }: ThreadEmailItemProps) {
   const t = useTranslations('email_viewer');
+  const tBatch = useTranslations('email_list.batch_actions');
   const isUnread = !email.keywords?.$seen;
   const isStarred = email.keywords?.$flagged;
   const isAnswered = email.keywords?.$answered;
@@ -127,6 +128,9 @@ export function ThreadEmailItem({
         {hasSelection && (
           <button
             onClick={handleCheckboxClick}
+            role="checkbox"
+            aria-checked={isChecked}
+            aria-label={tBatch('select')}
             className={cn(
               "p-1 rounded mt-0.5 flex-shrink-0 transition-all duration-200",
               "hover:bg-muted/50 hover:scale-110",

@@ -70,6 +70,9 @@ export function ContactListItem({ contact, isSelected, isChecked, hasSelection, 
       {hasSelection && (
         <button
           onClick={onCheckboxClick}
+          role="checkbox"
+          aria-checked={isChecked}
+          aria-label={name || email}
           className={cn(
             "p-1 rounded flex-shrink-0 transition-all duration-200",
             "hover:bg-muted/50 hover:scale-110",

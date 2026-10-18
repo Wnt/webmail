@@ -815,7 +815,7 @@ export function ContactForm({ contact, addressBooks, allKeywords, defaultAddress
                       <option value="private">{t("context_private")}</option>
                     </Select>
                     {emails.length > 1 && (
-                      <Button type="button" variant="ghost" size="icon" onClick={() => setEmails(emails.filter((_, j) => j !== i))} className="h-8 w-8 shrink-0">
+                      <Button type="button" variant="ghost" size="icon" onClick={() => setEmails(emails.filter((_, j) => j !== i))} className="h-8 w-8 shrink-0" aria-label={tCommon("remove_item", { name: entry.address.trim() || t("email") })}>
                         <X className="w-3 h-3" />
                       </Button>
                     )}
@@ -878,7 +878,7 @@ export function ContactForm({ contact, addressBooks, allKeywords, defaultAddress
                     <option value="work">{t("context_work")}</option>
                     <option value="private">{t("context_private")}</option>
                   </Select>
-                  <Button type="button" variant="ghost" size="icon" onClick={() => setPhones(phones.filter((_, j) => j !== i))} className="h-8 w-8 shrink-0">
+                  <Button type="button" variant="ghost" size="icon" onClick={() => setPhones(phones.filter((_, j) => j !== i))} className="h-8 w-8 shrink-0" aria-label={tCommon("remove_item", { name: entry.number.trim() || t("phone") })}>
                     <X className="w-3 h-3" />
                   </Button>
                 </div>
@@ -920,7 +920,7 @@ export function ContactForm({ contact, addressBooks, allKeywords, defaultAddress
             <div className="space-y-3">
               {addresses.map((addr, i) => (
                 <div key={i} className="rounded-md border border-border/60 bg-muted/20 p-3 space-y-2 relative">
-                  <Button type="button" variant="ghost" size="icon" onClick={() => setAddresses(addresses.filter((_, j) => j !== i))} className="h-6 w-6 absolute top-2 right-2">
+                  <Button type="button" variant="ghost" size="icon" onClick={() => setAddresses(addresses.filter((_, j) => j !== i))} className="h-6 w-6 absolute top-2 right-2" aria-label={tCommon("remove_item", { name: [addr.street, addr.locality].map((part) => part.trim()).filter(Boolean).join(", ") || t("addresses") })}>
                     <X className="w-3 h-3" />
                   </Button>
                   <Input value={addr.street} onChange={(e) => { const n = [...addresses]; n[i] = { ...n[i], street: e.target.value }; setAddresses(n); }} placeholder={t("street")} />
@@ -966,7 +966,7 @@ export function ContactForm({ contact, addressBooks, allKeywords, defaultAddress
                     placeholder={t("service_placeholder")}
                     className="w-24"
                   />
-                  <Button type="button" variant="ghost" size="icon" onClick={() => setOnlineServices(onlineServices.filter((_, j) => j !== i))} className="h-8 w-8 shrink-0">
+                  <Button type="button" variant="ghost" size="icon" onClick={() => setOnlineServices(onlineServices.filter((_, j) => j !== i))} className="h-8 w-8 shrink-0" aria-label={tCommon("remove_item", { name: svc.service.trim() || svc.uri.trim() || t("online_services") })}>
                     <X className="w-3 h-3" />
                   </Button>
                 </div>
@@ -998,7 +998,7 @@ export function ContactForm({ contact, addressBooks, allKeywords, defaultAddress
                     <option value="death">{t("anniversary_death")}</option>
                     <option value="other">{t("anniversary_other")}</option>
                   </Select>
-                  <Button type="button" variant="ghost" size="icon" onClick={() => setAnniversaries(anniversaries.filter((_, j) => j !== i))} className="h-8 w-8 shrink-0">
+                  <Button type="button" variant="ghost" size="icon" onClick={() => setAnniversaries(anniversaries.filter((_, j) => j !== i))} className="h-8 w-8 shrink-0" aria-label={tCommon("remove_item", { name: t(`anniversary_${ann.kind}`) })}>
                     <X className="w-3 h-3" />
                   </Button>
                 </div>
@@ -1039,7 +1039,7 @@ export function ContactForm({ contact, addressBooks, allKeywords, defaultAddress
                     <option value="medium">{t("level_medium")}</option>
                     <option value="low">{t("level_low")}</option>
                   </Select>
-                  <Button type="button" variant="ghost" size="icon" onClick={() => setPersonalInfoEntries(personalInfoEntries.filter((_, j) => j !== i))} className="h-8 w-8 shrink-0">
+                  <Button type="button" variant="ghost" size="icon" onClick={() => setPersonalInfoEntries(personalInfoEntries.filter((_, j) => j !== i))} className="h-8 w-8 shrink-0" aria-label={tCommon("remove_item", { name: pi.value.trim() || t(`personal_${pi.kind}`) })}>
                     <X className="w-3 h-3" />
                   </Button>
                 </div>
@@ -1143,6 +1143,7 @@ function CategoryComboBox({
   hint: string;
   addLabel: string;
 }) {
+  const tCommon = useTranslations("common");
   const [isOpen, setIsOpen] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1206,6 +1207,7 @@ function CategoryComboBox({
                 type="button"
                 onClick={() => removeKeyword(kw)}
                 className="hover:text-destructive transition-colors"
+                aria-label={tCommon("remove_item", { name: kw })}
               >
                 <X className="w-3 h-3" />
               </button>

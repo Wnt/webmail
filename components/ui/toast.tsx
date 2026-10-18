@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
+import { useTranslations } from "next-intl";
 import { X, CheckCircle, AlertCircle, Info, AlertTriangle, Loader2 } from "@/components/icons";
 import { cn } from "@/lib/utils";
 
@@ -70,6 +71,7 @@ const progressBarStyles = {
 };
 
 export function ToastItem({ toast, onClose }: ToastProps) {
+  const tCommon = useTranslations("common");
   const Icon = icons[toast.type];
   const [exiting, setExiting] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -182,6 +184,8 @@ export function ToastItem({ toast, onClose }: ToastProps) {
           e.stopPropagation();
           dismiss();
         }}
+        aria-label={tCommon("close")}
+        title={tCommon("close")}
         className={cn(
           "flex-shrink-0 p-1 rounded-md transition-all",
           "text-muted-foreground hover:text-foreground hover:bg-foreground/5",

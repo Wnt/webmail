@@ -831,6 +831,7 @@
     "delete": "Törlés",
     "edit": "Szerkesztés",
     "close": "Bezárás",
+    "remove_item": "{name} eltávolítása",
     "search": "Keresés",
     "refresh": "Frissítés",
     "settings": "Beállítások",

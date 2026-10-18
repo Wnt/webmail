@@ -831,6 +831,7 @@
     "delete": "Verwijderen",
     "edit": "Bewerken",
     "close": "Sluiten",
+    "remove_item": "{name} verwijderen",
     "search": "Zoeken",
     "refresh": "Vernieuwen",
     "settings": "Instellingen",

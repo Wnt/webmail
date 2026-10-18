@@ -26,6 +26,7 @@ export function ContactGroupForm({
   onCancel,
 }: ContactGroupFormProps) {
   const t = useTranslations("contacts");
+  const tCommon = useTranslations("common");
   const isEditing = !!group;
 
   const [name, setName] = useState(
@@ -176,6 +177,7 @@ export function ContactGroupForm({
                     type="button"
                     onClick={() => toggleMember(id)}
                     className="hover:text-red-600 dark:hover:text-red-400"
+                    aria-label={tCommon("remove_item", { name: getContactDisplayName(contact) })}
                   >
                     <X className="w-3 h-3" />
                   </button>

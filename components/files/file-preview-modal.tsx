@@ -289,7 +289,7 @@ export function FilePreviewModal({ name, onClose, onDownload, getFileContent }: 
               <ExternalLink className="w-4 h-4" />
             </Button>
           )}
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => void onDownload()}>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => void onDownload()} aria-label={t("download")} title={t("download")}>
             <Download className="w-4 h-4" />
           </Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose} aria-label={t("close_preview")}>

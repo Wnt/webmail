@@ -831,6 +831,7 @@
     "delete": "Odstrániť",
     "edit": "Upraviť",
     "close": "Zavrieť",
+    "remove_item": "Odstrániť {name}",
     "search": "Hľadať",
     "refresh": "Obnoviť",
     "settings": "Nastavenia",

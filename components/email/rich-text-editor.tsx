@@ -168,6 +168,7 @@ function TableSizePicker({ onPick }: { onPick: (rows: number, cols: number) => v
               type="button"
               onMouseEnter={() => setHover({ r, c })}
               onClick={() => onPick(r + 1, c + 1)}
+              aria-label={`${r + 1} × ${c + 1}`}
               className={cn(
                 "w-4 h-4 border border-border/60 rounded-[2px] transition-colors",
                 active ? "bg-primary border-primary" : "bg-background hover:bg-accent"

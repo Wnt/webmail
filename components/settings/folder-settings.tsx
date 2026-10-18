@@ -156,6 +156,7 @@ function SortableFolderRow({ id, title, children }: { id: string; title: string;
 
 export function FolderSettings() {
   const t = useTranslations('settings.folders');
+  const tFiles = useTranslations('files');
   const { client } = useAuthStore();
   const { mailboxes, fetchMailboxes, createMailbox, renameMailbox, deleteMailbox, setMailboxRole, reorderMailboxes, moveMailbox, moveMailboxes } = useEmailStore();
 
@@ -661,6 +662,8 @@ export function FolderSettings() {
               <button
                 onClick={() => toggleExpanded(mb.id)}
                 className="p-0.5 text-muted-foreground hover:text-foreground rounded transition-colors flex-shrink-0"
+                aria-expanded={isExpanded}
+                aria-label={isExpanded ? tFiles('collapse_folder', { name: mb.name }) : tFiles('expand_folder', { name: mb.name })}
               >
                 {isExpanded
                   ? <ChevronDown className="w-3.5 h-3.5" />

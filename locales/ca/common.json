@@ -831,6 +831,7 @@
     "delete": "Suprimeix",
     "edit": "Edita",
     "close": "Tanca",
+    "remove_item": "Elimina {name}",
     "search": "Cerca",
     "refresh": "Actualitza",
     "settings": "Configuració",

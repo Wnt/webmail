@@ -110,6 +110,7 @@ export function ContactsSidebar({
   multiAccountMode,
 }: ContactsSidebarProps) {
   const t = useTranslations("contacts");
+  const tFiles = useTranslations("files");
   const router = useRouter();
   const { contextMenu: groupContextMenu, openContextMenu: openGroupContextMenu, closeContextMenu: closeGroupContextMenu, menuRef: groupMenuRef } = useContextMenu<ContactCard>();
   const { contextMenu: bookContextMenu, openContextMenu: openBookContextMenu, closeContextMenu: closeBookContextMenu, menuRef: bookMenuRef } = useContextMenu<AddressBook>();
@@ -281,6 +282,10 @@ export function ContactsSidebar({
             variant="ghost"
             onClick={() => setShowMenu(v => !v)}
             className="h-7 w-7"
+            aria-label={tFiles("new")}
+            title={tFiles("new")}
+            aria-haspopup="menu"
+            aria-expanded={showMenu}
           >
             <Plus className="w-4 h-4" />
           </Button>

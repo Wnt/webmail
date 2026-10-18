@@ -730,6 +730,7 @@ export function SettingsApp({ linkSegments: routeSegments }: SettingsAppProps = 
               size="icon"
               onClick={() => window.history.back()}
               className="h-10 w-10"
+              aria-label={tSidebar('mobile.go_back')}
             >
               <ArrowLeft className="w-5 h-5" />
             </Button>
@@ -763,6 +764,7 @@ export function SettingsApp({ linkSegments: routeSegments }: SettingsAppProps = 
             size="icon"
             onClick={() => router.push('/')}
             className="h-10 w-10"
+            aria-label={t('back_to_mail')}
           >
             <ArrowLeft className="w-5 h-5" />
           </Button>

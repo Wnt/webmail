@@ -493,6 +493,9 @@ export function ContactList({
               }
             }}
             className="p-1 rounded hover:bg-muted/50 transition-colors"
+            role="checkbox"
+            aria-checked={allSelected}
+            aria-label={t("bulk.select_all")}
           >
             {allSelected ? (
               <CheckSquare className="w-4 h-4 text-primary" />
@@ -521,7 +524,7 @@ export function ContactList({
             <Trash2 className="w-3.5 h-3.5 me-1" />
             {t("bulk.delete")}
           </Button>
-          <Button variant="ghost" size="icon" onClick={onClearSelection} className="h-7 w-7">
+          <Button variant="ghost" size="icon" onClick={onClearSelection} className="h-7 w-7" aria-label={t("bulk.clear")} title={t("bulk.clear")}>
             <X className="w-3.5 h-3.5" />
           </Button>
         </div>

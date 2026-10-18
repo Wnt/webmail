@@ -796,6 +796,7 @@
     "delete": "מחיקה",
     "edit": "עריכה",
     "close": "סגירה",
+    "remove_item": "הסרת {name}",
     "search": "חיפוש",
     "refresh": "רענון",
     "settings": "הגדרות",

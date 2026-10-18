@@ -80,6 +80,7 @@ function PasswordChangeSection() {
               type="button"
               onClick={() => setShowCurrent(!showCurrent)}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              aria-label={showCurrent ? t('link_device.hide_password') : t('link_device.show_password')}
             >
               {showCurrent ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
@@ -114,6 +115,7 @@ function PasswordChangeSection() {
               type="button"
               onClick={() => setShowNew(!showNew)}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              aria-label={showNew ? t('link_device.hide_password') : t('link_device.show_password')}
             >
               {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
@@ -387,6 +389,7 @@ function parseIpList(raw: string): string[] {
 }
 
 function CredentialRow({ entry, onRemove, isSaving }: { entry: AppPasswordInfo | ApiKeyInfo; onRemove: (id: string) => void; isSaving: boolean }) {
+  const tCommon = useTranslations('common');
   return (
     <div className="flex items-start justify-between py-2 px-3 bg-muted/50 rounded-md gap-2">
       <div className="flex flex-col min-w-0 flex-1">
@@ -416,6 +419,8 @@ function CredentialRow({ entry, onRemove, isSaving }: { entry: AppPasswordInfo |
         onClick={() => onRemove(entry.id)}
         disabled={isSaving}
         className="text-destructive hover:text-destructive shrink-0"
+        aria-label={tCommon('delete')}
+        title={tCommon('delete')}
       >
         <Trash2 className="w-3 h-3" />
       </Button>
@@ -513,7 +518,7 @@ function CredentialSection({ icon: Icon, i18nNamespace, entries, onCreate, onRem
             <code className="text-xs bg-background px-2 py-1 rounded border border-border flex-1 font-mono break-all">
               {createdSecret}
             </code>
-            <Button variant="outline" size="sm" onClick={handleCopySecret}>
+            <Button variant="outline" size="sm" onClick={handleCopySecret} aria-label={copied ? t('email_client.copied') : t('email_client.copy')} title={t('email_client.copy')}>
               {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
             </Button>
           </div>
@@ -602,6 +607,7 @@ function ApiKeysSection() {
 
 function PublicKeysSection() {
   const t = useTranslations('settings.security');
+  const tCommon = useTranslations('common');
   const tk = (key: string) => t(`public_keys.${key}`);
   const {
     publicKeys,
@@ -853,6 +859,8 @@ function PublicKeysSection() {
                     onClick={() => handleRemove(key.id)}
                     disabled={isSaving || isEncryptedWithThisKey}
                     className="text-destructive hover:text-destructive"
+                    aria-label={tCommon('delete')}
+                    title={tCommon('delete')}
                   >
                     <Trash2 className="w-3 h-3" />
                   </Button>

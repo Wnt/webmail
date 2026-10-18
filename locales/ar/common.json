@@ -831,6 +831,7 @@
     "delete": "حذف",
     "edit": "تعديل",
     "close": "إغلاق",
+    "remove_item": "إزالة {name}",
     "search": "بحث",
     "refresh": "تحديث",
     "settings": "الإعدادات",

@@ -19,6 +19,7 @@ export function SearchChips({
   className,
 }: SearchChipsProps) {
   const t = useTranslations("advanced_search");
+  const tCommon = useTranslations("common");
 
   const chips: { key: keyof SearchFilters; label: string; value: string }[] = [];
 
@@ -91,6 +92,7 @@ export function SearchChips({
             type="button"
             onClick={() => onRemoveFilter(chip.key)}
             className="ms-0.5 p-0.5 rounded-full hover:bg-primary/20 transition-colors"
+            aria-label={tCommon("remove_item", { name: chip.value ? `${chip.label}: ${chip.value}` : chip.label })}
           >
             <X className="w-3 h-3" />
           </button>

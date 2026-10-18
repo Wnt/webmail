@@ -831,6 +831,7 @@
     "delete": "刪除",
     "edit": "編輯",
     "close": "關閉",
+    "remove_item": "移除 {name}",
     "search": "搜尋",
     "refresh": "重新整理",
     "settings": "設定",
