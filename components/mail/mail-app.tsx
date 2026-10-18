@@ -245,6 +245,24 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
   }
   /** A message link opens before the bootstrap (see the deep-link effect): not in the Pro shell's tab. */
   const earlyMessageLinkApplies = () => !isEmbedded;
+  // Fork (Wnt/webmail): a wider screen opened at a message link draws the
+  // folder list and the message list once that message is on screen (1.5 s
+  // at most): their first render held the message back. Their columns keep
+  // their width meanwhile, so nothing moves.
+  const [deferShell, setDeferShell] = useState(() => !!startLinkIdRef.current
+    && !(typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 767px)').matches));
+  const deferShellForRef = useRef(startLinkIdRef.current);
+  useEffect(() => {
+    const id = deferShellForRef.current;
+    if (!deferShell || !id) return;
+    return afterBodyPainted(id, () => setDeferShell(false), 1500);
+  }, [deferShell]);
+  // A phone opened at a message link starts in the reading pane: the first
+  // signed-in render draws the message's pane, not the list it then replaces.
+  useLayoutEffect(() => {
+    if (!startLinkIdRef.current || typeof window.matchMedia !== 'function') return;
+    if (window.matchMedia('(max-width: 767px)').matches) useUIStore.getState().setActiveView('viewer');
+  }, []);
   const { isAuthenticated, client, logout, checkAuth, switchAccount, activeAccountId, isLoading: authLoading, connectionLost, isRateLimited, rateLimitUntil } = useAuthStore();
   const { identities } = useIdentityStore();
   const multiAccountIdentities = useProMultiAccountIdentities();
@@ -4300,6 +4318,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
           )}
           style={!isMobile && !isTablet ? { width: sidebarCollapsed ? (mvShell ? 72 : 48) : sidebarWidth } : undefined}
         >
+          {!deferShell && (
           <ErrorBoundary fallback={SidebarErrorFallback}>
             <Sidebar
               mailboxes={mailboxes}
@@ -4346,6 +4365,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
               onAccountMailboxSelect={handleAccountMailboxSelect}
             />
           </ErrorBoundary>
+          )}
         </div>
 
         {/* Sidebar resize handle (desktop only, hidden when collapsed, and
@@ -4774,6 +4794,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
             {!isScheduledView && <MessageListTabs />}
             <WelcomeBanner />
 
+            {!deferShell && (
             <ErrorBoundary fallback={EmailListErrorFallback}>
               <EmailList
                 onFindFromSender={mvShell ? (sender) => void handleSelectContactSuggestion(sender, 'from') : undefined}
@@ -4877,6 +4898,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
                 className="flex-1 min-h-0"
               />
             </ErrorBoundary>
+            )}
             </div>
 
             {/* Floating Compose Button - on desktop Mountain View puts Compose
