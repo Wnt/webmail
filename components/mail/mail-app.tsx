@@ -4252,7 +4252,12 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
             {(!isMobile || mobileSearchOpen) && (
             <div className={cn(
               "border-b border-border bg-background",
-              isMobile && mobileSearchOpen && "fixed inset-0 z-50 overflow-y-auto"
+              // Fixed to the viewport, the panel escapes the app root's
+              // safe-area padding, so in the installed iOS app its header sat
+              // under the status bar. It starts below the inset instead of
+              // padding itself: it is its own scroll container, and padding
+              // would scroll away and let content slide under the status bar.
+              isMobile && mobileSearchOpen && "fixed inset-x-0 bottom-0 top-[env(safe-area-inset-top)] z-50 overflow-y-auto"
             )}>
               {isMobile && mobileSearchOpen && (
                 <div className="h-14 px-2 flex items-center border-b border-border">
