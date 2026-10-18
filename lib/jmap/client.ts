@@ -1410,6 +1410,11 @@ export class JMAPClient implements IJMAPClient {
     this.sessionListener = listener;
   }
 
+  /** Fork (Wnt/webmail): the session as the server sent it (for the session cache), if connected. */
+  getSessionSnapshot(): Record<string, unknown> | null {
+    return this.sessionRaw ? cloneSession(this.sessionRaw) : null;
+  }
+
   private noteSession(raw: Record<string, unknown> | null): void {
     if (!raw) return;
     this.sessionRaw = raw;

@@ -1039,6 +1039,18 @@ function restartWithNewSession(): void {
   window.location.reload();
 }
 
+/**
+ * Fork (Wnt/webmail): keeps `client`'s JMAP session for the next page start
+ * of this login (lib/jmap/session-cache.ts): the one it has now, and every
+ * later one it fetches.
+ */
+function keepSessionFor(client: IJMAPClient, accountId: string, serverUrl: string, username: string): void {
+  if (!client.setSessionListener) return;
+  client.setSessionListener((session) => writeCachedSession(accountId, serverUrl, username, session));
+  const current = client.getSessionSnapshot?.();
+  if (current) writeCachedSession(accountId, serverUrl, username, current);
+}
+
 function withinMs<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   return Promise.race([promise, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]);
 }
@@ -1970,6 +1982,8 @@ export const useAuthStore = create<AuthState>()(
 
           // Register in account store
           const accountId = generateAccountId(username, serverUrl);
+          // Fork (Wnt/webmail): the next page start of this login skips the session request.
+          keepSessionFor(client, accountId, serverUrl, username);
 
           // Snapshot current account if switching away and clear stores so
           // the new account starts with a clean email/contact/calendar state.
@@ -2134,6 +2148,8 @@ export const useAuthStore = create<AuthState>()(
           initializeFeatureStores(client);
 
           const accountId = generateAccountId(username, ssoServerUrl);
+          // Fork (Wnt/webmail): the next page start of this login skips the session request.
+          keepSessionFor(client, accountId, ssoServerUrl, username);
 
           const prevAccountId = get().activeAccountId;
           if (prevAccountId && prevAccountId !== accountId) {
@@ -2939,7 +2955,7 @@ export const useAuthStore = create<AuthState>()(
                   // was just issued for this login); it is checked against the
                   // server right after, and a different mail account or API
                   // URL starts the page again with the server's session.
-                  client.setSessionListener((session) => writeCachedSession(account.id, account.serverUrl, account.username, session));
+                  keepSessionFor(client, account.id, account.serverUrl, account.username);
                   const saved = readCachedSession(account.id, account.serverUrl, account.username);
                   if (saved && client.adoptSession(saved)) {
                     void client.revalidateSession().then((check) => {

@@ -190,6 +190,9 @@ export interface IJMAPClient {
   primeEmail?(email: Email, accountId?: string): void;
   /** Fork (Wnt/webmail): see JMAPClient.prefetchEmail. */
   prefetchEmail?(emailId: string, kept?: Email | null): void;
+  /** Fork (Wnt/webmail): see JMAPClient.setSessionListener / getSessionSnapshot (the session cache). */
+  setSessionListener?(listener: ((session: Record<string, unknown>) => void) | null): void;
+  getSessionSnapshot?(): Record<string, unknown> | null;
   getEmail(emailId: string, accountId?: string, opts?: { threadId?: string }): Promise<Email | null>;
   getSomeEmails(emailsId: string[], accountId?: string): Promise<Email[]>
   /**
