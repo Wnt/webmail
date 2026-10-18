@@ -257,14 +257,14 @@ export function ShareCollectionDialog({
     : ["read", "readWrite", "manager"] as const;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-[1px]" onClick={onClose} aria-hidden="true" />
       <div
         ref={modalRef}
         role="dialog"
         aria-modal="true"
         aria-label={t("title", { name: collectionName })}
-        className="relative bg-background border border-border rounded-lg shadow-xl w-full max-w-lg mx-4 animate-in zoom-in-95 duration-200 max-h-[85vh] flex flex-col"
+        className="relative bg-background border border-border rounded-lg shadow-xl w-full max-w-lg mx-4 animate-in zoom-in-95 duration-200 max-h-[min(85vh,100%)] flex flex-col"
       >
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
           <div className="flex items-center gap-2">

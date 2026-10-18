@@ -1414,8 +1414,9 @@ const SidebarMemo = memo(function SidebarImpl({
       {!isCollapsed && <DemoBanner />}
       {!isCollapsed && <VacationBanner />}
 
-      {/* Mailbox List */}
-      <div className="flex-1 overflow-y-auto" data-tour="sidebar">
+      {/* Mailbox List. The phone drawer runs to the bottom of the screen, so
+          the last row must scroll clear of the iOS home indicator (0 elsewhere). */}
+      <div className="flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]" data-tour="sidebar">
         {(showUnified || showCrossUnread || showCrossStarred || showCrossAll) && (
           <div>
             <SidebarSectionHeader

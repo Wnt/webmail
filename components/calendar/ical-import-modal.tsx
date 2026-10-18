@@ -246,14 +246,14 @@ export function ICalImportModal({ calendars, client, onClose, initialUrl }: ICal
   // installed iOS app (viewport-fit=cover); the overlay keeps it below the
   // top safe-area inset, and its backdrop still covers the whole screen.
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center pt-[env(safe-area-inset-top)]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-[1px]" onClick={onClose} aria-hidden="true" />
       <div
         ref={modalRef}
         role="dialog"
         aria-modal="true"
         aria-label={t("title")}
-        className="relative bg-background border border-border rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto animate-in zoom-in-95 duration-200"
+        className="relative bg-background border border-border rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[min(90vh,100%)] overflow-y-auto animate-in zoom-in-95 duration-200"
       >
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
           <h2 className="text-lg font-semibold">{t("title")}</h2>

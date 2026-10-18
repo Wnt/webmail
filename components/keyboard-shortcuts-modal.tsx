@@ -31,7 +31,7 @@ export function KeyboardShortcutsModal({ isOpen, onClose }: KeyboardShortcutsMod
 
   return (
     <div
-      className="fixed inset-0 bg-black/50 backdrop-blur-[1px] flex items-center justify-center z-50 p-4 animate-in fade-in duration-150"
+      className="fixed inset-0 bg-black/50 backdrop-blur-[1px] flex items-center justify-center z-50 p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] animate-in fade-in duration-150"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
@@ -41,7 +41,7 @@ export function KeyboardShortcutsModal({ isOpen, onClose }: KeyboardShortcutsMod
         aria-labelledby="shortcuts-dialog-title"
         className={cn(
           "bg-background border border-border rounded-lg shadow-xl",
-          "w-full max-w-2xl max-h-[90vh] overflow-hidden",
+          "w-full max-w-2xl max-h-[min(90vh,100%)] overflow-hidden",
           "animate-in zoom-in-95 duration-200"
         )}
       >

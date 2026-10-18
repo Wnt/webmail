@@ -3897,7 +3897,9 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
             <X className="w-5 h-5" />
           </Button>
         </div>
-        <div ref={mobileSubListRef} className="flex-1 overflow-y-auto py-2">
+        {/* Full viewport height: the last action (a long Move to list) must
+            scroll clear of the home indicator. */}
+        <div ref={mobileSubListRef} className={cn("flex-1 overflow-y-auto", isPaneScoped ? "py-2" : "pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]")}>
           {moreMenuSub === null && (
             <>
               {/* Star toggle */}
@@ -5771,13 +5773,15 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
 
       {/* Email Source Modal - pane-scoped inside a Pro pane so it never
           covers the neighbouring split pane. Fixed to the viewport, its 90vh
-          box would reach under the status bar of the installed iOS app on a
-          phone, so the overlay keeps it below the top safe-area inset. */}
+          box would reach under the status bar and into the home-indicator
+          strip of the installed iOS app on a phone (bottom edge ~13 pt into
+          it on an iPhone 17 Pro), so the overlay pads both safe-area insets
+          and the box grows to 90vh or the padded overlay, whichever is less. */}
       {showSourceModal && email && (
         <div
           className={cn(
             "bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4",
-            isPaneScoped ? "absolute inset-0" : "fixed inset-0 pt-[max(1rem,env(safe-area-inset-top))]",
+            isPaneScoped ? "absolute inset-0" : "fixed inset-0 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]",
           )}
           onClick={() => setShowSourceModal(false)}
         >
@@ -5785,7 +5789,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
             role="dialog"
             aria-modal="true"
             aria-labelledby={sourceTitleId}
-            className="bg-background rounded-lg shadow-2xl border border-border w-full max-w-4xl max-h-[90vh] flex flex-col"
+            className="bg-background rounded-lg shadow-2xl border border-border w-full max-w-4xl max-h-[min(90vh,100%)] flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Modal Header */}

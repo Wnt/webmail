@@ -235,7 +235,7 @@ export function IdentityManagerModal({ isOpen, onClose }: IdentityManagerModalPr
   // installed iOS app (viewport-fit=cover); the overlay keeps it below the
   // top safe-area inset (max(): the usual 1rem where there is no inset).
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-[1px] flex items-center justify-center z-50 p-4 pt-[max(1rem,env(safe-area-inset-top))] animate-in fade-in duration-150">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-[1px] flex items-center justify-center z-50 p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] animate-in fade-in duration-150">
       <div
         ref={modalRef}
         role="dialog"
@@ -243,7 +243,7 @@ export function IdentityManagerModal({ isOpen, onClose }: IdentityManagerModalPr
         aria-labelledby="identity-modal-title"
         className={cn(
           'bg-background border border-border rounded-lg shadow-xl',
-          'w-full max-w-3xl max-h-[90vh] overflow-hidden',
+          'w-full max-w-3xl max-h-[min(90vh,100%)] overflow-hidden',
           'animate-in zoom-in-95 duration-200'
         )}
       >

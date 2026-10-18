@@ -229,13 +229,13 @@ export function FilePickerDialog({ client, onClose, onPick }: FilePickerDialogPr
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-150">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] animate-in fade-in duration-150">
       <div
         ref={modalRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="file-picker-title"
-        className="bg-background border border-border rounded-lg shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200"
+        className="bg-background border border-border rounded-lg shadow-xl w-full max-w-lg max-h-[min(80vh,100%)] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200"
         data-testid="file-picker-dialog"
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">

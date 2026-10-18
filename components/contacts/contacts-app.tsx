@@ -1159,8 +1159,8 @@ function ContactsAppContent({ linkSegments: routeSegments }: ContactsAppProps = 
         />
       )}
       {showImportDialog && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-background rounded-lg border border-border shadow-xl w-full max-w-2xl max-h-[80vh] overflow-hidden">
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]">
+          <div className="bg-background rounded-lg border border-border shadow-xl w-full max-w-2xl max-h-[min(80vh,100%)] overflow-hidden">
             <ContactImportDialog
               existingContacts={contacts}
               onImport={handleImportContacts}
