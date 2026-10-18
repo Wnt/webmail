@@ -242,8 +242,11 @@ export function ICalImportModal({ calendars, client, onClose, initialUrl }: ICal
     return () => modal.removeEventListener("keydown", handler);
   }, [step]);
 
+  // A 90vh dialog centred on a phone reaches under the status bar of the
+  // installed iOS app (viewport-fit=cover); the overlay keeps it below the
+  // top safe-area inset, and its backdrop still covers the whole screen.
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center pt-[env(safe-area-inset-top)]">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-[1px]" onClick={onClose} aria-hidden="true" />
       <div
         ref={modalRef}

@@ -106,7 +106,12 @@ export function WopiEditor({ target, accountId, slot, onClose }: WopiEditorProps
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-[100] bg-background flex flex-col">
+    // Full screen under viewport-fit=cover, the overlay pads every safe-area
+    // inset: in the installed iOS app its title and close button sat under
+    // the status bar (in landscape, in the rounded corners). The editor's own
+    // toolbars cannot do it, since env() is 0 inside the iframe. Padding, not
+    // an offset: the overlay does not scroll, and it still covers the app.
+    <div className="fixed inset-0 z-[100] bg-background flex flex-col pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
       <div className="flex items-center justify-between gap-3 px-4 h-12 border-b border-border shrink-0">
         <span className="text-sm font-medium text-foreground truncate">{target.name}</span>
         <button

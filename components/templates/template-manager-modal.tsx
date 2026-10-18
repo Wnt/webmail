@@ -67,8 +67,11 @@ export function TemplateManagerModal({ isOpen, onClose }: TemplateManagerModalPr
 
   if (!isOpen) return null;
 
+  // A 90vh dialog centred on a phone reaches under the status bar of the
+  // installed iOS app (viewport-fit=cover); the overlay keeps it below the
+  // top safe-area inset (max(): the usual 1rem where there is no inset).
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-[1px] flex items-center justify-center z-50 p-4 animate-in fade-in duration-150">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-[1px] flex items-center justify-center z-50 p-4 pt-[max(1rem,env(safe-area-inset-top))] animate-in fade-in duration-150">
       <div
         ref={modalRef}
         role="dialog"

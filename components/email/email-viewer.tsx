@@ -5686,12 +5686,14 @@ export function EmailViewer({
       </div>
 
       {/* Email Source Modal - pane-scoped inside a Pro pane so it never
-          covers the neighbouring split pane. */}
+          covers the neighbouring split pane. Fixed to the viewport, its 90vh
+          box would reach under the status bar of the installed iOS app on a
+          phone, so the overlay keeps it below the top safe-area inset. */}
       {showSourceModal && email && (
         <div
           className={cn(
             "bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4",
-            isPaneScoped ? "absolute inset-0" : "fixed inset-0",
+            isPaneScoped ? "absolute inset-0" : "fixed inset-0 pt-[max(1rem,env(safe-area-inset-top))]",
           )}
           onClick={() => setShowSourceModal(false)}
         >

@@ -402,8 +402,11 @@ export function FilterRuleModal({
   const selectClass =
     "px-2.5 py-1.5 text-sm rounded-md bg-muted border border-border text-foreground focus:outline-none focus:ring-2 focus:ring-ring transition-colors duration-150 cursor-pointer hover:border-muted-foreground";
 
+  // A 90vh dialog centred on a phone reaches under the status bar of the
+  // installed iOS app (viewport-fit=cover); the overlay keeps it below the
+  // top safe-area inset, and its backdrop still covers the whole screen.
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center pt-[env(safe-area-inset-top)]">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-[1px]" onClick={onClose} aria-hidden="true" />
       <div
         ref={modalRef}

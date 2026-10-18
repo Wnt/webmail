@@ -222,9 +222,14 @@ export function EventModal({
   // the whole app. The absolute variant anchors to the pane's tab-body
   // wrapper (the nearest positioned ancestor), covering exactly the pane.
   const isPaneScoped = useIsPaneScoped();
+  // Fixed to the viewport, the phone editor escapes the app root's safe-area
+  // padding, so in the installed iOS app its header sat under the status bar
+  // and its Save row in the home-indicator area. It pads the insets itself:
+  // it is not the scroll container (its middle scrolls), so the padding stays
+  // put. The bottom takes half the inset, like the composer's send bar.
   const mobileRootClass = isPaneScoped
     ? "absolute inset-0 z-40 flex flex-col bg-background"
-    : "fixed inset-0 z-50 flex flex-col bg-background";
+    : "fixed inset-0 z-50 flex flex-col bg-background pt-[env(safe-area-inset-top)] pb-[calc(env(safe-area-inset-bottom)/2)]";
   const isEdit = !!event;
   const formatEventDate = useFormatEventDate();
   const [mode, setMode] = useState<"view" | "edit">(isEdit && !startInEditMode ? "view" : "edit");

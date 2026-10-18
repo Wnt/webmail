@@ -2086,13 +2086,15 @@ export function CalendarApp({ linkSegments: routeSegments }: CalendarAppProps = 
         />
       )}
 
-      {/* Mobile task editor: full screen, like the event editor. */}
+      {/* Mobile task editor: full screen, like the event editor, and like it
+          padding the safe-area insets itself (fixed to the viewport, it
+          escapes the app root's padding; its body scrolls, not this layer). */}
       {showTaskModal && isMobile && (
         <div
           role="dialog"
           aria-modal="true"
           aria-label={editTask ? t("tasks.edit") : t("tasks.create")}
-          className={isPaneScoped ? "absolute inset-0 z-40 flex flex-col bg-background" : "fixed inset-0 z-50 flex flex-col bg-background"}
+          className={isPaneScoped ? "absolute inset-0 z-40 flex flex-col bg-background" : "fixed inset-0 z-50 flex flex-col bg-background pt-[env(safe-area-inset-top)] pb-[calc(env(safe-area-inset-bottom)/2)]"}
         >
           <TaskModal
             key={editTask?.id ?? 'new-task'}
