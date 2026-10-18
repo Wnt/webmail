@@ -156,6 +156,12 @@ export class RateLimitError extends Error {
   }
 }
 
+/** The request timed out, or a proxy in front of the server gave up on it. */
+function isGivenUpOn(error: unknown): boolean {
+  if (error instanceof RequestTimeoutError) return true;
+  return error instanceof Error && /^Request failed: 50[24]\b/.test(error.message);
+}
+
 /**
  * A request produced no response headers within its deadline.
  *
@@ -1015,6 +1021,13 @@ export class JMAPClient implements IJMAPClient {
    * deadline turned a slow search into an empty result.
    */
   private static readonly SEARCH_TIMEOUT_MS = 90_000;
+  /**
+   * A full-text search can outlast a proxy's request limit on a server that
+   * reads the messages themselves. Such a server keeps the search going and
+   * files what it found, so asking again finishes it; a search is read-only,
+   * so asking again is safe. Tries in all, counting the first.
+   */
+  private static readonly SEARCH_ATTEMPTS = 3;
 
   private serverUrl: string;
   private username: string;
@@ -3344,7 +3357,7 @@ export class JMAPClient implements IJMAPClient {
       // more, never the count, and a total forces a full-text search to read
       // every message (RFC 8620 §5.5 asks clients to request it only when
       // needed). Without it `hasMore` is "a full page came back".
-      const response = await this.request([
+      const response = await this.searchRequest([
         ["Email/query", {
           accountId: targetAccountId,
           filter,
@@ -3358,7 +3371,7 @@ export class JMAPClient implements IJMAPClient {
           properties: [...EMAIL_LIST_PROPERTIES],
         }, "1"],
         this.searchSnippetCall(targetAccountId, filter),
-      ], undefined, { timeoutMs: JMAPClient.SEARCH_TIMEOUT_MS });
+      ]);
       assertQuerySucceeded(response, 'Search');
 
       const queryResponse = response.methodResponses?.[0]?.[1];
@@ -3382,6 +3395,20 @@ export class JMAPClient implements IJMAPClient {
       // Rethrow: an empty result would read as "No results found".
       console.error('Search failed:', error);
       throw error;
+    }
+  }
+
+  /**
+   * A search request: the search deadline, and up to SEARCH_ATTEMPTS tries
+   * when the request timed out or a proxy in front gave up on it (502/504).
+   */
+  private async searchRequest(methodCalls: JMAPMethodCall[]): Promise<JMAPResponse> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.request(methodCalls, undefined, { timeoutMs: JMAPClient.SEARCH_TIMEOUT_MS });
+      } catch (error) {
+        if (attempt >= JMAPClient.SEARCH_ATTEMPTS || !isGivenUpOn(error)) throw error;
+      }
     }
   }
 
@@ -3430,7 +3457,7 @@ export class JMAPClient implements IJMAPClient {
       // cross-account views browse with) gets no total and the search
       // deadline; see searchEmails.
       const isTextSearch = hasFilter && filterHasSnippetTerms(filter);
-      const response = await this.request([
+      const calls: JMAPMethodCall[] = [
         ["Email/query", {
           accountId: targetAccountId,
           ...(hasFilter ? { filter } : {}),
@@ -3445,7 +3472,8 @@ export class JMAPClient implements IJMAPClient {
           properties: [...EMAIL_LIST_PROPERTIES],
         }, "1"],
         this.searchSnippetCall(targetAccountId, hasFilter ? filter : undefined),
-      ], undefined, isTextSearch ? { timeoutMs: JMAPClient.SEARCH_TIMEOUT_MS } : undefined);
+      ];
+      const response = isTextSearch ? await this.searchRequest(calls) : await this.request(calls);
       assertQuerySucceeded(response, 'Search');
 
       const queryResponse = response.methodResponses?.[0]?.[1];

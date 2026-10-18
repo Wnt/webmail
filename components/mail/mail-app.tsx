@@ -104,7 +104,7 @@ import { EML_IMPORT_ACCEPT, expandImportableEmails } from "@/lib/eml-import";
 import { findDraftIdentityId, findReplyIdentityId, resolveComposeAccountEmail } from "@/lib/reply-identity";
 import { buildReplyRecipients, isSelfSent } from "@/lib/reply-recipients";
 import { useProMultiAccountIdentities } from "@/hooks/use-pro-multi-account-identities";
-import { Filter, ChevronDown, X, Paperclip, Star, Mail, MailOpen, RotateCcw, PenSquare, PenLine, CheckSquare, Square, AlertTriangle, ArrowLeft } from "@/components/icons";
+import { Filter, ChevronDown, X, Paperclip, Star, Mail, MailOpen, RotateCcw, PenSquare, PenLine, CheckSquare, Square, AlertTriangle, ArrowLeft, Loader2, Search } from "@/components/icons";
 import { ResizeHandle } from "@/components/layout/resize-handle";
 import { Button } from "@/components/ui/button";
 import { useDocumentTitle } from "@/hooks/use-document-title";
@@ -422,6 +422,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     searchEmails,
     searchQuery,
     searchFailed,
+    searchedQuery,
     setSearchQuery,
     isLoading,
     isLoadingEmail,
@@ -545,6 +546,16 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     : scheduledHasMore;
   const activeHasMore = isScheduledView ? scopedScheduledHasMore : hasMoreEmails;
   const activeIsLoading = isScheduledView ? isLoadingScheduled : isLoading;
+  // Where the shown search stands, for the status line over the list: null
+  // when no search is shown, including text typed but not searched yet (the
+  // list is then still the folder, not results).
+  const typedQuery = searchQuery.trim();
+  const searchStatus: "running" | "failed" | "done" | null =
+    !typedQuery && isFilterEmpty(searchFilters) ? null
+    : typedQuery && typedQuery !== searchedQuery && isFilterEmpty(searchFilters) ? null
+    : activeIsLoading ? "running"
+    : searchFailed && activeEmails.length === 0 ? "failed"
+    : "done";
   const includeGroupInUnified = useSettingsStore((s) => s.includeGroupInUnified);
   const unifiedCrossAccount = useSettingsStore((s) => s.unifiedCrossAccount);
   const unifiedCrossAccountGate = usePolicyStore((s) => s.isFeatureEnabled('unifiedCrossAccountEnabled'));
@@ -4375,6 +4386,21 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
               </div>
               )}
 
+              {/* On the phone panel a typed query runs only on the keyboard's
+                  Search key, and once the keyboard is down there was nothing
+                  to tap: the panel just stayed blank. This row runs it. */}
+              {isMobile && mobileSearchOpen && typedQuery && (
+                <button
+                  type="button"
+                  data-testid="mobile-search-submit"
+                  onClick={() => { handleSearch(searchQuery); setMobileSearchOpen(false); }}
+                  className="w-full flex items-center gap-3 px-4 py-3 text-start text-sm border-b border-border hover:bg-muted active:bg-muted transition-colors"
+                >
+                  <Search className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                  <span className="truncate">{t("email_list.search_for", { query: typedQuery })}</span>
+                </button>
+              )}
+
               {/* Filter Area. Under Mountain View the button that opens this
                   lives in the global top bar, so the panel drops from the
                   search field there rather than from the list header. */}
@@ -4555,9 +4581,23 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
             </div>
             )}
 
-            {(searchQuery || !isFilterEmpty(searchFilters)) && !activeIsLoading && !isScheduledView && (
-              <div className="px-4 py-1.5 text-xs text-muted-foreground border-b border-border bg-muted/20">
-                {searchFailed && activeEmails.length === 0
+            {/* Where the search stands: running, finished (with its count) or
+                failed. Text typed but not searched yet gets no line: the list
+                below is still the folder, not results. */}
+            {searchStatus && !isScheduledView && (
+              <div
+                className="px-4 py-1.5 text-xs text-muted-foreground border-b border-border bg-muted/20 flex items-center gap-1.5"
+                data-testid="search-status"
+                data-state={searchStatus}
+                role="status"
+                aria-live="polite"
+              >
+                {searchStatus === "running" ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    {t("email_list.searching")}
+                  </>
+                ) : searchStatus === "failed"
                   ? t("email_list.search_failed")
                   : activeHasMore
                   ? t("advanced_search.results_found_more", { count: activeEmails.length })

@@ -240,6 +240,8 @@
     "no_search_results_description": "Încercați să modificați criteriile de căutare sau filtrele",
     "search_failed": "Căutarea nu s-a încheiat",
     "search_failed_description": "Serverul nu a răspuns la timp. Caută din nou pentru a reîncerca.",
+    "searching": "Se caută…",
+    "search_for": "Caută „{query}”",
     "loading": "Se încarcă e-mailurile...",
     "unread": "necitit",
     "to_me": "Pentru mine",

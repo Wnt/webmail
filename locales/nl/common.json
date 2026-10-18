@@ -240,6 +240,8 @@
     "no_search_results_description": "Pas je zoekopdracht of filters aan",
     "search_failed": "Zoeken is niet voltooid",
     "search_failed_description": "De server reageerde niet op tijd. Zoek opnieuw om het nog eens te proberen.",
+    "searching": "Zoeken…",
+    "search_for": "Zoeken naar ‘{query}’",
     "loading": "E-mails laden...",
     "unread": "ongelezen",
     "to_me": "Aan mij",

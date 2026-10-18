@@ -201,6 +201,10 @@ interface EmailStore {
   // the list says so instead of "No results found". A slow full-text search
   // that timed out used to read as an empty result.
   searchFailed: boolean;
+  // The text the last search ran for (trimmed), or null. While the field
+  // holds something else the user has typed but not searched yet, and the
+  // list still shows what it showed before.
+  searchedQuery: string | null;
   // Unified-section sidebar badges. These are NOT an independent source of
   // truth: they are a pure projection of the live per-account mailbox lists
   // (`mailboxes` + `accountMailboxes`) over the last-known unified scope
@@ -1860,6 +1864,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   crossView: null,
   unifiedErrors: new Map(),
   searchFailed: false,
+  searchedQuery: null,
   unifiedCounts: [],
   crossUnreadCount: 0,
   unifiedScope: [],
@@ -2034,7 +2039,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   setLoading: (loading) => set({ isLoading: loading }),
   setLoadingEmail: (loading) => set({ isLoadingEmail: loading }),
   setError: (error) => set({ error }),
-  setSearchQuery: (query) => set({ searchQuery: query, searchFailed: false }),
+  setSearchQuery: (query) => set(query.trim() ? { searchQuery: query, searchFailed: false } : { searchQuery: query, searchFailed: false, searchedQuery: null }),
   setQuota: (quota) => set({ quota }),
 
   toggleEmailSelection: (email) => {
@@ -3382,6 +3387,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       error: null,
       searchFailed: false,
       searchQuery: query,
+      searchedQuery: query.trim(),
       emails: [],
       hasMoreEmails: false,
       totalEmails: 0,
@@ -3506,6 +3512,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       isLoading: true,
       error: null,
       searchFailed: false,
+      searchedQuery: searchQuery.trim(),
       emails: [],
       hasMoreEmails: false,
       totalEmails: 0,

@@ -240,6 +240,8 @@
     "no_search_results_description": "Prøv å justere søket eller filtrene",
     "search_failed": "Søket ble ikke fullført",
     "search_failed_description": "Serveren svarte ikke i tide. Søk på nytt for å prøve igjen.",
+    "searching": "Søker…",
+    "search_for": "Søk etter «{query}»",
     "loading": "Laster inn e-poster...",
     "unread": "ulest",
     "to_me": "Til meg",

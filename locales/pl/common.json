@@ -240,6 +240,8 @@
     "no_search_results_description": "Spróbuj zmienić wyszukiwanie lub filtry",
     "search_failed": "Wyszukiwanie nie zostało ukończone",
     "search_failed_description": "Serwer nie odpowiedział na czas. Wyszukaj ponownie, aby spróbować jeszcze raz.",
+    "searching": "Wyszukiwanie…",
+    "search_for": "Szukaj „{query}”",
     "loading": "Ładowanie wiadomości...",
     "unread": "nieprzeczytane",
     "to_me": "Do mnie",

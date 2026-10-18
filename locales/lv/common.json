@@ -240,6 +240,8 @@
     "no_search_results_description": "Mēģiniet mainīt meklēšanas vaicājumu vai filtrus",
     "search_failed": "Meklēšana netika pabeigta",
     "search_failed_description": "Serveris neatbildēja laikā. Meklējiet vēlreiz, lai mēģinātu atkārtoti.",
+    "searching": "Meklē…",
+    "search_for": "Meklēt “{query}”",
     "loading": "Ielādē vēstules...",
     "unread": "nelasītas",
     "to_me": "Man",

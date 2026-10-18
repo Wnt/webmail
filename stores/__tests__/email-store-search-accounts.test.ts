@@ -408,5 +408,13 @@ describe('Spam and Trash in the folder-less search scopes', () => {
     expect(useEmailStore.getState().emails.map((e) => e.id)).toEqual(['own-1', 'own-2']);
     expect(useEmailStore.getState().searchFailed).toBe(false);
   });
-});
 
+  it('remembers what was searched, so typing after it reads as not searched yet', async () => {
+    await useEmailStore.getState().searchEmails(client, '  Zorblatt ');
+    expect(useEmailStore.getState().searchedQuery).toBe('Zorblatt');
+    useEmailStore.getState().setSearchQuery('Zorblat');
+    expect(useEmailStore.getState().searchedQuery).toBe('Zorblatt');
+    useEmailStore.getState().setSearchQuery('');
+    expect(useEmailStore.getState().searchedQuery).toBeNull();
+  });
+});

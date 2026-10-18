@@ -205,6 +205,8 @@
     "no_search_results_description": "נסה להתאים את החיפוש או המסננים שלך",
     "search_failed": "החיפוש לא הסתיים",
     "search_failed_description": "השרת לא הגיב בזמן. חפשו שוב כדי לנסות שוב.",
+    "searching": "מחפש…",
+    "search_for": "חיפוש „{query}“",
     "loading": "טוען אימיילים...",
     "unread": "לא נקרא",
     "to_me": "לִי",

@@ -239,7 +239,10 @@ describe('JMAPClient resilience', () => {
       void pending.then((v) => { outcome = v; });
       await vi.advanceTimersByTimeAsync(30_000);
       expect(outcome).toBe('pending');
+      // 90s per try, three tries (a timed-out search is asked again).
       await vi.advanceTimersByTimeAsync(60_000);
+      expect(outcome).toBe('pending');
+      await vi.advanceTimersByTimeAsync(180_000);
       expect(await pending).toBeInstanceOf(RequestTimeoutError);
     });
 
@@ -984,6 +987,41 @@ describe('JMAPClient resilience', () => {
       fetchSpy.mockResolvedValueOnce(answer());
       await client.advancedSearchEmails({ inMailbox: 'inbox' });
       expect(queryArgs().calculateTotal).toBe(true);
+    });
+
+    // A proxy in front gave up on a long full-text search (504) while the
+    // server kept searching: asking again finishes it.
+    describe('a search a proxy gave up on', () => {
+      const apiCalls = () => fetchSpy.mock.calls.filter(([url]: unknown[]) => String(url).endsWith('/jmap/api'));
+      const answer = () => mockFetchResponse(200, queryAndGet({ id: 'e1', receivedAt: '2026-01-01T00:00:00Z', mailboxIds: { inbox: true } }));
+
+      it('is asked again, and its result is used', async () => {
+        const client = await createConnectedClient();
+        const before = apiCalls().length;
+        fetchSpy.mockResolvedValueOnce(mockFetchResponse(504, { status: 504 })).mockResolvedValueOnce(answer());
+        const { emails } = await client.searchEmails('Zorblatt', 'inbox');
+        expect(emails.map((e) => e.id)).toEqual(['e1']);
+        expect(apiCalls().length - before).toBe(2);
+      });
+
+      it('gives up after three tries', async () => {
+        const client = await createConnectedClient();
+        const before = apiCalls().length;
+        fetchSpy
+          .mockResolvedValueOnce(mockFetchResponse(504, { status: 504 }))
+          .mockResolvedValueOnce(mockFetchResponse(504, { status: 504 }))
+          .mockResolvedValueOnce(mockFetchResponse(504, { status: 504 }));
+        await expect(client.advancedSearchEmails({ text: 'zorblatt' })).rejects.toThrow(/504/);
+        expect(apiCalls().length - before).toBe(3);
+      });
+
+      it('a server error is not asked again', async () => {
+        const client = await createConnectedClient();
+        const before = apiCalls().length;
+        fetchSpy.mockResolvedValueOnce(mockFetchResponse(500, { status: 500 }));
+        await expect(client.searchEmails('Zorblatt')).rejects.toThrow(/500/);
+        expect(apiCalls().length - before).toBe(1);
+      });
     });
 
     it('leaves own-account mailboxIds untouched (no foreign accountId)', async () => {

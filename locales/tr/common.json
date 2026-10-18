@@ -240,6 +240,8 @@
     "no_search_results_description": "Arama teriminizi veya filtrelerinizi değiştirmeyi deneyin",
     "search_failed": "Arama tamamlanamadı",
     "search_failed_description": "Sunucu zamanında yanıt vermedi. Yeniden denemek için tekrar arayın.",
+    "searching": "Aranıyor…",
+    "search_for": "“{query}” için ara",
     "loading": "E-postalar yükleniyor...",
     "unread": "okunmamış",
     "to_me": "Bana",

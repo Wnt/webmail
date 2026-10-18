@@ -240,6 +240,8 @@
     "no_search_results_description": "Prova a modificare la ricerca o i filtri",
     "search_failed": "La ricerca non è terminata",
     "search_failed_description": "Il server non ha risposto in tempo. Cerca di nuovo per riprovare.",
+    "searching": "Ricerca in corso…",
+    "search_for": "Cerca «{query}»",
     "loading": "Caricamento messaggi...",
     "unread": "non letto",
     "to_me": "A me",

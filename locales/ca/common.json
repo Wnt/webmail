@@ -240,6 +240,8 @@
     "no_search_results_description": "Proveu d'ajustar la cerca o els filtres",
     "search_failed": "La cerca no ha acabat",
     "search_failed_description": "El servidor no ha respost a temps. Torna a cercar per tornar-ho a provar.",
+    "searching": "S'està cercant…",
+    "search_for": "Cerca «{query}»",
     "loading": "Carregant els correus...",
     "unread": "no llegit",
     "to_me": "Per a mi",

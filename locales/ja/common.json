@@ -240,6 +240,8 @@
     "no_search_results_description": "検索やフィルターを調整してください",
     "search_failed": "検索が完了しませんでした",
     "search_failed_description": "サーバーが時間内に応答しませんでした。もう一度検索してください。",
+    "searching": "検索中…",
+    "search_for": "「{query}」を検索",
     "loading": "メールを読み込み中...",
     "unread": "未読",
     "to_me": "宛先: 自分",

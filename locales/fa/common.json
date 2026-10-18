@@ -240,6 +240,8 @@
     "no_search_results_description": "جستجو یا فیلترهای خود را تنظیم کنید",
     "search_failed": "جستجو کامل نشد",
     "search_failed_description": "سرور به‌موقع پاسخ نداد. برای تلاش دوباره، دوباره جستجو کنید.",
+    "searching": "در حال جستجو…",
+    "search_for": "جستجوی «{query}»",
     "loading": "در حال بارگذاری ایمیل‌ها...",
     "unread": "خوانده نشده",
     "to_me": "به من",

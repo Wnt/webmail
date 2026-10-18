@@ -240,6 +240,8 @@
     "no_search_results_description": "Zkuste změnit hledání nebo filtry",
     "search_failed": "Hledání nebylo dokončeno",
     "search_failed_description": "Server neodpověděl včas. Zkuste hledat znovu.",
+    "searching": "Hledání…",
+    "search_for": "Hledat „{query}“",
     "loading": "Načítání zpráv...",
     "unread": "nepřečtené",
     "to_me": "Pro mě",

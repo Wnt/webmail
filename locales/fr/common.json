@@ -240,6 +240,8 @@
     "no_search_results_description": "Essayez de modifier votre recherche ou vos filtres",
     "search_failed": "La recherche n'a pas abouti",
     "search_failed_description": "Le serveur n'a pas répondu à temps. Relancez la recherche pour réessayer.",
+    "searching": "Recherche en cours…",
+    "search_for": "Rechercher « {query} »",
     "loading": "Chargement des emails...",
     "unread": "non lu",
     "to_me": "À moi",
