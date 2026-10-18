@@ -23,6 +23,7 @@ interface TemplatePickerProps {
 
 export function TemplatePicker({ isOpen, onClose, onSelect }: TemplatePickerProps) {
   const t = useTranslations('templates');
+  const tCommon = useTranslations('common');
   const locale = useLocale();
 
   const { templates, getFavorites, getRecent, getTemplatesByCategory, searchTemplates, recordUsage } =
@@ -143,6 +144,7 @@ export function TemplatePicker({ isOpen, onClose, onSelect }: TemplatePickerProp
             <button
               onClick={onClose}
               className="p-1.5 rounded-md hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+              aria-label={tCommon('close')}
             >
               <X className="w-4 h-4" />
             </button>

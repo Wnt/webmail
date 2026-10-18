@@ -149,6 +149,7 @@ function Select({ value, onChange, children, className }: {
 
 export function ContactForm({ contact, addressBooks, allKeywords, defaultAddressBookId, prefill, onSave, onCancel }: ContactFormProps) {
   const t = useTranslations("contacts.form");
+  const tCommon = useTranslations("common");
   const isEditing = !!contact;
 
   // Split a free-form display name into given/surname for prefill.
@@ -620,7 +621,7 @@ export function ContactForm({ contact, addressBooks, allKeywords, defaultAddress
         <h2 className="text-lg font-semibold">
           {isEditing ? t("edit_title") : t("create_title")}
         </h2>
-        <button type="button" onClick={onCancel} className="p-1.5 rounded-md hover:bg-muted transition-colors duration-150 text-muted-foreground hover:text-foreground">
+        <button type="button" onClick={onCancel} className="p-1.5 rounded-md hover:bg-muted transition-colors duration-150 text-muted-foreground hover:text-foreground" aria-label={tCommon("close")}>
           <X className="w-5 h-5" />
         </button>
       </div>

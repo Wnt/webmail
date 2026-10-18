@@ -49,6 +49,7 @@ interface IdentityManagerModalProps {
 export function IdentityManagerModal({ isOpen, onClose }: IdentityManagerModalProps) {
   const t = useTranslations('identities');
   const tNotif = useTranslations('notifications');
+  const tCommon = useTranslations('common');
 
   const client = useAuthStore((state) => state.client);
   const identities = useIdentityStore((state) => state.identities);
@@ -257,6 +258,7 @@ export function IdentityManagerModal({ isOpen, onClose }: IdentityManagerModalPr
           <button
             onClick={onClose}
             className="p-1.5 rounded-md hover:bg-muted transition-colors duration-150 text-muted-foreground hover:text-foreground"
+            aria-label={tCommon('close')}
           >
             <X className="w-5 h-5" />
           </button>

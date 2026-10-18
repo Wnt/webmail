@@ -69,3 +69,42 @@ describe('email source dialog and the iOS status bar', () => {
     expect(Array.from(overlay.classList).filter((cls) => cls.includes('safe-area-inset'))).toEqual([]);
   });
 });
+
+// iOS Simulator (WebKit) and Chrome both painted the phone action bar (Reply /
+// Reply All / Forward) over the bottom of the source dialog: both were z-50
+// in the same stacking context and the bar comes later in the document. The
+// dialog's close button had no accessible name either.
+function zOf(el: Element): number {
+  const z = Array.from(el.classList)
+    .map((cls) => /^z-(?:\[(\d+)\]|(\d+))$/.exec(cls))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .map((m) => Number(m[1] ?? m[2]));
+  expect(z).toHaveLength(1);
+  return z[0];
+}
+
+describe('email source dialog over the phone action bar', () => {
+  it('is a named dialog above the action bar', () => {
+    const overlay = openSource();
+    const dialog = screen.getByRole('dialog', { name: 'email_source' });
+    expect(overlay).toContainElement(dialog);
+    const bar = document.querySelector('[data-mobile-message-bar]')!.closest('nav')!;
+    expect(bar).toBeInTheDocument();
+    // Same stacking context (the viewer root), so the higher z-index wins.
+    expect(zOf(overlay)).toBeGreaterThan(zOf(bar));
+  });
+
+  it('inside a Pro pane it is above the pane-scoped action bar too', () => {
+    const overlay = openSource((ui) => <PaneIdContext.Provider value="split">{ui}</PaneIdContext.Provider>);
+    const bar = document.querySelector('[data-mobile-message-bar]')!.closest('nav')!;
+    expect(bar).toHaveClass('absolute');
+    expect(zOf(overlay)).toBeGreaterThan(zOf(bar));
+  });
+
+  it('has a named close button that closes it', () => {
+    openSource();
+    const dialog = screen.getByRole('dialog', { name: 'email_source' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'close' }));
+    expect(screen.queryByRole('dialog', { name: 'email_source' })).toBeNull();
+  });
+});

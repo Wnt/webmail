@@ -399,4 +399,22 @@ describe("PushNotificationPrompt", () => {
     expect(mocks.isWebPushEnabled).toHaveBeenCalledWith("account-1");
     expect(screen.getByText("title")).toBeInTheDocument();
   });
+
+  it("waits while the welcome card is up and comes in once it is dismissed", async () => {
+    // WelcomeBanner ref-counts this attribute while it is on screen.
+    document.documentElement.dataset.welcomeOpen = "1";
+    try {
+      render(<PushNotificationPrompt />);
+      await advancePromptDelay();
+      expect(screen.queryByTestId("push-notification-prompt")).not.toBeInTheDocument();
+
+      await act(async () => {
+        delete document.documentElement.dataset.welcomeOpen;
+        await Promise.resolve();
+      });
+      expect(screen.getByTestId("push-notification-prompt")).toBeInTheDocument();
+    } finally {
+      delete document.documentElement.dataset.welcomeOpen;
+    }
+  });
 });

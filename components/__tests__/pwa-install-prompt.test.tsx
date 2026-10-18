@@ -106,6 +106,44 @@ describe("PWAInstallPrompt", () => {
     }
   });
 
+  it("steps aside while the welcome card is up and comes in when it is dismissed", async () => {
+    render(<PWAInstallPrompt />);
+    offerInstall();
+    expect(screen.getByTestId("pwa-install-prompt")).toBeInTheDocument();
+
+    // WelcomeBanner ref-counts this attribute while it is on screen.
+    await act(async () => {
+      document.documentElement.dataset.welcomeOpen = "1";
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId("pwa-install-prompt")).not.toBeInTheDocument();
+
+    await act(async () => {
+      delete document.documentElement.dataset.welcomeOpen;
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("pwa-install-prompt")).toBeInTheDocument();
+  });
+
+  it("floats under the phone viewer pane, its bars, menus and dialogs", () => {
+    render(<PWAInstallPrompt />);
+    offerInstall();
+    const card = screen.getByTestId("pwa-install-prompt");
+    const layer = (prefix: string) => Array.from(card.classList)
+      .map((c) => new RegExp(`^${prefix}z-(\\d+)$`).exec(c)?.[1])
+      .filter(Boolean)
+      .map(Number);
+    // The card is mounted last at the app root. On a phone the viewer and
+    // composer pane is fixed at z-30, which caps everything inside it (the
+    // email source dialog, the More panel) at 30. Dialogs at the root are
+    // z-50 and up. From md up the floating Compose button is z-40.
+    expect(layer("")).toHaveLength(1);
+    expect(layer("")[0]).toBeLessThan(30);
+    expect(layer("md:")).toHaveLength(1);
+    expect(layer("md:")[0]).toBeGreaterThanOrEqual(40);
+    expect(layer("md:")[0]).toBeLessThan(50);
+  });
+
   it("clears the mobile bottom bar and Compose button, and keeps the desktop corner", () => {
     render(<PWAInstallPrompt />);
     offerInstall();

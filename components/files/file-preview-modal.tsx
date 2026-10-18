@@ -292,7 +292,7 @@ export function FilePreviewModal({ name, onClose, onDownload, getFileContent }: 
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => void onDownload()}>
             <Download className="w-4 h-4" />
           </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose} aria-label={t("close_preview")}>
             <X className="w-4 h-4" />
           </Button>
         </div>

@@ -28,6 +28,7 @@ export function PlaceholderFillModal({
   onClose,
 }: PlaceholderFillModalProps) {
   const t = useTranslations('templates');
+  const tCommon = useTranslations('common');
 
   const [values, setValues] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
@@ -67,6 +68,7 @@ export function PlaceholderFillModal({
           <button
             onClick={onClose}
             className="p-1.5 rounded-md hover:bg-muted transition-colors duration-150 text-muted-foreground hover:text-foreground"
+            aria-label={tCommon('close')}
           >
             <X className="w-5 h-5" />
           </button>

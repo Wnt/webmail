@@ -103,7 +103,7 @@ export function ContactImportDialog({
     <div className="flex flex-col h-full">
       <div className="px-6 py-4 border-b border-border flex items-center justify-between">
         <h2 className="text-lg font-semibold">{t("import.title")}</h2>
-        <Button variant="ghost" size="icon" onClick={onClose} className="h-8 w-8">
+        <Button variant="ghost" size="icon" onClick={onClose} className="h-8 w-8" aria-label={t("import.close")}>
           <X className="w-4 h-4" />
         </Button>
       </div>

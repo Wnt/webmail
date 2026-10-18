@@ -30,6 +30,7 @@ export function SubAddressHelper({
   disabled = false,
 }: SubAddressHelperProps) {
   const t = useTranslations('identities.sub_address');
+  const tCommon = useTranslations('common');
   const [isOpen, setIsOpen] = useState(false);
   const [tag, setTag] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -150,6 +151,7 @@ export function SubAddressHelper({
             <button
               onClick={() => setIsOpen(false)}
               className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+              aria-label={tCommon('close')}
             >
               <X className="w-4 h-4" />
             </button>

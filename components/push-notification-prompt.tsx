@@ -17,7 +17,7 @@ import {
 import { resolveActiveRelayUrl } from "@/lib/push-relays";
 import { currentRelayUrl } from "@/lib/push-relay-current";
 import { signOutGeneration } from "@/lib/push-signout-state";
-import { CORNER_CARD_POSITION, useComposerOpen } from "@/hooks/use-composer-open";
+import { CORNER_CARD_POSITION, useCornerCardsAside } from "@/hooks/use-composer-open";
 import {
   isPWAInstallPromptVisible,
   PWA_INSTALL_PROMPT_VISIBILITY_EVENT,
@@ -111,7 +111,8 @@ export function PushNotificationPrompt() {
   const userPushRelayUrl = useSettingsStore((state) => state.pushRelayUrl);
 
   const [showPrompt, setShowPrompt] = useState(false);
-  const composing = useComposerOpen();
+  // Hidden, not dismissed, while a composer is open or the welcome card is up.
+  const stepAside = useCornerCardsAside();
   const [isEnabling, setIsEnabling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Session-only dismissal is per account: dismissing on one account must not
@@ -276,7 +277,7 @@ export function PushNotificationPrompt() {
     setShowPrompt(false);
   };
 
-  if (!showPrompt || composing) return null;
+  if (!showPrompt || stepAside) return null;
 
   return (
     <div

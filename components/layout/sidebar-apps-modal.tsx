@@ -235,6 +235,7 @@ interface SidebarAppsModalProps {
 
 export function SidebarAppsModal({ isOpen, onClose }: SidebarAppsModalProps) {
   const t = useTranslations('sidebar_apps');
+  const tCommon = useTranslations('common');
   const { sidebarApps, addSidebarApp, updateSidebarApp, removeSidebarApp } = useSettingsStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -298,6 +299,7 @@ export function SidebarAppsModal({ isOpen, onClose }: SidebarAppsModalProps) {
           <button
             onClick={onClose}
             className="p-1.5 rounded-md hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+            aria-label={tCommon('close')}
           >
             <X className="w-5 h-5" />
           </button>

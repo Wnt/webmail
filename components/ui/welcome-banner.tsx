@@ -8,6 +8,7 @@ import { useRouter } from "@/i18n/navigation";
 import { useTour } from "@/components/tour/tour-provider";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useDeviceDetection } from "@/hooks/use-media-query";
+import { holdWelcomeOpen } from "@/hooks/use-composer-open";
 
 const ONBOARDING_KEY = "onboarding_completed";
 
@@ -58,6 +59,16 @@ export function WelcomeBanner() {
       localStorage.setItem(ONBOARDING_KEY, "true");
     } catch { /* localStorage unavailable */ }
   }, [updateSetting]);
+
+  // While the card is up, the corner cards (install, push onboarding) step
+  // aside: on a phone the two together covered half the list, and on a short
+  // screen the floating one landed on this card. They come in once it is
+  // dismissed (useCornerCardsAside).
+  const shown = visible && !dismissed;
+  useEffect(() => {
+    if (!shown) return;
+    return holdWelcomeOpen();
+  }, [shown]);
 
   useEffect(() => {
     if (!visible) return;

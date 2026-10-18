@@ -19,6 +19,7 @@ interface TemplateManagerModalProps {
 export function TemplateManagerModal({ isOpen, onClose }: TemplateManagerModalProps) {
   const t = useTranslations('templates');
   const tSettings = useTranslations('settings.templates');
+  const tCommon = useTranslations('common');
 
   const {
     templates,
@@ -93,6 +94,7 @@ export function TemplateManagerModal({ isOpen, onClose }: TemplateManagerModalPr
           <button
             onClick={onClose}
             className="p-1.5 rounded-md hover:bg-muted transition-colors duration-150 text-muted-foreground hover:text-foreground"
+            aria-label={tCommon('close')}
           >
             <X className="w-5 h-5" />
           </button>

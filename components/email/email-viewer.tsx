@@ -1030,6 +1030,7 @@ export function EmailViewer({
     }
   };
   const [showSourceModal, setShowSourceModal] = useState(false);
+  const sourceTitleId = useId();
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   // The mobile More panel sits off-canvas with a slide transition. Until
   // the user opens it once, that transition must stay off: on the first
@@ -5698,6 +5699,9 @@ export function EmailViewer({
           onClick={() => setShowSourceModal(false)}
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={sourceTitleId}
             className="bg-background rounded-lg shadow-2xl border border-border w-full max-w-4xl max-h-[90vh] flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
@@ -5705,7 +5709,7 @@ export function EmailViewer({
             <div className="flex items-center justify-between p-4 border-b border-border">
               <div className="flex items-center gap-2">
                 <Code className="w-5 h-5 text-primary" />
-                <h2 className="text-lg font-semibold text-foreground">{t('email_source')}</h2>
+                <h2 id={sourceTitleId} className="text-lg font-semibold text-foreground">{t('email_source')}</h2>
               </div>
               <div className="flex items-center gap-2">
                 <Button
@@ -5722,8 +5726,10 @@ export function EmailViewer({
                   size="icon"
                   onClick={() => setShowSourceModal(false)}
                   className="h-10 w-10 lg:h-8 lg:w-8"
+                  aria-label={tCommon('close')}
+                  title={tCommon('close')}
                 >
-                  <X className="w-4 h-4" />
+                  <X className="w-4 h-4" aria-hidden="true" />
                 </Button>
               </div>
             </div>
@@ -5741,10 +5747,13 @@ export function EmailViewer({
 
     {/* Mobile bottom action bar - pane-scoped inside a Pro pane (the
         viewport `sm:hidden` guard would otherwise hide it there, and
-        `fixed` would span the whole app instead of the pane). */}
+        `fixed` would span the whole app instead of the pane).
+        z-40: under this viewer's dialogs (the email source, z-50) and its
+        More panel (z-60/70). At the dialogs' z-50 it came later in the
+        document and so was painted over the bottom of the source dialog. */}
     {isMobile && !mvMobileViewer && (
       <nav className={cn(
-        "z-50 bg-background border-t border-border overflow-hidden pb-[calc(env(safe-area-inset-bottom)/2)]",
+        "z-40 bg-background border-t border-border overflow-hidden pb-[calc(env(safe-area-inset-bottom)/2)]",
         isPaneScoped ? "absolute bottom-0 left-0 right-0" : "fixed bottom-0 left-0 right-0 sm:hidden",
       )}>
         <div className="flex items-center overflow-x-auto mobile-scroll-hidden" data-mobile-message-bar="">

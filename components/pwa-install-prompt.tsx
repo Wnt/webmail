@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 import { X, Download } from "@/components/icons";
 import { useConfig } from "@/hooks/use-config";
 import { withBasePath } from "@/lib/browser-navigation";
-import { CORNER_CARD_POSITION, useComposerOpen } from "@/hooks/use-composer-open";
+import { CORNER_CARD_POSITION, useCornerCardsAside } from "@/hooks/use-composer-open";
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -30,7 +30,7 @@ export function PWAInstallPrompt() {
   const [showPrompt, setShowPrompt] = useState(false);
   const { appName, faviconUrl, appLogoLightUrl, appLogoDarkUrl } = useConfig();
   const t = useTranslations("pwa_install");
-  const composing = useComposerOpen();
+  const stepAside = useCornerCardsAside();
 
   useEffect(() => {
     if (localStorage.getItem(DISMISSED_KEY)) return;
@@ -82,9 +82,10 @@ export function PWAInstallPrompt() {
     setShowPrompt(false);
   };
 
-  // Hidden, not dismissed, while a composer is open: the card would cover
-  // Send. It comes back when the composer closes.
-  if (!showPrompt || !deferredPrompt || composing) {
+  // Hidden, not dismissed, while a composer is open (the card would cover
+  // Send) or the welcome card is up (one onboarding card at a time). It
+  // comes back when they close.
+  if (!showPrompt || !deferredPrompt || stepAside) {
     return null;
   }
 

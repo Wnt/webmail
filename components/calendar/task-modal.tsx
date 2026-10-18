@@ -46,6 +46,7 @@ export function TaskModal({
   isMobile: _isMobile,
 }: TaskModalProps) {
   const t = useTranslations("calendar");
+  const tCommon = useTranslations("common");
   const isEdit = !!task;
   const titleRef = useRef<HTMLInputElement>(null);
 
@@ -166,7 +167,7 @@ export function TaskModal({
         <h2 className="text-sm font-semibold">
           {isEdit ? t("tasks.edit") : t("tasks.create")}
         </h2>
-        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
+        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose} aria-label={tCommon("close")}>
           <X className="h-4 w-4" />
         </Button>
       </div>
