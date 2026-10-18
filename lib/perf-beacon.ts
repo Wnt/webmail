@@ -1,0 +1,47 @@
+// Fork (Wnt/webmail): what the open-speed beacon may carry (app/api/perf/open,
+// lib/open-timing.ts). Anything outside these fields and values is refused.
+
+const STAGES = new Set(['msg', 'ttfb', 'dcl', 'session', 'data', 'painted']);
+const SOURCES = new Set(['list', 'tap', 'link']);
+const DEVICES = new Set(['phone', 'tablet', 'desktop']);
+const ENGINES = new Set(['webkit', 'blink', 'gecko', 'other']);
+
+export interface OpenBeaconLine {
+  t: string;
+  src: string;
+  dev: string;
+  pwa: boolean;
+  eng: string;
+  unread: boolean | null;
+  st: Record<string, number>;
+  build?: string;
+}
+
+/** The beacon's fields, or null when anything is off (unknown field values are not stored). */
+export function parseOpenBeacon(raw: unknown, now = new Date()): OpenBeaconLine | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const b = raw as Record<string, unknown>;
+  if (b.v !== 1) return null;
+  if (typeof b.src !== 'string' || !SOURCES.has(b.src)) return null;
+  if (typeof b.dev !== 'string' || !DEVICES.has(b.dev)) return null;
+  if (typeof b.eng !== 'string' || !ENGINES.has(b.eng)) return null;
+  if (typeof b.pwa !== 'boolean') return null;
+  if (b.unread !== null && typeof b.unread !== 'boolean' && b.unread !== undefined) return null;
+  if (!b.st || typeof b.st !== 'object' || Array.isArray(b.st)) return null;
+  const st: Record<string, number> = {};
+  for (const [k, v] of Object.entries(b.st as Record<string, unknown>)) {
+    if (!STAGES.has(k)) return null;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 120_000) return null;
+    st[k] = v;
+  }
+  if (st.painted === undefined) return null;
+  if (b.build !== undefined && (typeof b.build !== 'string' || !/^[0-9a-f]{1,12}$/.test(b.build))) return null;
+  return {
+    t: now.toISOString().slice(0, 19) + 'Z',
+    src: b.src, dev: b.dev, pwa: b.pwa, eng: b.eng,
+    unread: typeof b.unread === 'boolean' ? b.unread : null,
+    st,
+    ...(typeof b.build === 'string' ? { build: b.build } : {}),
+  };
+}
+

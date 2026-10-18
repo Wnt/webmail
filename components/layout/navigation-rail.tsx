@@ -207,7 +207,7 @@ export function NavigationRail({
   const { appLogoLightUrl, appLogoDarkUrl } = useConfig();
   const resolvedTheme = useThemeStore((s) => s.resolvedTheme);
   const { supportsCalendar } = useCalendarStore();
-  const { mailboxes } = useEmailStore();
+  const mailboxes = useEmailStore((s) => s.mailboxes);
   const client = useAuthStore((s) => s.client);
   const supportsFiles = client?.supportsFiles() ?? false;
   const supportsContacts = client?.supportsContacts() ?? false;

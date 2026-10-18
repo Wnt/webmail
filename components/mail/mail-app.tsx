@@ -133,6 +133,7 @@ import {
 } from "@/lib/deep-links";
 import { consumePendingDeepLink, subscribePendingDeepLink } from "@/lib/deep-link-handoff";
 import { takeNotificationOpen } from "@/lib/notification-open";
+import { afterBodyPainted, beginOpen, markOpen } from "@/lib/open-timing";
 import { useProInterfaceActive } from "@/components/pro/pro-interface-redirect";
 import type { QuoteHeader } from "@/lib/plugin-types";
 import { useLiteLinkSegments } from "@/hooks/use-lite-link-segments";
@@ -1607,6 +1608,20 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
         });
         return;
       }
+      // A document opened at the link (a notification tap on WebKit, a cold
+      // start) is timed from its own start; a tap the running app opens in
+      // place was started by the worker's message (see the pending-tap check).
+      if (opts?.onLoad) {
+        beginOpen(link.id, 'link', { t0: 0 });
+        const nav = typeof performance !== 'undefined'
+          ? performance.getEntriesByType?.('navigation')?.[0] as PerformanceNavigationTiming | undefined
+          : undefined;
+        if (nav) {
+          markOpen(link.id, 'ttfb', nav.responseStart);
+          if (nav.domContentLoadedEventEnd > 0) markOpen(link.id, 'dcl', nav.domContentLoadedEventEnd);
+        }
+        markOpen(link.id, 'session');
+      }
       setLoadingEmail(true);
       try {
         const email = await fetchEmailContent(activeClient, link.id);
@@ -1614,6 +1629,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
           toast.error(t('deep_link.message_not_found'));
           return;
         }
+        markOpen(link.id, 'data');
         // Fork patch (Wnt/webmail): a message link opens as soon as the
         // session is up (see the deep-link effect). The folder behind it can
         // only be chosen once the folder list and the first list page have
@@ -1816,7 +1832,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     };
     const onVisible = () => { if (document.visibilityState === 'visible') void check(); };
     const onSwMessage = (e: MessageEvent) => {
-      const msg = e.data as { kind?: string; open?: boolean; data?: { kind?: string } } | null;
+      const msg = e.data as { kind?: string; open?: boolean; at?: number; data?: { kind?: string } } | null;
       if (!msg || msg.kind !== 'notificationclick') return;
       // The worker asks the window it brings to the front to open the
       // message in place; answering keeps it from reloading this page at the
@@ -1825,6 +1841,12 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       const inPlace = msg.open === true && msg.data?.kind === 'email';
       if (port) {
         try { port.postMessage({ opening: inPlace }); } catch { /* the worker gave up waiting */ }
+      }
+      const tappedId = (msg.data as { emailId?: unknown } | undefined)?.emailId;
+      if (inPlace && typeof tappedId === 'string' && tappedId) {
+        const at = typeof msg.at === 'number' ? msg.at - performance.timeOrigin : undefined;
+        beginOpen(tappedId, 'tap', { t0: at !== undefined && at <= performance.now() ? at : undefined });
+        markOpen(tappedId, 'msg');
       }
       void check(inPlace);
     };
@@ -1896,9 +1918,17 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       // Never mark as read automatically
       debug.log('email', '[Mark as Read] Never mode - email will stay unread');
     } else if (markAsReadDelay === 0) {
-      // Mark as read instantly
-      debug.log('email', '[Mark as Read] Instant mode - marking as read now');
-      markAsRead(client, selectedEmail.id, true);
+      // Mark as read instantly - but once the body is on screen (or 1.5 s at
+      // the latest), so the write, its store update and the refreshes it sets
+      // off do not compete with showing the message. Moving on before that
+      // still marks it, as before.
+      // Fork (Wnt/webmail): measured, these held the first paint back.
+      debug.log('email', '[Mark as Read] Instant mode - marking as read once shown');
+      const emailId = selectedEmail.id;
+      let marked = false;
+      const mark = () => { if (marked) return; marked = true; markAsRead(client, emailId, true); };
+      const cancel = afterBodyPainted(emailId, mark, 1500);
+      return () => { cancel(); mark(); };
     } else {
       // Mark as read after delay
       debug.log('email', '[Mark as Read] Delayed mode - will mark as read in', markAsReadDelay, 'ms');
@@ -3794,6 +3824,12 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
         && (email.sourceAccountId === undefined || e.sourceAccountId === email.sourceAccountId))
       ?? (email.sourceClientAccountId ? email : undefined);
 
+    // Fork (Wnt/webmail): time this open from the click itself (lib/open-timing.ts).
+    const clickEvent = typeof window !== 'undefined' ? window.event : undefined;
+    const clickAt = clickEvent && typeof clickEvent.timeStamp === 'number' && clickEvent.timeStamp > 0
+      && clickEvent.timeStamp <= performance.now() ? clickEvent.timeStamp : undefined;
+    beginOpen(email.id, 'list', { t0: clickAt, unread: listEmail?.keywords ? !listEmail.keywords.$seen : null });
+
     setLoadingEmail(true);
 
     // On mobile, switch to viewer
@@ -3816,6 +3852,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
 
       const fullEmail = await fetchClient.getEmail(email.id, accountId, { threadId: listEmail?.threadId });
       if (fullEmail) {
+        markOpen(email.id, 'data');
         if (listEmail?.isScheduled) {
           fullEmail.scheduledSendAt = listEmail.scheduledSendAt;
           fullEmail.emailSubmissionId = listEmail.emailSubmissionId;

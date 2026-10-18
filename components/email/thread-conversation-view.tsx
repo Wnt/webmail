@@ -41,6 +41,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { isFilePreviewable, toInertBlob } from "@/lib/file-preview";
 import { useWopiStatus, canWopiOpen } from "@/hooks/use-wopi-status";
 import { useOwnDomainAddress } from "@/hooks/use-own-domain-address";
+import { bodyReady } from "@/lib/open-timing";
 
 interface ThreadConversationViewProps {
   thread: ThreadGroup;
@@ -95,7 +96,7 @@ export function ThreadConversationView({
   const trustedSendersAddressBook = useSettingsStore((state) => state.trustedSendersAddressBook);
   const isTrustedAddressBookSender = useContactStore((state) => state.isTrustedAddressBookSender);
   const addToTrustedSendersBook = useContactStore((state) => state.addToTrustedSendersBook);
-  const { client } = useAuthStore();
+  const client = useAuthStore((s) => s.client);
 
   // Track which emails are expanded (most recent by default)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -264,7 +265,7 @@ function EmailCard({
   const isStarred = email.keywords?.$flagged;
   const [hasBlockedContent, setHasBlockedContent] = useState(false);
   const [cidBlobUrls, setCidBlobUrls] = useState<Record<string, string>>({});
-  const { client } = useAuthStore();
+  const client = useAuthStore((s) => s.client);
 
   // Mark as read when email is expanded
   useEffect(() => {
@@ -505,10 +506,13 @@ function EmailCard({
         a.setAttribute('target', '_blank');
         a.setAttribute('rel', 'noopener noreferrer');
       });
+      // Fork (Wnt/webmail): this card's body is on screen with the next frame
+      // (open timing, deferred mark-as-read - lib/open-timing.ts).
+      bodyReady(email.id);
     } catch {
       // contentDocument may be inaccessible under stricter sandboxes; ignore.
     }
-  }, [t, isDark, allowExternal]);
+  }, [t, isDark, allowExternal, email.id]);
 
   return (
     <div className={cn(

@@ -51,7 +51,9 @@ export function MobileHeader({
   allInboxesSelected = false,
 }: MobileHeaderProps) {
   const t = useTranslations('sidebar');
-  const { toggleSidebar, goBack, sidebarOpen } = useUIStore();
+  const toggleSidebar = useUIStore((s) => s.toggleSidebar);
+  const goBack = useUIStore((s) => s.goBack);
+  const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const mountainView = useSettingsStore((state) => state.interfaceLayout === 'mountain-view');
   // Pane-aware: in Pro split mode the viewport is desktop-wide while the
   // pane is narrow. The Tailwind `lg:hidden` variant alone would never fire

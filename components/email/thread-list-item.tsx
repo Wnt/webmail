@@ -16,6 +16,7 @@ import { useSettingsStore, KEYWORD_PALETTE } from "@/stores/settings-store";
 import { useEffectiveMailLayout } from "@/hooks/use-effective-mail-layout";
 import { accountTintKey, generateAvatarColor } from "@/lib/account-utils";
 import { useUIStore } from "@/stores/ui-store";
+import { useShallow } from "zustand/react/shallow";
 import { useEmailStore } from "@/stores/email-store";
 import { useAccountStore, type AccountEntry } from "@/stores/account-store";
 import { emailKeyFor, getThreadTagIds, getEmailTagIds } from "@/lib/thread-utils";
@@ -293,11 +294,22 @@ const SingleEmailItem = React.forwardRef<HTMLDivElement, SingleEmailItemProps>(
     const isAnswered = email.keywords?.$answered;
     const isForwarded = email.keywords?.$forwarded;
     const showPaperclip = useListHasAttachment(email, loadAttachments);
-    const { selectedMailbox, mailboxes, selectedEmailKeys, toggleEmailSelection, selectRangeEmails, clearSelection, isUnifiedView, unifiedRole } = useEmailStore();
+    // Fork (Wnt/webmail): only what this row shows. A whole-store subscription
+    // re-rendered every row on every store write - opening a message, marking
+    // it read and the count refreshes after it each repainted the whole list.
+    const { selectedMailbox, selectedMailboxRole, isUnifiedView, unifiedRole, isChecked, hasSelection } = useEmailStore(useShallow((s) => ({
+      selectedMailbox: s.selectedMailbox,
+      selectedMailboxRole: s.mailboxes.find(mb => mb.id === s.selectedMailbox)?.role,
+      isUnifiedView: s.isUnifiedView,
+      unifiedRole: s.unifiedRole,
+      isChecked: s.selectedEmailKeys.has(emailKeyFor(email)),
+      hasSelection: s.selectedEmailKeys.size > 0,
+    })));
+    const { toggleEmailSelection, selectRangeEmails, clearSelection } = useEmailStore.getState();
     // In Sent/Drafts folders, show recipient instead of sender (which is always
     // "me"). In aggregate role-views the selected mailbox is virtual → fall back
     // to the unified role so junk-contextual UI and avatar hiding work.
-    const currentMailboxRole = mailboxes.find(mb => mb.id === selectedMailbox)?.role
+    const currentMailboxRole = selectedMailboxRole
       ?? (isUnifiedView ? (unifiedRole ?? undefined) : undefined);
     const showRecipient = currentMailboxRole === 'sent' || currentMailboxRole === 'drafts';
     const sender = showRecipient ? (email.to?.[0] ?? email.from?.[0]) : email.from?.[0];
@@ -318,7 +330,6 @@ const SingleEmailItem = React.forwardRef<HTMLDivElement, SingleEmailItemProps>(
     const account = email.accountId ? getAccountById(email.accountId) : undefined;
     const accountColor = account?.avatarColor;
     const accountDescription = describeAccount(email.accountLabel, account);
-    const isChecked = selectedEmailKeys.has(emailKeyFor(email));
     const isMobile = useUIStore((state) => state.isMobile);
     // The horizontal one-line "focus" layout doesn't fit on narrow screens; fall back to multi-line on mobile.
     const isFocusedMailLayout = mailLayout === 'focus' && !isMobile;
@@ -438,7 +449,7 @@ const SingleEmailItem = React.forwardRef<HTMLDivElement, SingleEmailItemProps>(
         e.preventDefault();
         selectRangeEmails(email);
       } else {
-        if (selectedEmailKeys.size > 0) clearSelection();
+        if (useEmailStore.getState().selectedEmailKeys.size > 0) clearSelection();
         onClick();
       }
     };
@@ -506,7 +517,7 @@ const SingleEmailItem = React.forwardRef<HTMLDivElement, SingleEmailItemProps>(
           style={{ gap: 'var(--density-item-gap)', paddingBlock: mvRow ? undefined : 'var(--density-item-py)', transform: swipeEnabled && offsetX ? `translateX(${offsetX}px)` : undefined, transition: swipeEnabled && offsetX === 0 ? 'transform 200ms ease-out' : undefined }}
         >
           {/* Checkbox - only for extra-compact density (no avatar) while in selection mode */}
-          {!mvRow && density === 'extra-compact' && selectedEmailKeys.size > 0 && (
+          {!mvRow && density === 'extra-compact' && hasSelection && (
             <button
               onClick={handleCheckboxClick}
               role="checkbox"
@@ -788,7 +799,42 @@ const SingleEmailItem = React.forwardRef<HTMLDivElement, SingleEmailItemProps>(
   }
 );
 
-export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemProps>(
+
+/**
+ * Fork (Wnt/webmail): the list regroups its threads on every change of the
+ * email list, which makes new ThreadGroup objects for every row - marking one
+ * message read would still repaint them all. A thread counts as unchanged
+ * when every field is the same value and its message arrays hold the same
+ * message objects (the store replaces only the messages that changed).
+ */
+function sameThreadGroup(a: ThreadGroup, b: ThreadGroup): boolean {
+  if (a === b) return true;
+  const keys = Object.keys(a) as (keyof ThreadGroup)[];
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const k of keys) {
+    const x = a[k] as unknown, y = b[k] as unknown;
+    if (x === y) continue;
+    if (Array.isArray(x) && Array.isArray(y) && x.length === y.length && x.every((v, i) => v === y[i])) continue;
+    return false;
+  }
+  return true;
+}
+
+function threadListItemPropsEqual(prev: ThreadListItemProps, next: ThreadListItemProps): boolean {
+  const keys = Object.keys(prev) as (keyof ThreadListItemProps)[];
+  if (keys.length !== Object.keys(next).length) return false;
+  for (const k of keys) {
+    if (k === 'thread') { if (!sameThreadGroup(prev.thread, next.thread)) return false; continue; }
+    if (prev[k] !== next[k]) return false;
+  }
+  return true;
+}
+
+// Fork (Wnt/webmail): memoised - the list re-renders on every store write
+// (selection, loading flags, counts); a row whose props are unchanged keeps
+// its output. EmailList hands each row stable callbacks and the selected id
+// only when the row holds it.
+export const ThreadListItem = React.memo(React.forwardRef<HTMLDivElement, ThreadListItemProps>(
   function ThreadListItem({
     onOpenAttachment,
     loadAttachments,
@@ -846,7 +892,16 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
       ? formatScheduledSendAt(latestEmail.scheduledSendAt, timeFormat)
       : null;
 
-    const { selectedMailbox, mailboxes, selectedEmailKeys, toggleEmailSelection, selectRangeEmails, clearSelection, isUnifiedView, unifiedRole } = useEmailStore();
+    // Fork (Wnt/webmail): only what this row shows (see SingleEmailItem).
+    const { selectedMailbox, selectedMailboxRole, isUnifiedView, unifiedRole, isChecked, hasSelection } = useEmailStore(useShallow((s) => ({
+      selectedMailbox: s.selectedMailbox,
+      selectedMailboxRole: s.mailboxes.find(mb => mb.id === s.selectedMailbox)?.role,
+      isUnifiedView: s.isUnifiedView,
+      unifiedRole: s.unifiedRole,
+      isChecked: thread.emails.some(e => s.selectedEmailKeys.has(emailKeyFor(e))),
+      hasSelection: s.selectedEmailKeys.size > 0,
+    })));
+    const { toggleEmailSelection, selectRangeEmails, clearSelection } = useEmailStore.getState();
     const showSourceFolder = isUnifiedView && !!latestEmail.sourceFolder;
     const getAccountById = useAccountStore((state) => state.getAccountById);
     const threadAccount = latestEmail.accountId ? getAccountById(latestEmail.accountId) : undefined;
@@ -855,7 +910,7 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
     // In Sent/Drafts folders, show recipient instead of sender (which is always
     // "me"). Aggregate role-views use a virtual selected mailbox → fall back to
     // the unified role so junk-contextual UI and avatar hiding work.
-    const currentMailboxRole = mailboxes.find(mb => mb.id === selectedMailbox)?.role
+    const currentMailboxRole = selectedMailboxRole
       ?? (isUnifiedView ? (unifiedRole ?? undefined) : undefined);
     const showRecipient = currentMailboxRole === 'sent' || currentMailboxRole === 'drafts';
     const displayNames = showRecipient
@@ -901,7 +956,6 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
     const isSelected = selectedEmailId === latestEmail.id ||
       thread.emails.some(e => e.id === selectedEmailId);
 
-    const isChecked = thread.emails.some(e => selectedEmailKeys.has(emailKeyFor(e)));
 
     if (emailCount === 1) {
       return (
@@ -931,6 +985,7 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
 
     // Toggle selection for all emails in this thread.
     const toggleThreadSelection = () => {
+      const { selectedEmailKeys } = useEmailStore.getState();
       const allSelected = thread.emails.every(em => selectedEmailKeys.has(emailKeyFor(em)));
       const newSelection = new Set(selectedEmailKeys);
       thread.emails.forEach(em => {
@@ -973,7 +1028,7 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
       // Mountain View opens the conversation in the reading pane, as Gmail
       // does, rather than unfolding it inside the list.
       if (mvRow) {
-        if (selectedEmailKeys.size > 0) clearSelection();
+        if (useEmailStore.getState().selectedEmailKeys.size > 0) clearSelection();
         onEmailSelect(latestEmail);
         return;
       }
@@ -982,7 +1037,7 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
       if (target.closest('[data-expand-toggle]')) {
         onToggleExpand();
       } else {
-        if (selectedEmailKeys.size > 0) clearSelection();
+        if (useEmailStore.getState().selectedEmailKeys.size > 0) clearSelection();
         if (!isExpanded) {
           onCollapseAllThreads?.();
           onToggleExpand();
@@ -1049,7 +1104,7 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
             style={{ gap: 'var(--density-item-gap)', paddingBlock: mvRow ? undefined : 'var(--density-item-py)' }}
           >
             {/* Checkbox for thread selection - only for extra-compact density (no avatar) while in selection mode */}
-            {!mvRow && density === 'extra-compact' && selectedEmailKeys.size > 0 && (
+            {!mvRow && density === 'extra-compact' && hasSelection && (
               <button
                 onClick={handleThreadCheckboxClick}
                 role="checkbox"
@@ -1410,4 +1465,4 @@ export const ThreadListItem = React.forwardRef<HTMLDivElement, ThreadListItemPro
       </div>
     );
   }
-);
+), threadListItemPropsEqual);

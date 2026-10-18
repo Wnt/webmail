@@ -1,6 +1,8 @@
 "use client";
 
-import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useId } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useId, memo } from "react";
+import { useShallow } from "zustand/react/shallow";
+import { useStableCallbacks } from "@/hooks/use-stable-callbacks";
 import { Email, ContactCard, Mailbox } from "@/lib/jmap/types";
 import { emailExportFilename, attachmentDownloadFilename, attachmentsBundleFilename, DEFAULT_EMAIL_TEMPLATE, DEFAULT_ATTACHMENT_TEMPLATE } from "@/lib/download-filename";
 import { EML_IMPORT_ACCEPT, expandImportableEmails } from "@/lib/eml-import";
@@ -127,6 +129,7 @@ import type { AttachmentInfo, AttachmentPreview } from "@/lib/plugin-types";
 import { useAttachmentDrag, isDragOutSupported, type AttachmentDragSource } from "@/hooks/use-attachment-drag";
 import { useMessageSwipe } from "@/hooks/use-message-swipe";
 import type { IJMAPClient } from "@/lib/jmap/client-interface";
+import { bodyReady } from "@/lib/open-timing";
 
 /** The More menu's two drill-downs: a folder list and a tag list. */
 type MoreMenuSub = 'move' | 'tag' | 'rules';
@@ -787,7 +790,58 @@ function SidebarSection({ icon: Icon, title, children }: { icon: React.Component
   );
 }
 
-export function EmailViewer({
+
+// Fork (Wnt/webmail): sanitized bodies of the last few messages shown, so a
+// repeat open (or a re-render after a keyword change) skips DOMPurify. JMAP
+// message bodies are immutable; the key also carries everything else the
+// result depends on (external-content blocking, resolved cid: URLs).
+type CachedEmailContent = {
+  content: { html: string; isHtml: boolean; hasStyleTag: boolean; externalBlocked: boolean };
+  blockedExternalContent: boolean;
+};
+const EMAIL_CONTENT_CACHE = new Map<string, CachedEmailContent>();
+const EMAIL_CONTENT_CACHE_SIZE = 8;
+function emailContentCacheKey(email: Email, blockExternal: boolean, cidBlobUrls: Record<string, string>): string | null {
+  if (!email.id || !email.bodyValues) return null;
+  const account = email.sourceClientAccountId ?? email.sourceAccountId ?? email.accountId ?? '';
+  const cids = Object.keys(cidBlobUrls).sort().map((k) => `${k}=${cidBlobUrls[k]}`).join('&');
+  return `${account}\u0000${email.id}\u0000${blockExternal ? 1 : 0}\u0000${cids}`;
+}
+function rememberEmailContent(key: string, value: CachedEmailContent) {
+  EMAIL_CONTENT_CACHE.delete(key);
+  EMAIL_CONTENT_CACHE.set(key, value);
+  while (EMAIL_CONTENT_CACHE.size > EMAIL_CONTENT_CACHE_SIZE) {
+    const oldest = EMAIL_CONTENT_CACHE.keys().next().value;
+    if (oldest === undefined) break;
+    EMAIL_CONTENT_CACHE.delete(oldest);
+  }
+}
+
+// Fork (Wnt/webmail): memoised, with the parent's callbacks kept stable
+// (useStableCallbacks): the mail app re-renders on every store write, and the
+// reading pane used to re-render (and re-sanitize) with it - marking the
+// message read, count refreshes, the list's loading flags.
+export function EmailViewer(props: EmailViewerProps) {
+  return <EmailViewerMemo {...useStableCallbacks(props)} />;
+}
+
+function emailViewerPropsEqual(prev: EmailViewerProps, next: EmailViewerProps): boolean {
+  const keys = Object.keys(prev) as (keyof EmailViewerProps)[];
+  if (keys.length !== Object.keys(next).length) return false;
+  for (const k of keys) {
+    const x = prev[k], y = next[k];
+    if (x === y) continue;
+    if (k === 'blobSource' || k === 'mvPosition') {
+      if (x && y && typeof x === 'object' && typeof y === 'object'
+        && Object.keys(x).length === Object.keys(y).length
+        && Object.entries(x).every(([kk, v]) => (y as Record<string, unknown>)[kk] === v)) continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+const EmailViewerMemo = memo(function EmailViewerImpl({
   email,
   blobSource,
   isLoading = false,
@@ -935,8 +989,11 @@ export function EmailViewer({
   // `sm:hidden` must not be trusted - the viewport may be desktop-sized
   // while the pane is phone-sized.
   const isPaneScoped = useIsPaneScoped();
-  const { tabletListVisible } = useUIStore();
-  const { identities, client, isDemoMode, activeAccountId } = useAuthStore();
+  // Fork (Wnt/webmail): selectors, not the whole stores (see EmailViewer below).
+  const tabletListVisible = useUIStore((s) => s.tabletListVisible);
+  const { identities, client, isDemoMode, activeAccountId } = useAuthStore(useShallow((s) => ({
+    identities: s.identities, client: s.client, isDemoMode: s.isDemoMode, activeAccountId: s.activeAccountId,
+  })));
   const activeAccount = useAccountStore((s) => s.accounts.find((a) => a.id === activeAccountId));
   // The standard mail UI supplies message routing for preview/download,
   // inline images, export and attachment drag-out. Other viewer hosts keep
@@ -1938,9 +1995,20 @@ export function EmailViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email, externalContentPolicy, allowExternalContent]);
 
-  // Sanitize and prepare email HTML content
+  // Sanitize and prepare email HTML content.
+  // Fork (Wnt/webmail): keyed on the parts of the message the body is made
+  // of, not on the message object: marking it read (or any keyword change)
+  // replaces the object, which re-ran the whole sanitize pass right after the
+  // open. The sanitized result is also kept for the last few messages, so a
+  // repeat open skips the pass (EMAIL_CONTENT_CACHE).
   const emailContent = useMemo(() => {
     if (!email) return { html: "", isHtml: false, hasStyleTag: false, externalBlocked: false };
+    const cacheKey = emailContentCacheKey(email, shouldBlockExternal, cidBlobUrls);
+    const cached = cacheKey ? EMAIL_CONTENT_CACHE.get(cacheKey) : undefined;
+    if (cached) {
+      if (cached.blockedExternalContent && !hasBlockedContent) setHasBlockedContent(true);
+      return cached.content;
+    }
 
     // Check if we have body values
     if (email.bodyValues) {
@@ -1969,7 +2037,7 @@ export function EmailViewer({
           setHasBlockedContent(true);
         }
 
-        return {
+        const content = {
           html: cleanHtml,
           isHtml: true,
           hasStyleTag: /<style[\s>]/i.test(htmlContent),
@@ -1979,6 +2047,8 @@ export function EmailViewer({
           // can't phone home. Cleared once the user allows / trusts.
           externalBlocked: shouldBlockExternal,
         };
+        if (cacheKey) rememberEmailContent(cacheKey, { content, blockedExternalContent });
+        return content;
       }
 
       // Use text content if available (either as fallback or when HTML is minimal)
@@ -2026,7 +2096,7 @@ export function EmailViewer({
     // intentionally trigger a fresh srcDoc - `shouldBlockExternal` carries that
     // change in, and re-reads the trust selectors on the way.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [email, shouldBlockExternal, cidBlobUrls, t]);
+  }, [email?.id, email?.bodyValues, email?.htmlBody, email?.textBody, email?.attachments, email?.preview, shouldBlockExternal, cidBlobUrls, t]);
 
   // Override email content with S/MIME decrypted content when available
   const effectiveEmailContent = useMemo(() => {
@@ -2500,6 +2570,16 @@ export function EmailViewer({
   // (e.g. calendar-only invites) - not "still loading".
   const hasBodyParts = (email?.textBody?.length ?? 0) > 0 || (email?.htmlBody?.length ?? 0) > 0;
   const isBodyLoading = isLoading || (hasBodyParts && (!email?.bodyValues || Object.keys(email.bodyValues).length === 0));
+  // Plain-text bodies render inline (no iframe): sanitized once per body, and
+  // on screen as soon as they are committed.
+  const plainTextBodyHtml = useMemo(
+    () => (effectiveEmailContent.isHtml ? '' : sanitizePlainTextRenderedHtml(effectiveEmailContent.html)),
+    [effectiveEmailContent.isHtml, effectiveEmailContent.html],
+  );
+  const plainTextShown = !!email && !isBodyLoading && !effectiveEmailContent.isHtml;
+  useEffect(() => {
+    if (plainTextShown && email?.id) bodyReady(email.id);
+  }, [plainTextShown, email?.id, plainTextBodyHtml]);
 
   // Gates the quick reply on the iframe having loaded the current srcDoc, so
   // it doesn't flash in below a still-resizing iframe.
@@ -2634,6 +2714,9 @@ export function EmailViewer({
         }, 200);
         window.setTimeout(() => window.clearInterval(poll), 2400);
         setIframeReady(true);
+        // Fork (Wnt/webmail): the body is wired up; the next frame shows it
+        // (open timing, deferred mark-as-read - lib/open-timing.ts).
+        if (email?.id) bodyReady(email.id);
 
         // Hide images that fail to load (dead/mixed-content/unreachable external
         // URLs) rather than leaving the browser's broken-image placeholder and
@@ -5544,7 +5627,7 @@ export function EmailViewer({
               <div
                 className="email-content-text text-foreground"
                 dir="auto"
-                dangerouslySetInnerHTML={{ __html: sanitizePlainTextRenderedHtml(effectiveEmailContent.html) }}
+                dangerouslySetInnerHTML={{ __html: plainTextBodyHtml }}
                 style={{
                   ...(plainTextFont === 'mono' && { fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace' }),
                   fontSize: '14px',
@@ -5902,4 +5985,4 @@ export function EmailViewer({
 
     </div>
   );
-}
+}, emailViewerPropsEqual);

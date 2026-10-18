@@ -778,6 +778,8 @@ async function writeNotifiedIds(accountId, ids) {
 async function handleNotificationClick(event) {
   const data = event.notification.data || {};
   const tag = event.notification.tag || "";
+  // Fork patch (Wnt/webmail): when the tap happened, for the app's open timing.
+  const clickedAt = Date.now();
 
   if (data.kind === "protocol-mailto-focus") {
     return handleMailtoFocusNotificationClick();
@@ -811,7 +813,7 @@ async function handleNotificationClick(event) {
   let opening = Promise.resolve(false);
   for (const client of allClients) {
     if (client === front && opensMessage) {
-      opening = askClientToOpen(client, { kind: "notificationclick", tag, data, open: true });
+      opening = askClientToOpen(client, { kind: "notificationclick", tag, data, open: true, at: clickedAt });
       continue;
     }
     try {

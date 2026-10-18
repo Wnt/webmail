@@ -9,6 +9,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Paperclip, Star, Circle, CheckSquare, Square, Reply, Forward } from "@/components/icons";
 import { useEmailDrag } from "@/hooks/use-email-drag";
 import { useLongPress } from "@/hooks/use-long-press";
+import { useShallow } from "zustand/react/shallow";
 import { useEmailStore } from "@/stores/email-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useUIStore } from "@/stores/ui-store";
@@ -45,9 +46,14 @@ export function ThreadEmailItem({
   // header pools them, so without this they disappear on the way in.
   const tagIds = sortTagIds(getEmailTagIds(email.keywords));
   const sender = email.from?.[0];
-  const { selectedMailbox, selectedEmailKeys, toggleEmailSelection, selectRangeEmails, clearSelection } = useEmailStore();
+  // Fork (Wnt/webmail): only what this row shows (see thread-list-item.tsx).
+  const { selectedMailbox, isChecked, hasSelection } = useEmailStore(useShallow((s) => ({
+    selectedMailbox: s.selectedMailbox,
+    isChecked: s.selectedEmailKeys.has(emailKeyFor(email)),
+    hasSelection: s.selectedEmailKeys.size > 0,
+  })));
+  const { toggleEmailSelection, selectRangeEmails, clearSelection } = useEmailStore.getState();
   const density = useSettingsStore((state) => state.density);
-  const isChecked = selectedEmailKeys.has(emailKeyFor(email));
 
   const { dragHandlers, isDragging } = useEmailDrag({
     email,
@@ -84,7 +90,7 @@ export function ThreadEmailItem({
       e.preventDefault();
       selectRangeEmails(email);
     } else {
-      if (selectedEmailKeys.size > 0) clearSelection();
+      if (useEmailStore.getState().selectedEmailKeys.size > 0) clearSelection();
       onClick?.();
     }
   };
@@ -118,7 +124,7 @@ export function ThreadEmailItem({
     >
       <div className="flex items-start gap-3">
         {/* Checkbox - only visible when in selection mode */}
-        {selectedEmailKeys.size > 0 && (
+        {hasSelection && (
           <button
             onClick={handleCheckboxClick}
             className={cn(

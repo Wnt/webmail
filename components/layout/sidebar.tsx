@@ -1,6 +1,8 @@
 "use client";
 
-import { useState, useEffect, useMemo, Fragment, ReactNode } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, memo, Fragment, ReactNode } from "react";
+import { useShallow } from "zustand/react/shallow";
+import { useStableCallbacks } from "@/hooks/use-stable-callbacks";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { PluginSlot } from "@/components/plugins/plugin-slot";
@@ -514,7 +516,50 @@ function SidebarSectionHeader({
   );
 }
 
-function MailboxTreeItem({
+/**
+ * Fork (Wnt/webmail): the same folder ids. The expanded-folder set is re-read
+ * whenever the folder list changes (a count, after every open); keeping the
+ * same Set when nothing changed lets the memoised rows below skip.
+ */
+function sameIdSet(prev: Set<string>, ids: unknown): boolean {
+  if (!Array.isArray(ids)) return false;
+  const next = new Set(ids);
+  if (next.size !== prev.size) return false;
+  for (const id of next) if (!prev.has(id as string)) return false;
+  return true;
+}
+
+/**
+ * Fork (Wnt/webmail): the folder tree is rebuilt from the folder list, so a
+ * count change on one folder made new nodes for all of them. A node counts as
+ * unchanged when its own fields are the same values and its children are.
+ */
+function sameMailboxNode(a: MailboxNode, b: MailboxNode): boolean {
+  if (a === b) return true;
+  const keys = Object.keys(a) as (keyof MailboxNode)[];
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const k of keys) {
+    if (k === 'children') {
+      if (a.children.length !== b.children.length || !a.children.every((c, i) => sameMailboxNode(c, b.children[i]))) return false;
+      continue;
+    }
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
+
+type MailboxTreeItemProps = Parameters<typeof MailboxTreeItemImpl>[0];
+const MailboxTreeItem = memo(MailboxTreeItemImpl, (prev: MailboxTreeItemProps, next: MailboxTreeItemProps) => {
+  const keys = Object.keys(prev) as (keyof MailboxTreeItemProps)[];
+  if (keys.length !== Object.keys(next).length) return false;
+  for (const k of keys) {
+    if (k === 'node') { if (!sameMailboxNode(prev.node, next.node)) return false; continue; }
+    if (prev[k] !== next[k]) return false;
+  }
+  return true;
+});
+
+function MailboxTreeItemImpl({
   node,
   selectedMailbox,
   expandedFolders,
@@ -760,7 +805,7 @@ function TagItem({
 
 function DemoBanner() {
   const t = useTranslations('sidebar');
-  const { isDemoMode, loginDemo } = useAuthStore();
+  const { isDemoMode, loginDemo } = useAuthStore(useShallow((s) => ({ isDemoMode: s.isDemoMode, loginDemo: s.loginDemo })));
   const { startTour, resetTourCompletion } = useTour();
   const router = useRouter();
   const [isResetting, setIsResetting] = useState(false);
@@ -842,7 +887,14 @@ function VacationBanner() {
   );
 }
 
-export function Sidebar({
+// Fork (Wnt/webmail): memoised, with the parent's callbacks kept stable
+// (useStableCallbacks), so the mail app's renders for the message pane - an
+// open, its loading flags - skip the sidebar entirely.
+export function Sidebar(props: SidebarProps) {
+  return <SidebarMemo {...useStableCallbacks(props)} />;
+}
+
+const SidebarMemo = memo(function SidebarImpl({
   mailboxes = [],
   selectedMailbox = "",
   selectedKeyword = null,
@@ -880,7 +932,10 @@ export function Sidebar({
   mvShell = false,
 }: SidebarProps) {
   const router = useRouter();
-  const { sidebarCollapsed, toggleSidebarCollapsed } = useUIStore();
+  // Fork (Wnt/webmail): selectors, not the whole stores - the sidebar
+  // re-rendered on every email-store write (opening a message, marking it
+  // read, loading flags), all of its folder rows with it.
+  const { sidebarCollapsed, toggleSidebarCollapsed } = useUIStore(useShallow((s) => ({ sidebarCollapsed: s.sidebarCollapsed, toggleSidebarCollapsed: s.toggleSidebarCollapsed })));
   // Mountain View's collapsed rail is a peek, not a commitment: putting the pointer on
   // it slides the full list back out over the message list and takes it away
   // again on leaving, so a folder two clicks deep costs no clicks at all. It
@@ -889,7 +944,7 @@ export function Sidebar({
   const [railHovered, setRailHovered] = useState(false);
   const hoverExpanded = mvShell && sidebarCollapsed && railHovered;
   const isCollapsed = sidebarCollapsed && !hoverExpanded;
-  const { primaryIdentity: _primaryIdentity, activeAccountId } = useAuthStore();
+  const activeAccountId = useAuthStore((s) => s.activeAccountId);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [expandedTags, setExpandedTags] = useState<Set<string>>(new Set());
   const [showAllTags, setShowAllTags] = useState(false);
@@ -963,7 +1018,7 @@ export function Sidebar({
   const showUnified =
     (multiAccountMode || enableUnifiedMailbox) &&
     (crossAccountActive || (includeGroupInUnified && hasGroupInboxes) || anyCrossViewEnabled);
-  const { unifiedCounts } = useEmailStore();
+  const unifiedCounts = useEmailStore((s) => s.unifiedCounts);
   // While the other logins are still reconnecting after a load, the unified
   // counts cover only the ones already back: say how many, so a partial total
   // is not read as the whole. Gone as soon as the restore finishes, whatever
@@ -980,7 +1035,7 @@ export function Sidebar({
     if (stored) {
       try {
         const parsed = JSON.parse(stored);
-        setExpandedFolders(new Set(parsed));
+        setExpandedFolders((prev) => sameIdSet(prev, parsed) ? prev : new Set(parsed));
       } catch (e) {
         debug.error('Failed to parse expanded mailboxes:', e);
       }
@@ -996,11 +1051,12 @@ export function Sidebar({
         }
         return ids;
       };
-      setExpandedFolders(new Set(collectExpandable(tree)));
+      const ids = collectExpandable(tree);
+      setExpandedFolders((prev) => sameIdSet(prev, ids) ? prev : new Set(ids));
     }
   }, [mailboxes]);
 
-  const handleToggleExpand = (mailboxId: string) => {
+  const handleToggleExpand = useCallback((mailboxId: string) => {
     setExpandedFolders((prev) => {
       const next = new Set(prev);
       if (next.has(mailboxId)) {
@@ -1013,7 +1069,7 @@ export function Sidebar({
       } catch { /* storage full or unavailable */ }
       return next;
     });
-  };
+  }, []);
 
   useEffect(() => {
     const stored = localStorage.getItem('expandedTags');
@@ -1052,7 +1108,7 @@ export function Sidebar({
   // so it does not appear twice. (#495)
   const isServerScheduledNode = (n: MailboxNode) => showScheduledMailbox && n.role === 'scheduled';
 
-  const mailboxTree = buildMailboxTree(mailboxes);
+  const mailboxTree = useMemo(() => buildMailboxTree(mailboxes), [mailboxes]);
   const ownTree = mailboxTree.filter(n => !n.id.startsWith('shared-account-') && !isServerScheduledNode(n));
   const sharedAccounts = mailboxTree.filter(n => n.id.startsWith('shared-account-'));
 
@@ -1256,11 +1312,13 @@ export function Sidebar({
     menuRef: mailboxMenuRef,
   } = useContextMenu<MailboxContextTarget>();
 
-  const handleMailboxContextMenu = (e: React.MouseEvent, node: MailboxNode) => {
-    const mailbox = mailboxes.find(mb => mb.id === node.id);
+  const contextMenuLatest = useRef({ mailboxes, openMailboxContextMenu });
+  contextMenuLatest.current = { mailboxes, openMailboxContextMenu };
+  const handleMailboxContextMenu = useCallback((e: React.MouseEvent, node: MailboxNode) => {
+    const mailbox = contextMenuLatest.current.mailboxes.find(mb => mb.id === node.id);
     if (!mailbox) return;
-    openMailboxContextMenu(e, { kind: "mailbox", mailbox, hasChildren: node.children.length > 0 });
-  };
+    contextMenuLatest.current.openMailboxContextMenu(e, { kind: "mailbox", mailbox, hasChildren: node.children.length > 0 });
+  }, []);
 
   const handleFoldersHeaderContextMenu = (e: React.MouseEvent) => {
     openMailboxContextMenu(e, { kind: "folders-section" });
@@ -1719,4 +1777,4 @@ export function Sidebar({
       />
     </div>
   );
-}
+});

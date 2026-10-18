@@ -37,7 +37,7 @@ export function useTour() {
 export function TourProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { isDemoMode } = useAuthStore();
+  const isDemoMode = useAuthStore((s) => s.isDemoMode);
   const { supportsCalendar } = useCalendarStore();
   const calendarEnabled = usePolicyStore((s) => s.isFeatureEnabled('calendarEnabled'));
   const { supportsWebDAV } = useWebDAVStore();
