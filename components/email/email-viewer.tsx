@@ -125,6 +125,7 @@ import { ResizeHandle } from "@/components/layout/resize-handle";
 import { emailHooks, uiHooks, renderHooks } from "@/lib/plugin-hooks";
 import type { AttachmentInfo, AttachmentPreview } from "@/lib/plugin-types";
 import { useAttachmentDrag, isDragOutSupported, type AttachmentDragSource } from "@/hooks/use-attachment-drag";
+import { useMessageSwipe } from "@/hooks/use-message-swipe";
 import type { IJMAPClient } from "@/lib/jmap/client-interface";
 
 /** The More menu's two drill-downs: a folder list and a tag list. */
@@ -2545,6 +2546,21 @@ export function EmailViewer({
     anchor.remove();
   }, []);
 
+  // Phone: swipe sideways between messages instead of previous / next buttons.
+  // The body's frame is wired in handleIframeLoad below (attachFrame).
+  const swipeRootRef = useRef<HTMLDivElement>(null);
+  const swipeHintLeftRef = useRef<HTMLDivElement>(null);
+  const swipeHintRightRef = useRef<HTMLDivElement>(null);
+  const { attachFrame: attachSwipeFrame } = useMessageSwipe({
+    enabled: isMobile,
+    rootRef: swipeRootRef,
+    hintLeftRef: swipeHintLeftRef,
+    hintRightRef: swipeHintRightRef,
+    onNext: onNavigateNext,
+    onPrev: onNavigatePrev,
+    resetKey: email?.id ?? null,
+  });
+
   const handleIframeLoad = useCallback(() => {
     const iframe = iframeRef.current;
     if (!iframe) return;
@@ -2675,11 +2691,14 @@ export function EmailViewer({
         };
         doc.addEventListener('click', onLinkClick, true);
 
+        // Touches on the body land in this document, not ours: the swipe
+        // between messages listens here too (passive, host-side listeners).
+        attachSwipeFrame(doc, iframe);
       }
     } catch {
       // Cross-origin restrictions - iframe will still display content
     }
-  }, [isDark, effectiveEmailContent.externalBlocked, email?.id, t, openCidPartLink]);
+  }, [isDark, effectiveEmailContent.externalBlocked, email?.id, t, openCidPartLink, attachSwipeFrame]);
 
   // Wire up the iframe as soon as its sandboxed document has parsed, rather than
   // waiting for the iframe 'load' event. 'load' also waits on every subresource,
@@ -3097,32 +3116,6 @@ export function EmailViewer({
           >
             <ChevronLeft className="w-5 h-5" />
           </Button>
-        )}
-        {showBackButton && mvMobileViewer && (
-          <>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onNavigatePrev}
-              disabled={!onNavigatePrev}
-              className="h-9 w-9 flex-shrink-0"
-              aria-label={t('tooltips.previous')}
-              title={t('tooltips.previous')}
-            >
-              <ChevronUp className="w-5 h-5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onNavigateNext}
-              disabled={!onNavigateNext}
-              className="h-9 w-9 flex-shrink-0"
-              aria-label={t('tooltips.next')}
-              title={t('tooltips.next')}
-            >
-              <ChevronDown className="w-5 h-5" />
-            </Button>
-          </>
         )}
         {isScheduled && canCancelScheduled && (
           <>
@@ -4151,8 +4144,25 @@ export function EmailViewer({
       {/* Email Content Area. Mountain View reads the conversation on one plain
           sheet, so the reply buttons under the message sit on the page colour
           rather than on a tinted strip. */}
-      <div className={cn("flex-1 overflow-auto overscroll-contain", mvViewer || mvMobileViewer ? "bg-background" : "bg-muted/30", isMobile && !mvMobileViewer && "pb-[calc(3.25rem+env(safe-area-inset-bottom)/2)] sm:pb-0")}>
+      <div
+        ref={swipeRootRef}
+        data-message-swipe={isMobile ? "" : undefined}
+        className={cn("flex-1 overflow-auto overscroll-contain", mvViewer || mvMobileViewer ? "bg-background" : "bg-muted/30", isMobile && !mvMobileViewer && "pb-[calc(3.25rem+env(safe-area-inset-bottom)/2)] sm:pb-0")}
+      >
       <div className="min-h-full flex flex-col">
+
+      {/* Phone: previous / next are a sideways swipe; these keep them
+          reachable for VoiceOver and other screen readers. */}
+      {isMobile && (
+        <div className="sr-only" data-message-nav-sr="">
+          <button type="button" onClick={onNavigatePrev} disabled={!onNavigatePrev} aria-label={t('tooltips.previous')}>
+            {t('tooltips.previous')}
+          </button>
+          <button type="button" onClick={onNavigateNext} disabled={!onNavigateNext} aria-label={t('tooltips.next')}>
+            {t('tooltips.next')}
+          </button>
+        </div>
+      )}
 
       {/* Mountain View: the conversation's earlier messages, folded. */}
       {mvViewer && mvBefore.length > 0 && (
@@ -5735,19 +5745,7 @@ export function EmailViewer({
         "z-50 bg-background border-t border-border overflow-hidden pb-[calc(env(safe-area-inset-bottom)/2)]",
         isPaneScoped ? "absolute bottom-0 left-0 right-0" : "fixed bottom-0 left-0 right-0 sm:hidden",
       )}>
-        <div className="flex items-center overflow-x-auto mobile-scroll-hidden">
-          <button
-            onClick={onNavigatePrev}
-            disabled={!onNavigatePrev}
-            className={cn(
-              "flex flex-col items-center justify-center gap-1 py-2 px-1 min-h-[44px] grow shrink-0 basis-[64px] transition-colors duration-150",
-              onNavigatePrev ? "text-muted-foreground active:text-foreground" : "text-muted-foreground/30"
-            )}
-            aria-label={t('tooltips.previous')}
-          >
-            <ChevronLeft className="w-5 h-5" />
-            <span className="text-[10px] font-medium leading-tight truncate max-w-full">{t('previous')}</span>
-          </button>
+        <div className="flex items-center overflow-x-auto mobile-scroll-hidden" data-mobile-message-bar="">
           {isDraft && onEditDraft ? (
             <button
               onClick={() => onEditDraft()}
@@ -5784,20 +5782,22 @@ export function EmailViewer({
             <span className="text-[10px] font-medium leading-tight truncate max-w-full">{t('forward')}</span>
           </button>
           </>)}
-          <button
-            onClick={onNavigateNext}
-            disabled={!onNavigateNext}
-            className={cn(
-              "flex flex-col items-center justify-center gap-1 py-2 px-1 min-h-[44px] grow shrink-0 basis-[64px] transition-colors duration-150",
-              onNavigateNext ? "text-muted-foreground active:text-foreground" : "text-muted-foreground/30"
-            )}
-            aria-label={t('tooltips.next')}
-          >
-            <ChevronRight className="w-5 h-5" />
-            <span className="text-[10px] font-medium leading-tight truncate max-w-full">{t('next')}</span>
-          </button>
         </div>
       </nav>
+    )}
+
+    {/* Phone: the swipe's hint chips at the edges (opacity set by useMessageSwipe). */}
+    {isMobile && (
+      <>
+        <div ref={swipeHintLeftRef} aria-hidden="true" data-swipe-hint="prev" style={{ opacity: 0 }}
+          className="pointer-events-none fixed left-2 top-1/2 -translate-y-1/2 z-40 grid place-items-center w-10 h-10 rounded-full bg-background/90 border border-border shadow-sm text-muted-foreground transition-colors data-[ready=true]:bg-primary data-[ready=true]:text-primary-foreground">
+          <ChevronLeft className="w-5 h-5" />
+        </div>
+        <div ref={swipeHintRightRef} aria-hidden="true" data-swipe-hint="next" style={{ opacity: 0 }}
+          className="pointer-events-none fixed right-2 top-1/2 -translate-y-1/2 z-40 grid place-items-center w-10 h-10 rounded-full bg-background/90 border border-border shadow-sm text-muted-foreground transition-colors data-[ready=true]:bg-primary data-[ready=true]:text-primary-foreground">
+          <ChevronRight className="w-5 h-5" />
+        </div>
+      </>
     )}
 
     {/* Plugin Detail Sidebar - resizable, collapsible */}
