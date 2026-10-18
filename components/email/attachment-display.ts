@@ -1,4 +1,5 @@
 import { File, FileArchive, FileAudio, FileImage, FileText, FileVideo } from "@/components/icons";
+import { stripBidiControls } from "@/lib/bidi";
 
 // Helper function to get file icon based on mime type or extension
 export const getFileIcon = (name?: string, type?: string) => {
@@ -49,7 +50,9 @@ const MIME_TYPE_LABELS: Record<string, string> = {
 };
 
 export const getAttachmentDisplayName = (name: string | null | undefined, mimeType?: string): string => {
-  if (name) return name;
+  // Without directional overrides, which would show `report\u202Efdp.exe`
+  // as `reportexe.pdf` (upstream 29b33eb4; the download name is cleaned separately).
+  if (name) return stripBidiControls(name);
   if (mimeType) {
     const label = MIME_TYPE_LABELS[mimeType.toLowerCase()];
     if (label) return label;
