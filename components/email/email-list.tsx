@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useEmailStore, ArchiveMailboxNotFoundError, resolveSelectedEmails } from "@/stores/email-store";
 import { useAuthStore } from "@/stores/auth-store";
+import { attachOpenPrefetch, watchKeptEmails } from "@/lib/open-prefetch";
 import { useAccountStore } from "@/stores/account-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useEffectiveMailLayout } from "@/hooks/use-effective-mail-layout";
@@ -246,6 +247,20 @@ export function EmailList({
 
   const [isProcessing, setIsProcessing] = useState(false);
   const parentRef = useRef<HTMLDivElement>(null);
+  // Fork (Wnt/webmail): the mouse resting on a row, or a finger held still on
+  // it, fetches its message and sanitizes its body before the click
+  // (lib/open-prefetch.ts); the push worker's kept messages are sanitized
+  // ahead too.
+  const prefetchRowsRef = useRef(emails);
+  prefetchRowsRef.current = emails;
+  const prefetchClientRef = useRef(client);
+  prefetchClientRef.current = client;
+  useEffect(() => {
+    watchKeptEmails();
+    const el = parentRef.current;
+    if (!el || isScheduledView) return;
+    return attachOpenPrefetch(el, (id) => prefetchRowsRef.current.find((e) => e.id === id), () => prefetchClientRef.current);
+  }, [isScheduledView]);
   // The header sits in the scroll container above the rows, so the
   // virtualizer has to know how far down the first row starts (its
   // scrollMargin), or it would draw the rows for a scroll position off by the

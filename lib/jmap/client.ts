@@ -2491,29 +2491,38 @@ export class JMAPClient implements IJMAPClient {
    */
   primeEmail(email: Email, accountId?: string): void {
     if (!email?.id || !email.bodyValues) return;
-    this.primedEmails.set(`${accountId || this.accountId}\u0000${email.id}`, { email, at: Date.now() });
+    this.primedEmails.set(`${accountId || this.accountId}\u0000${email.id}`, { email, at: Date.now(), maxAgeMs: PRIMED_EMAIL_MAX_AGE_MS });
   }
 
   /**
    * Fork (Wnt/webmail): starts the Email/get getEmail would send for
    * `emailId`, ahead of the code that shows it - a page opened at a message
    * link asks for it as soon as the session is up, while the app is still
-   * drawing. With `kept` (the push worker's copy of it) nothing is sent.
-   * getEmail then takes this (or waits for it) instead of asking again. Used
-   * once, within PRIMED_EMAIL_MAX_AGE_MS. The request leaves before this
-   * returns.
+   * drawing; a list row asks for its message while the pointer rests on it.
+   * With `kept` (the push worker's copy of it) nothing is sent. getEmail then
+   * takes this (or waits for it) instead of asking again. Used once, within
+   * `maxAgeMs` (default PRIMED_EMAIL_MAX_AGE_MS); a second call meanwhile
+   * returns the first one's. The request leaves before this returns.
    */
-  prefetchEmail(emailId: string, kept?: Email | null): void {
-    if (!emailId || !this.apiUrl) return;
+  prefetchEmail(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number }): Promise<Email | null> | null {
+    if (!emailId || !this.apiUrl) return null;
     const accountId = this.accountId;
     const key = `${accountId}\u0000${emailId}`;
-    if (this.primedEmails.has(key)) return;
+    const maxAgeMs = opts?.maxAgeMs ?? PRIMED_EMAIL_MAX_AGE_MS;
+    // Copies nobody opened in time go (each holds a whole message).
+    const now = Date.now();
+    for (const [k, entry] of this.primedEmails) if (now - entry.at >= entry.maxAgeMs) this.primedEmails.delete(k);
+    const existing = this.primedEmails.get(key);
+    if (existing && Date.now() - existing.at < existing.maxAgeMs) {
+      return existing.email ? Promise.resolve(existing.email) : existing.pending ?? null;
+    }
     if (kept?.id === emailId && kept.bodyValues) {
-      this.primedEmails.set(key, { email: kept, at: Date.now() });
-      return;
+      this.primedEmails.set(key, { email: kept, at: Date.now(), maxAgeMs });
+      return Promise.resolve(kept);
     }
     const pending = this.fetchFullEmail(accountId, emailId).catch(() => null);
-    this.primedEmails.set(key, { pending, at: Date.now() });
+    this.primedEmails.set(key, { pending, at: Date.now(), maxAgeMs });
+    return pending;
   }
 
   /** One Email/get with the properties and body options getEmail shows a message with. */
@@ -2558,7 +2567,7 @@ export class JMAPClient implements IJMAPClient {
       const primed = this.primedEmails.get(primedKey);
       this.primedEmails.delete(primedKey);
       let email: Email | null | undefined;
-      if (primed && Date.now() - primed.at < PRIMED_EMAIL_MAX_AGE_MS) {
+      if (primed && Date.now() - primed.at < primed.maxAgeMs) {
         email = primed.email ?? (primed.pending ? await primed.pending : null);
       }
       if (!email) {
@@ -8857,7 +8866,7 @@ export class JMAPClient implements IJMAPClient {
   /** getThreadEmails calls getEmail may reuse (see getEmail), by account and thread. */
   private threadFetches = new Map<string, { at: number; promise: Promise<Email[]> }>();
   // Fork (Wnt/webmail): messages handed in by primeEmail, keyed by account and id.
-  private primedEmails = new Map<string, { email?: Email; pending?: Promise<Email | null>; at: number }>();
+  private primedEmails = new Map<string, { email?: Email; pending?: Promise<Email | null>; at: number; maxAgeMs: number }>();
   // Shared/secondary accounts get no SSE push (Stalwart pushes the primary
   // account only), so poll them on a slow cadence alongside SSE to keep their
   // folder + unified/All-Mail counters from going stale between focus events.

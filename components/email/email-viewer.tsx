@@ -8,6 +8,7 @@ import { emailExportFilename, attachmentDownloadFilename, attachmentsBundleFilen
 import { EML_IMPORT_ACCEPT, expandImportableEmails } from "@/lib/eml-import";
 import { applyNewTabToAnchor, emailIframeCsp, escapeHtml, isOpenableLinkHref, plainTextToSafeHtml, sanitizeEmailBodyForIframe, sanitizeEmailHtml, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
 import { getRenderableHtmlBody } from "@/lib/email-body-selection";
+import { cachedEmailContent, emailContentCacheKey, prepareEmailHtml, shouldBlockExternalFor } from "@/lib/email-content-cache";
 import { collectReferencedCids, isEmbeddedInBody } from "@/lib/attachment-visibility";
 import { collapsePlainTextQuotes, setupQuoteCollapse } from "@/lib/quote-collapse";
 import { DARK_PENDING_CLASS, applyEmailDarkMode, emailColorScheme, emailDarkModeCss, emailHasNativeDarkMode as htmlHasNativeDarkMode, resolveColorSchemeMedia } from "@/lib/email-dark-mode";
@@ -791,31 +792,8 @@ function SidebarSection({ icon: Icon, title, children }: { icon: React.Component
 }
 
 
-// Fork (Wnt/webmail): sanitized bodies of the last few messages shown, so a
-// repeat open (or a re-render after a keyword change) skips DOMPurify. JMAP
-// message bodies are immutable; the key also carries everything else the
-// result depends on (external-content blocking, resolved cid: URLs).
-type CachedEmailContent = {
-  content: { html: string; isHtml: boolean; hasStyleTag: boolean; externalBlocked: boolean };
-  blockedExternalContent: boolean;
-};
-const EMAIL_CONTENT_CACHE = new Map<string, CachedEmailContent>();
-const EMAIL_CONTENT_CACHE_SIZE = 8;
-function emailContentCacheKey(email: Email, blockExternal: boolean, cidBlobUrls: Record<string, string>): string | null {
-  if (!email.id || !email.bodyValues) return null;
-  const account = email.sourceClientAccountId ?? email.sourceAccountId ?? email.accountId ?? '';
-  const cids = Object.keys(cidBlobUrls).sort().map((k) => `${k}=${cidBlobUrls[k]}`).join('&');
-  return `${account}\u0000${email.id}\u0000${blockExternal ? 1 : 0}\u0000${cids}`;
-}
-function rememberEmailContent(key: string, value: CachedEmailContent) {
-  EMAIL_CONTENT_CACHE.delete(key);
-  EMAIL_CONTENT_CACHE.set(key, value);
-  while (EMAIL_CONTENT_CACHE.size > EMAIL_CONTENT_CACHE_SIZE) {
-    const oldest = EMAIL_CONTENT_CACHE.keys().next().value;
-    if (oldest === undefined) break;
-    EMAIL_CONTENT_CACHE.delete(oldest);
-  }
-}
+// Fork (Wnt/webmail): sanitized bodies are kept (and made ahead of an open)
+// in lib/email-content-cache.ts.
 
 // Fork (Wnt/webmail): memoised, with the parent's callbacks kept stable
 // (useStableCallbacks): the mail app re-renders on every store write, and the
@@ -1988,14 +1966,15 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   //   'ask'   = block until the user allows this message or trusts the sender.
   const shouldBlockExternal = useMemo(() => {
     if (!email) return false;
-    const senderEmail = email.from?.[0]?.email?.toLowerCase();
-    const senderIsTrusted = senderEmail
-      ? isSenderTrusted(senderEmail) || (trustedSendersAddressBook && isTrustedAddressBookSender(senderEmail))
-      : false;
-    return !senderIsTrusted && (
-      externalContentPolicy === 'block' ||
-      (externalContentPolicy === 'ask' && !allowExternalContent)
-    );
+    // Fork (Wnt/webmail): shared with the sanitizing ahead of an open
+    // (lib/email-content-cache.ts), so both decide alike.
+    return shouldBlockExternalFor(email, {
+      externalContentPolicy,
+      allowExternalContent,
+      isSenderTrusted,
+      trustedSendersAddressBook,
+      isTrustedAddressBookSender,
+    });
     // Trust selectors are read inside and re-read whenever the message or the
     // permission changes, so they're deliberately omitted from deps (matches
     // the srcDoc rebuild contract described on `emailContent`).
@@ -2010,8 +1989,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // repeat open skips the pass (EMAIL_CONTENT_CACHE).
   const emailContent = useMemo(() => {
     if (!email) return { html: "", isHtml: false, hasStyleTag: false, externalBlocked: false };
-    const cacheKey = emailContentCacheKey(email, shouldBlockExternal, cidBlobUrls);
-    const cached = cacheKey ? EMAIL_CONTENT_CACHE.get(cacheKey) : undefined;
+    const cached = cachedEmailContent(emailContentCacheKey(email, shouldBlockExternal, cidBlobUrls));
     if (cached) {
       if (cached.blockedExternalContent && !hasBlockedContent) setHasBlockedContent(true);
       return cached.content;
@@ -2020,42 +1998,15 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     // Check if we have body values
     if (email.bodyValues) {
       // Rich HTML, or just a plain-text wrapper the server dressed up as HTML?
-      let htmlContent = getRenderableHtmlBody(email);
-
-      if (htmlContent) {
-        // Replace cid: references with authenticated blob URLs (fetched via useEffect)
-        // This prevents browser auth dialogs that occur when loading raw JMAP download URLs
-        if (email.attachments) {
-          htmlContent = htmlContent.replace(
-            /\bcid:([^"'\s)]+)/gi,
-            (_match, cidRef) => {
-              return cidBlobUrls[cidRef] || 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-            }
-          );
-        }
-
-        // Sanitize (no dark mode color transforms - emails render true-to-life
-        // in the iframe) and enforce the external-content policy.
-        const { html: cleanHtml, blockedExternalContent } =
-          sanitizeEmailBodyForIframe(htmlContent, shouldBlockExternal);
-
+      // Sanitized (cid: references resolved, the external-content policy
+      // applied) and cached by lib/email-content-cache.ts.
+      const prepared = prepareEmailHtml(email, shouldBlockExternal, cidBlobUrls);
+      if (prepared) {
         // Update blocked content state
-        if (blockedExternalContent && !hasBlockedContent) {
+        if (prepared.blockedExternalContent && !hasBlockedContent) {
           setHasBlockedContent(true);
         }
-
-        const content = {
-          html: cleanHtml,
-          isHtml: true,
-          hasStyleTag: /<style[\s>]/i.test(htmlContent),
-          // Drives the strict iframe CSP: when we're in blocking mode the
-          // iframe forbids external img/media/font fetches entirely, so any
-          // vector the DOM walk above missed (e.g. <style>-tag url()) still
-          // can't phone home. Cleared once the user allows / trusts.
-          externalBlocked: shouldBlockExternal,
-        };
-        if (cacheKey) rememberEmailContent(cacheKey, { content, blockedExternalContent });
-        return content;
+        return prepared.content;
       }
 
       // Use text content if available (either as fallback or when HTML is minimal)
@@ -2806,9 +2757,19 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
       handleIframeLoad();
       if (initializedDocRef.current) window.clearInterval(readyPoll);
     }, 50);
+    // Fork (Wnt/webmail): also every frame while the page is shown, so the
+    // body is wired up (and, in dark mode, un-hidden) in the frame its
+    // document is parsed rather than up to 50 ms later; the interval covers a
+    // hidden page, where frames do not run.
+    let frame = 0;
+    const onFrame = () => {
+      handleIframeLoad();
+      frame = initializedDocRef.current ? 0 : window.requestAnimationFrame(onFrame);
+    };
+    if (typeof window.requestAnimationFrame === 'function') frame = window.requestAnimationFrame(onFrame);
     // Safety stop: the 'load' backstop covers anything the poll somehow misses.
-    const stop = window.setTimeout(() => window.clearInterval(readyPoll), 15000);
-    return () => { window.clearInterval(readyPoll); window.clearTimeout(stop); };
+    const stop = window.setTimeout(() => { window.clearInterval(readyPoll); if (frame) window.cancelAnimationFrame(frame); frame = 0; }, 15000);
+    return () => { window.clearInterval(readyPoll); window.clearTimeout(stop); if (frame) window.cancelAnimationFrame(frame); };
   }, [emailIframeSrcDoc, handleIframeLoad]);
 
   // Export email as .eml file

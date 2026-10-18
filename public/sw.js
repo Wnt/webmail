@@ -1127,6 +1127,15 @@ async function rememberPrefetchedEmail(accountId, email) {
     await cache.put(prefetchedKey(accountId, email.id), new Response(JSON.stringify({ at: Date.now(), accountId, email }), {
       headers: { "Content-Type": "application/json" },
     }));
+    // Fork patch (Wnt/webmail): an open app sanitizes the body ahead of the
+    // open and uses the kept copy for a list click too (lib/email-content-cache.ts).
+    try {
+      for (const client of await self.clients.matchAll({ type: "window", includeUncontrolled: true })) {
+        client.postMessage({ kind: "push-kept", accountId: accountId || "", emailId: email.id });
+      }
+    } catch (_) {
+      // No window to tell.
+    }
     // Oldest out: keys() lists in insertion order.
     const kept = (await cache.keys()).filter((r) => r.url.startsWith(prefetchedPrefix()));
     for (const r of kept.slice(0, Math.max(0, kept.length - PREFETCH_KEEP))) await cache.delete(r);
