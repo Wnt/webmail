@@ -18,16 +18,24 @@ type Preview = { ok: boolean; status?: number; body?: unknown } | 'throw';
 interface FakeClient {
   id: string;
   url: string;
+  focused?: boolean;
+  visibilityState?: string;
   messages: unknown[];
   focus: ReturnType<typeof vi.fn>;
   navigate: ReturnType<typeof vi.fn>;
-  postMessage: (m: unknown) => void;
+  postMessage: (m: unknown, transfer?: MessagePort[]) => void;
 }
 
-function fakeClient(id: string, opts: { navigateFails?: boolean } = {}): FakeClient {
+/**
+ * `answer`: what the running app replies on the port the worker hands it
+ * (`undefined`: it never replies, like an older app or one not signed in).
+ */
+function fakeClient(id: string, opts: { navigateFails?: boolean; answer?: unknown; focused?: boolean; visibilityState?: string } = {}): FakeClient {
   const client: FakeClient = {
     id,
     url: `${ORIGIN}/mail/folder/inbox`,
+    focused: opts.focused,
+    visibilityState: opts.visibilityState,
     messages: [],
     focus: vi.fn(async () => client),
     navigate: vi.fn(async (url: string) => {
@@ -35,12 +43,15 @@ function fakeClient(id: string, opts: { navigateFails?: boolean } = {}): FakeCli
       client.url = new URL(url, ORIGIN).href;
       return client;
     }),
-    postMessage: (m: unknown) => { client.messages.push(m); },
+    postMessage: (m: unknown, transfer?: MessagePort[]) => {
+      client.messages.push(m);
+      if (transfer?.[0] && opts.answer !== undefined) transfer[0].postMessage(opts.answer);
+    },
   };
   return client;
 }
 
-function loadWorker({ preview = { ok: false, status: 401 } as Preview, webkit = false } = {}) {
+function loadWorker({ preview = { ok: false, status: 401 } as Preview, webkit = false, channels = false } = {}) {
   const listeners = new Map<string, (event: unknown) => void>();
   const all: Note[] = [];
   const onScreen = () => all.filter((n) => !n.closed);
@@ -92,6 +103,7 @@ function loadWorker({ preview = { ok: false, status: 401 } as Preview, webkit = 
   const context = vm.createContext({
     self, caches, fetch: fetchMock, URL, URLSearchParams, Response, Date, console,
     setTimeout, clearTimeout, AbortController,
+    ...(channels ? { MessageChannel } : {}),
   });
   vm.runInContext(SW_SOURCE, context);
 
@@ -101,12 +113,17 @@ function loadWorker({ preview = { ok: false, status: 401 } as Preview, webkit = 
     await vi.advanceTimersByTimeAsync(40_000);
     await Promise.all(waits);
   }
-  async function click(note: Note) {
+  async function click(note: Note, { advanceMs = 0 } = {}) {
     const waits: Promise<unknown>[] = [];
     listeners.get('notificationclick')?.({
       notification: { data: note.options.data, tag: note.options.tag, close: () => { note.closed = true; } },
       waitUntil: (p: Promise<unknown>) => waits.push(p),
     });
+    if (advanceMs) {
+      // Let a reply on a real MessagePort arrive (event loop), then run the timers.
+      await new Promise((resolve) => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(advanceMs);
+    }
     await Promise.all(waits);
   }
   const pendingOpen = () => {
@@ -259,6 +276,56 @@ describe('notificationclick', () => {
     await w.click(w.latest());
     expect(w.openWindow).toHaveBeenCalledWith('/mail/message/e2?slot=0');
     expect(w.pendingOpen()).toMatchObject({ emailId: 'e2', slot: 0 });
+  });
+
+  it('signed-in app in front answers: it opens the email in place, so the worker focuses it and does not navigate', async () => {
+    const w = loadWorker({ preview: { ok: false, status: 401 }, channels: true });
+    await w.push(payload({ email }));
+    const client = fakeClient('c1', { answer: { opening: true }, focused: true });
+    w.clients.push(client);
+    const t0 = Date.now();
+    await w.click(w.latest(), { advanceMs: 5 });
+    expect(client.messages).toEqual([expect.objectContaining({ kind: 'notificationclick', open: true, data: expect.objectContaining({ emailId: 'e2' }) })]);
+    expect(client.focus).toHaveBeenCalled();
+    expect(client.navigate).not.toHaveBeenCalled();
+    expect(w.openWindow).not.toHaveBeenCalled();
+    // The recorded tap stays the app's source of truth for the id.
+    expect(w.pendingOpen()).toMatchObject({ emailId: 'e2' });
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  it('an app that does not answer (older version, not signed in, frozen) is navigated after the wait', async () => {
+    const w = loadWorker({ preview: { ok: false, status: 401 }, channels: true });
+    await w.push(payload({ email }));
+    const client = fakeClient('c1');
+    w.clients.push(client);
+    await w.click(w.latest(), { advanceMs: 1100 });
+    expect(client.focus).toHaveBeenCalledBefore(client.navigate);
+    expect(client.navigate).toHaveBeenCalledWith('/mail/message/e2');
+  });
+
+  it('an app that answers it will not open it is navigated at once', async () => {
+    const w = loadWorker({ preview: { ok: false, status: 401 }, channels: true });
+    await w.push(payload({ email }));
+    const client = fakeClient('c1', { answer: { opening: false } });
+    w.clients.push(client);
+    await w.click(w.latest(), { advanceMs: 5 });
+    expect(client.navigate).toHaveBeenCalledWith('/mail/message/e2');
+  });
+
+  it('the front-most window is the one asked and focused; the others only hear about the tap', async () => {
+    const w = loadWorker({ preview: { ok: false, status: 401 }, channels: true });
+    await w.push(payload({ email }));
+    const behind = fakeClient('c1', { answer: { opening: true }, visibilityState: 'hidden' });
+    const front = fakeClient('c2', { answer: { opening: true }, focused: true, visibilityState: 'visible' });
+    w.clients.push(behind, front);
+    await w.click(w.latest(), { advanceMs: 5 });
+    expect(front.messages).toEqual([expect.objectContaining({ open: true })]);
+    expect(behind.messages).toEqual([expect.not.objectContaining({ open: true })]);
+    expect(front.focus).toHaveBeenCalled();
+    expect(behind.focus).not.toHaveBeenCalled();
+    expect(front.navigate).not.toHaveBeenCalled();
+    expect(behind.navigate).not.toHaveBeenCalled();
   });
 
   it('a list notification records nothing and opens the latest unread', async () => {

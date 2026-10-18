@@ -797,9 +797,23 @@ async function handleNotificationClick(event) {
     includeUncontrolled: true,
   });
 
+  // Fork patch (Wnt/webmail): the window the tap brings to the front - the
+  // one the user looked at last, so a tap never lands in a forgotten tab.
+  const ordered = allClients.slice().sort((a, b) => clientFrontRank(a) - clientFrontRank(b));
+  const front = ordered.find((client) => "focus" in client);
+
   // Notify any in-app clients so plugins listening on toastHooks.onNotificationClick fire.
-  // The mail app also takes it as its cue to open the message (see above).
+  // Fork patch (Wnt/webmail): the window coming to the front is also asked
+  // to open the message itself (`open: true`, with a reply port). A running,
+  // signed-in mail app answers at once and opens it in place - no page load,
+  // no second app start - so the worker does not navigate it.
+  const opensMessage = data.kind === "email" && typeof data.emailId === "string" && data.emailId !== "";
+  let opening = Promise.resolve(false);
   for (const client of allClients) {
+    if (client === front && opensMessage) {
+      opening = askClientToOpen(client, { kind: "notificationclick", tag, data, open: true });
+      continue;
+    }
     try {
       client.postMessage({ kind: "notificationclick", tag, data });
     } catch (_) {
@@ -807,7 +821,7 @@ async function handleNotificationClick(event) {
     }
   }
 
-  for (const client of allClients) {
+  for (const client of front ? [front, ...ordered.filter((c) => c !== front)] : []) {
     // Reuse an existing tab whenever possible - users on desktop browsers
     // get annoyed when each notification opens a fresh window.
     if ("focus" in client) {
@@ -828,6 +842,10 @@ async function handleNotificationClick(event) {
         // came to the front. Focusing first uses the activation while it is still live;
         // navigate() does not need one of its own once the client is focused.
         const focused = await client.focus();
+        // Fork patch (Wnt/webmail): the app said it opens the message in
+        // place - a navigate() now would throw that away and start the
+        // whole app again (seconds, measured).
+        if (client === front && await opening) return focused;
         if (focused && "navigate" in focused && targetUrl) {
           try {
             await focused.navigate(targetUrl);
@@ -846,6 +864,58 @@ async function handleNotificationClick(event) {
   if (self.clients.openWindow) {
     return self.clients.openWindow(targetUrl || `${BASE_PATH}/`);
   }
+}
+
+// Fork patch (Wnt/webmail): how long a tap waits for a running mail app to
+// say it opens the message itself before the worker navigates instead. The
+// app answers from its message handler, so this only runs out for a window
+// that is not the mail app, not signed in yet, or frozen.
+const OPEN_IN_PLACE_WAIT_MS = 1000;
+
+/** Front-most first: focused, then visible, then the rest (stable). */
+function clientFrontRank(client) {
+  if (client && client.focused) return 0;
+  if (client && client.visibilityState === "visible") return 1;
+  return 2;
+}
+
+/**
+ * Posts `message` to `client` with a reply port. Resolves true when the app
+ * answers `{ opening: true }` within OPEN_IN_PLACE_WAIT_MS, else false
+ * (older app versions never answer: they get the navigation, as before).
+ */
+function askClientToOpen(client, message) {
+  if (typeof MessageChannel !== "function" || typeof setTimeout !== "function") {
+    try {
+      client.postMessage(message);
+    } catch (_) {
+      // Closed or detached client - ignore.
+    }
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    let timer = null;
+    const finish = (value) => {
+      if (timer === null) return;
+      clearTimeout(timer);
+      timer = null;
+      channel.port1.onmessage = null;
+      try {
+        channel.port1.close();
+      } catch (_) {
+        // Already closed.
+      }
+      resolve(value);
+    };
+    timer = setTimeout(() => finish(false), OPEN_IN_PLACE_WAIT_MS);
+    channel.port1.onmessage = (event) => finish(!!(event.data && event.data.opening === true));
+    try {
+      client.postMessage(message, [channel.port2]);
+    } catch (_) {
+      finish(false);
+    }
+  });
 }
 
 async function focusExistingWindowClient(sourceClientId, requireMailtoReady) {

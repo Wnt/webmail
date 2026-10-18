@@ -1500,6 +1500,38 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
   const deepLinkHandledRef = useRef(false);
   const mailAppMountedRef = useRef(false);
   useEffect(() => { mailAppMountedRef.current = true; return () => { mailAppMountedRef.current = false; }; }, []);
+  // Point the list at a folder that actually holds the message, so the pane
+  // behind it shows real context and "back" lands somewhere useful.
+  const showOwningFolder = async (activeClient: NonNullable<typeof client>, email: Email) => {
+    const state = useEmailStore.getState();
+    const owning = Object.keys(email.mailboxIds ?? {}).find((id) =>
+      state.mailboxes.some((mb) => mb.id === id || mb.originalId === id),
+    );
+    if (owning && owning !== state.selectedMailbox) {
+      const mailbox = state.mailboxes.find((mb) => mb.id === owning || mb.originalId === owning);
+      if (mailbox) {
+        await fetchEmails(activeClient, mailbox.id, { background: true });
+        selectMailbox(mailbox.id);
+        selectEmail(email);
+      }
+    }
+  };
+  const showOwningFolderRef = useRef(showOwningFolder);
+  showOwningFolderRef.current = showOwningFolder;
+  const initialMailLoadDoneRef = useRef(initialMailLoadDone);
+  initialMailLoadDoneRef.current = initialMailLoadDone;
+  // A message opened from a link before the bootstrap finished: its folder is
+  // shown once the folder list and the first list page are in.
+  const owningFolderAfterLoadRef = useRef<Email | null>(null);
+  useEffect(() => {
+    const email = owningFolderAfterLoadRef.current;
+    if (!email || !initialMailLoadDone || !client) return;
+    owningFolderAfterLoadRef.current = null;
+    // The user has moved on in the meantime: leave the list where it is.
+    if (useEmailStore.getState().selectedEmail?.id !== email.id) return;
+    void showOwningFolderRef.current(client, email);
+  }, [initialMailLoadDone, client]);
+
   const applyMailDeepLink = async (link: MailDeepLink, opts?: { onLoad?: boolean }) => {
     // The folder list before an account switch, if one happened: until the
     // new mailbox's folders arrive the store still holds these (or nothing).
@@ -1582,19 +1614,15 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
           toast.error(t('deep_link.message_not_found'));
           return;
         }
-        // Point the list at a folder that actually holds the message, so the
-        // pane behind it shows real context and "back" lands somewhere useful.
-        const state = useEmailStore.getState();
-        const owning = Object.keys(email.mailboxIds ?? {}).find((id) =>
-          state.mailboxes.some((mb) => mb.id === id || mb.originalId === id),
-        );
-        if (owning && owning !== state.selectedMailbox) {
-          const mailbox = state.mailboxes.find((mb) => mb.id === owning || mb.originalId === owning);
-          if (mailbox) {
-            await fetchEmails(activeClient, mailbox.id, { background: true });
-            selectMailbox(mailbox.id);
-            selectEmail(email);
-          }
+        // Fork patch (Wnt/webmail): a message link opens as soon as the
+        // session is up (see the deep-link effect). The folder behind it can
+        // only be chosen once the folder list and the first list page have
+        // landed - that fetch would replace the list a moment later (#733) -
+        // so that step waits for the bootstrap when it is still running.
+        if (initialMailLoadDoneRef.current) {
+          await showOwningFolderRef.current(activeClient, email);
+        } else {
+          owningFolderAfterLoadRef.current = email;
         }
         if (link.fullscreen && !isMobile) {
           // The owning-folder branch above may have skipped selecting (the
@@ -1690,16 +1718,17 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     initialSearchRef.current = window.location.search;
   }
 
+  // The handoff below is read once; the effect may run several times before
+  // the link can be applied.
+  const pendingLinkSegmentsRef = useRef<string[] | null>(null);
   useEffect(() => {
     if (deepLinkHandledRef.current) return;
     if (!isAuthenticated || !client) return;
-    if (mailboxes.length === 0) return;
-    if (!initialMailLoadDone) return;
 
     const params = new URLSearchParams(initialSearchRef.current ?? window.location.search);
     // Inside the Pro shell the route is /pro, so the segments arrive through
     // the handoff the redirect parked them in rather than as route params.
-    const segments = linkSegments ?? consumePendingDeepLink('mail') ?? [];
+    const segments = linkSegments ?? (pendingLinkSegmentsRef.current ??= consumePendingDeepLink('mail') ?? []);
     const link = parseMailPath(segments, params);
     const openLatestUnread = params.get('openLatestUnread') === '1';
 
@@ -1707,6 +1736,25 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       deepLinkHandledRef.current = true;
       return;
     }
+
+    // Fork patch (Wnt/webmail): a message link - a tapped notification
+    // opens one - needs only the session: fetching and showing the message
+    // does not wait for the folder list and the first Inbox page (about a
+    // second at start, measured). The folder behind it follows once those
+    // are in (owningFolderAfterLoadRef). A link into another login, or the
+    // Pro shell's tab, keeps the old order.
+    if (link?.kind === 'message' && !isEmbedded && !link.accountId) {
+      const activeSlot = useAccountStore.getState().accounts
+        .find((a) => a.id === useAuthStore.getState().activeAccountId)?.cookieSlot;
+      if (link.slot === undefined || link.slot === activeSlot) {
+        deepLinkHandledRef.current = true;
+        void applyMailDeepLinkRef.current(link, { onLoad: true });
+        return;
+      }
+    }
+
+    if (mailboxes.length === 0) return;
+    if (!initialMailLoadDone) return;
 
     // The generic "New mail" toast (the preview API failed, so the worker
     // couldn't name a message) needs the inbox loaded before it can pick the
@@ -1725,22 +1773,28 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     if (newestUnread) {
       selectEmail(newestUnread);
     }
-  }, [isAuthenticated, client, mailboxes.length, emails, linkSegments, initialMailLoadDone, selectEmail]);
+  }, [isAuthenticated, client, mailboxes.length, emails, linkSegments, initialMailLoadDone, selectEmail, isEmbedded]);
 
   // Fork patch (Wnt/webmail): a tapped push notification whose message the
-  // service worker could not bring the app to (lib/notification-open.ts).
-  // Checked once the mailbox is up - on start, so also right after a
-  // sign-in - and whenever the app comes to the front or the worker says a
-  // notification was tapped. The standard view under an active Pro shell is
-  // only passing through (it redirects to /pro), so it leaves the tap to the
-  // Pro mail tab.
+  // service worker could not bring the app to (lib/notification-open.ts),
+  // or that it asks this running app to open in place. Checked once the
+  // mailbox is up - on start, so also right after a sign-in - and whenever
+  // the app comes to the front or the worker says a notification was tapped.
+  // (Not earlier: the start page hands over to the mail route during the
+  // bootstrap, and the recorded tap is taken only once.) The standard view
+  // under an active Pro shell is only passing through (it redirects to
+  // /pro), so it leaves the tap to the Pro mail tab.
   const notificationOpenReady = isAuthenticated && !!client && mailboxes.length > 0 && initialMailLoadDone
     && (isEmbedded || !proInterfaceActive);
   useEffect(() => {
     if (!notificationOpenReady) return;
     let busy = false;
-    const check = async () => {
-      if (busy || document.visibilityState === 'hidden') return;
+    let again = false;
+    // `force`: the worker is bringing this very window to the front for the
+    // tap (it asked us to open it), so a still-hidden page takes it too.
+    const check = async (force = false) => {
+      if (busy) { if (force) again = true; return; }
+      if (!force && document.visibilityState === 'hidden') return;
       busy = true;
       try {
         const pending = await takeNotificationOpen();
@@ -1757,12 +1811,22 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
         await applyMailDeepLinkRef.current({ kind: 'message', id: pending.emailId, slot: pending.slot });
       } finally {
         busy = false;
+        if (again) { again = false; void check(true); }
       }
     };
     const onVisible = () => { if (document.visibilityState === 'visible') void check(); };
     const onSwMessage = (e: MessageEvent) => {
-      const msg = e.data as { kind?: string } | null;
-      if (msg && msg.kind === 'notificationclick') void check();
+      const msg = e.data as { kind?: string; open?: boolean; data?: { kind?: string } } | null;
+      if (!msg || msg.kind !== 'notificationclick') return;
+      // The worker asks the window it brings to the front to open the
+      // message in place; answering keeps it from reloading this page at the
+      // message (public/sw.js askClientToOpen).
+      const port = e.ports && e.ports[0];
+      const inPlace = msg.open === true && msg.data?.kind === 'email';
+      if (port) {
+        try { port.postMessage({ opening: inPlace }); } catch { /* the worker gave up waiting */ }
+      }
+      void check(inPlace);
     };
     void check();
     document.addEventListener('visibilitychange', onVisible);
