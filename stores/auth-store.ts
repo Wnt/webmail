@@ -348,6 +348,15 @@ async function settleSessionWrites(slots: ReadonlySet<number>): Promise<void> {
   }
 }
 
+// Fork (Wnt/webmail): the auth-context writes of accounts being restored.
+// Restoring no longer waits for them (a round trip on every start, between the
+// session and the first mail request); the settings sync, whose server route
+// reads that context, does.
+let pendingContextSyncs: Promise<unknown> = Promise.resolve();
+function trackContextSync(sync: Promise<void>): void {
+  pendingContextSyncs = Promise.all([pendingContextSyncs, sync.catch(() => {})]);
+}
+
 async function syncStalwartAuthContext(
   serverUrl: string,
   username: string,
@@ -811,8 +820,9 @@ function loadIdentities(rawIdentities: Identity[], username: string): { identiti
  * previous one must run this, or later edits are never saved to the server.
  */
 function resumeSettingsSync(account: Pick<AccountEntry, 'id' | 'username' | 'serverUrl'>): void {
-  fetchConfig().then(config => {
+  fetchConfig().then(async config => {
     if (!config.settingsSyncEnabled) return;
+    await pendingContextSyncs;
     useSettingsStore.getState().loadFromServer(account.username, account.serverUrl).finally(() => {
       useSettingsStore.getState().enableSync(account.username, account.serverUrl);
       applyPreferredIdentity(account.id);
@@ -1627,8 +1637,9 @@ export const useAuthStore = create<AuthState>()(
           }
 
           // Sync settings from server (only if enabled)
-          fetchConfig().then(config => {
+          fetchConfig().then(async config => {
             if (!config.settingsSyncEnabled) return;
+            await pendingContextSyncs;
             useSettingsStore.getState().loadFromServer(username, serverUrl).finally(() => {
               useSettingsStore.getState().enableSync(username, serverUrl);
               applyPreferredIdentity(accountId);
@@ -1951,8 +1962,9 @@ export const useAuthStore = create<AuthState>()(
           notifyParent('sso:auth-success', { username });
 
           // Sync settings from server (only if enabled)
-          fetchConfig().then(config => {
+          fetchConfig().then(async config => {
             if (!config.settingsSyncEnabled) return;
+            await pendingContextSyncs;
             useSettingsStore.getState().loadFromServer(username, serverUrl).finally(() => {
               useSettingsStore.getState().enableSync(username, serverUrl);
               applyPreferredIdentity(accountId);
@@ -2848,7 +2860,9 @@ export const useAuthStore = create<AuthState>()(
                   await client.connect();
                   clients.set(account.id, client);
                   scheduleRefresh(expires_in, get().refreshAccessToken, account.id);
-                  await contextSync;
+                  // Fork (Wnt/webmail): not waited for here - the session is up;
+                  // the settings sync that reads this context waits for it.
+                  trackContextSync(contextSync);
                   accountStore.updateAccount(account.id, { isConnected: true, hasError: false });
                   void syncAccountDisplayName(account.id, client);
                 } else if (res.status >= 500 && !recordPermanentRefreshFailure(res.status, account.id)) {
@@ -2868,7 +2882,9 @@ export const useAuthStore = create<AuthState>()(
                   const contextSync = syncStalwartAuthContext(session.serverUrl, session.username, client.getAuthHeader(), account.cookieSlot);
                   await client.connect();
                   clients.set(account.id, client);
-                  await contextSync;
+                  // Fork (Wnt/webmail): not waited for here - the session is up;
+                  // the settings sync that reads this context waits for it.
+                  trackContextSync(contextSync);
                   accountStore.updateAccount(account.id, { isConnected: true, hasError: false });
                   void syncAccountDisplayName(account.id, client);
                 } else if (res.status >= 500) {
@@ -2976,8 +2992,9 @@ export const useAuthStore = create<AuthState>()(
               activeAccountId: targetId,
             });
 
-            fetchConfig().then(config => {
+            fetchConfig().then(async config => {
               if (!config.settingsSyncEnabled) return;
+              await pendingContextSyncs;
               useSettingsStore.getState().loadFromServer(targetAccount.username, targetAccount.serverUrl).finally(() => {
                 useSettingsStore.getState().enableSync(targetAccount.username, targetAccount.serverUrl);
                 // The preferred identity can only be applied once identities
@@ -3101,8 +3118,9 @@ export const useAuthStore = create<AuthState>()(
                   activeAccountId: accountId,
                 });
 
-                fetchConfig().then(config => {
+                fetchConfig().then(async config => {
                   if (!config.settingsSyncEnabled) return;
+                  await pendingContextSyncs;
                   useSettingsStore.getState().loadFromServer(state.username || '', state.serverUrl!).finally(() => {
                     useSettingsStore.getState().enableSync(state.username || '', state.serverUrl!);
                     applyPreferredIdentity(accountId);
@@ -3174,8 +3192,9 @@ export const useAuthStore = create<AuthState>()(
                   activeAccountId: accountId,
                 });
 
-                fetchConfig().then(config => {
+                fetchConfig().then(async config => {
                   if (!config.settingsSyncEnabled) return;
+                  await pendingContextSyncs;
                   useSettingsStore.getState().loadFromServer(username, serverUrl).finally(() => {
                     useSettingsStore.getState().enableSync(username, serverUrl);
                     applyPreferredIdentity(accountId);
