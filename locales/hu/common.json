@@ -238,6 +238,8 @@
     "no_emails_description": "Ez a postafiók üres",
     "no_search_results": "Nincs találat",
     "no_search_results_description": "Próbáld módosítani a keresést vagy a szűrőket",
+    "search_failed": "A keresés nem fejeződött be",
+    "search_failed_description": "A kiszolgáló nem válaszolt időben. Keressen újra a próbálkozáshoz.",
     "loading": "E-mailek betöltése...",
     "unread": "olvasatlan",
     "to_me": "Nekem",

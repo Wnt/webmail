@@ -197,6 +197,10 @@ interface EmailStore {
   // isUnifiedView.
   crossView: CrossView | null;
   unifiedErrors: Map<string, string>; // accountId -> error message
+  // The last search (searchEmails / advancedSearch) failed and showed nothing:
+  // the list says so instead of "No results found". A slow full-text search
+  // that timed out used to read as an empty result.
+  searchFailed: boolean;
   // Unified-section sidebar badges. These are NOT an independent source of
   // truth: they are a pure projection of the live per-account mailbox lists
   // (`mailboxes` + `accountMailboxes`) over the last-known unified scope
@@ -1855,6 +1859,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   unifiedRole: null,
   crossView: null,
   unifiedErrors: new Map(),
+  searchFailed: false,
   unifiedCounts: [],
   crossUnreadCount: 0,
   unifiedScope: [],
@@ -2029,7 +2034,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   setLoading: (loading) => set({ isLoading: loading }),
   setLoadingEmail: (loading) => set({ isLoadingEmail: loading }),
   setError: (error) => set({ error }),
-  setSearchQuery: (query) => set({ searchQuery: query }),
+  setSearchQuery: (query) => set({ searchQuery: query, searchFailed: false }),
   setQuota: (quota) => set({ quota }),
 
   toggleEmailSelection: (email) => {
@@ -2182,7 +2187,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     let background = opts?.background ?? false;
     // Loading a real mailbox is a fresh navigation (leaving any cross view), so
     // drop the unread/starred retain set and the held row.
-    set(background ? { error: null, retainedInViewIds: new Set(), listHold: null } : { isLoading: true, error: null, retainedInViewIds: new Set(), listHold: null }); // Keep previous emails visible during transition
+    set(background ? { error: null, retainedInViewIds: new Set(), listHold: null } : { isLoading: true, error: null, searchFailed: false, retainedInViewIds: new Set(), listHold: null }); // Keep previous emails visible during transition
     try {
       const targetMailboxId = mailboxId || get().selectedMailbox;
       if (targetMailboxId === VIRTUAL_SCHEDULED_MAILBOX_ID) {
@@ -3375,6 +3380,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     set({
       isLoading: true,
       error: null,
+      searchFailed: false,
       searchQuery: query,
       emails: [],
       hasMoreEmails: false,
@@ -3467,12 +3473,16 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         totalEmails: result.total,
         isLoading: false,
         searchAbortController: null,
+        // Every account's query failed (the fan-outs collect errors rather
+        // than throw): nothing was searched, so this is no empty result.
+        searchFailed: result.emails.length === 0 && (unifiedErrors?.size ?? 0) > 0,
         ...(unifiedErrors ? { unifiedErrors } : {})
       });
     } catch (error) {
       if (controller.signal.aborted) return;
       set({
         error: error instanceof Error ? error.message : "Failed to search emails",
+        searchFailed: true,
         isLoading: false,
         emails: [],
         externalSearchResults: [],
@@ -3495,6 +3505,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     set({
       isLoading: true,
       error: null,
+      searchFailed: false,
       emails: [],
       hasMoreEmails: false,
       totalEmails: 0,
@@ -3590,12 +3601,16 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         totalEmails: result.total,
         isLoading: false,
         searchAbortController: null,
+        // Every account's query failed (the fan-outs collect errors rather
+        // than throw): nothing was searched, so this is no empty result.
+        searchFailed: result.emails.length === 0 && (unifiedErrors?.size ?? 0) > 0,
         ...(unifiedErrors ? { unifiedErrors } : {})
       });
     } catch (error) {
       if (controller.signal.aborted) return;
       set({
         error: error instanceof Error ? error.message : "Failed to search emails",
+        searchFailed: true,
         isLoading: false,
         emails: [],
         externalSearchResults: [],

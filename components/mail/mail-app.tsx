@@ -421,6 +421,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     moveThreadToMailbox,
     searchEmails,
     searchQuery,
+    searchFailed,
     setSearchQuery,
     isLoading,
     isLoadingEmail,
@@ -4551,7 +4552,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
 
             {(searchQuery || !isFilterEmpty(searchFilters)) && !activeIsLoading && !isScheduledView && (
               <div className="px-4 py-1.5 text-xs text-muted-foreground border-b border-border bg-muted/20">
-                {activeHasMore
+                {searchFailed && activeEmails.length === 0
+                  ? t("email_list.search_failed")
+                  : activeHasMore
                   ? t("advanced_search.results_found_more", { count: activeEmails.length })
                   : t("advanced_search.results_found", { count: activeEmails.length })}
               </div>

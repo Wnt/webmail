@@ -143,6 +143,7 @@ export function EmailList({
     searchQuery,
     isUnifiedView,
     unifiedRole,
+    searchFailed,
   } = useEmailStore();
 
   // In aggregate role-views (e.g. "All Junk") the selected mailbox is virtual, so
@@ -686,6 +687,17 @@ export function EmailList({
         {isLoading && emails.length === 0 ? (
           <LoadingSkeleton />
         ) : emails.length === 0 && !isLoading ? (
+          !isScheduledView && searchFailed && (searchQuery || !isFilterEmpty(searchFilters)) ? (
+            // The search itself failed (e.g. timed out): saying "No results
+            // found" would claim the mail is not there.
+            <div className="flex flex-col items-center justify-center h-full py-12" data-testid="search-failed">
+              <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-muted shadow-lg flex items-center justify-center">
+                <AlertTriangle className="w-10 h-10 text-muted-foreground" />
+              </div>
+              <p className="text-base font-medium text-foreground">{t('search_failed')}</p>
+              <p className="text-sm mt-1 text-muted-foreground">{t('search_failed_description')}</p>
+            </div>
+          ) : (
           <div className="flex flex-col items-center justify-center h-full py-12">
             <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-muted shadow-lg flex items-center justify-center">
               {isScheduledView ? (
@@ -703,6 +715,7 @@ export function EmailList({
               {isScheduledView ? t('no_scheduled_emails_description') : searchQuery || !isFilterEmpty(searchFilters) ? t('no_search_results_description') : t('no_emails_description')}
             </p>
           </div>
+          )
         ) : (
           <>
             <div

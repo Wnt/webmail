@@ -238,6 +238,8 @@
     "no_emails_description": "Bu posta kutusu boş",
     "no_search_results": "Sonuç bulunamadı",
     "no_search_results_description": "Arama teriminizi veya filtrelerinizi değiştirmeyi deneyin",
+    "search_failed": "Arama tamamlanamadı",
+    "search_failed_description": "Sunucu zamanında yanıt vermedi. Yeniden denemek için tekrar arayın.",
     "loading": "E-postalar yükleniyor...",
     "unread": "okunmamış",
     "to_me": "Bana",

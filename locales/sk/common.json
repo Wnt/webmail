@@ -238,6 +238,8 @@
     "no_emails_description": "Táto schránka je prázdna",
     "no_search_results": "Neboli nájdené žiadne výsledky",
     "no_search_results_description": "Skúste zmeniť hľadanie alebo filtre",
+    "search_failed": "Vyhľadávanie sa nedokončilo",
+    "search_failed_description": "Server neodpovedal včas. Skúste vyhľadávať znova.",
     "loading": "Načítavanie e-mailov...",
     "unread": "neprečítané",
     "to_me": "Pre mňa",

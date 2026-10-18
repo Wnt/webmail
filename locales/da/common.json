@@ -238,6 +238,8 @@
     "no_emails_description": "Denne postkasse er tom",
     "no_search_results": "Ingen resultater fundet",
     "no_search_results_description": "Prøv at justere din søgning eller filtre",
+    "search_failed": "Søgningen blev ikke færdig",
+    "search_failed_description": "Serveren svarede ikke i tide. Søg igen for at prøve igen.",
     "loading": "Indlæser e-mails...",
     "unread": "ulæst",
     "to_me": "Til mig",

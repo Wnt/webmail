@@ -238,6 +238,8 @@
     "no_emails_description": "Папка пуста",
     "no_search_results": "Результатов не найдено",
     "no_search_results_description": "Попробуйте изменить поисковый запрос или фильтры",
+    "search_failed": "Поиск не завершён",
+    "search_failed_description": "Сервер не ответил вовремя. Повторите поиск, чтобы попробовать снова.",
     "loading": "Загрузка писем...",
     "unread": "непрочитанные",
     "to_me": "Мне",

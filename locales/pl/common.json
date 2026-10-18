@@ -238,6 +238,8 @@
     "no_emails_description": "Ta skrzynka jest pusta",
     "no_search_results": "Nie znaleziono wyników",
     "no_search_results_description": "Spróbuj zmienić wyszukiwanie lub filtry",
+    "search_failed": "Wyszukiwanie nie zostało ukończone",
+    "search_failed_description": "Serwer nie odpowiedział na czas. Wyszukaj ponownie, aby spróbować jeszcze raz.",
     "loading": "Ładowanie wiadomości...",
     "unread": "nieprzeczytane",
     "to_me": "Do mnie",

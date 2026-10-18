@@ -1008,6 +1008,13 @@ export class JMAPClient implements IJMAPClient {
    * attachment on a slow uplink legitimately outlives the normal deadline.
    */
   private static readonly TRANSFER_TIMEOUT_MS = 300_000;
+  /**
+   * A free-text search makes a server without a full-text index read the
+   * messages themselves (an IMAP backend behind a JMAP proxy does), which can
+   * take far longer than an ordinary request. Giving up at the normal
+   * deadline turned a slow search into an empty result.
+   */
+  private static readonly SEARCH_TIMEOUT_MS = 90_000;
 
   private serverUrl: string;
   private username: string;
@@ -1543,7 +1550,7 @@ export class JMAPClient implements IJMAPClient {
     }
   }
 
-  private async request(methodCalls: JMAPMethodCall[], using?: string[]): Promise<JMAPResponse> {
+  private async request(methodCalls: JMAPMethodCall[], using?: string[], opts?: { timeoutMs?: number }): Promise<JMAPResponse> {
     if (!this.apiUrl) {
       throw new Error('Not connected. Call connect() first.');
     }
@@ -1563,7 +1570,7 @@ export class JMAPClient implements IJMAPClient {
             'Content-Type': 'application/json',
           },
           body,
-        }),
+        }, opts),
       );
 
       const responseText = await response.text();
@@ -3333,6 +3340,10 @@ export class JMAPClient implements IJMAPClient {
         filter = textFilter;
       }
 
+      // No `calculateTotal`: the list shows the page and whether there is
+      // more, never the count, and a total forces a full-text search to read
+      // every message (RFC 8620 §5.5 asks clients to request it only when
+      // needed). Without it `hasMore` is "a full page came back".
       const response = await this.request([
         ["Email/query", {
           accountId: targetAccountId,
@@ -3340,7 +3351,6 @@ export class JMAPClient implements IJMAPClient {
           sort: [{ property: "receivedAt", isAscending: false }],
           limit,
           position,
-          calculateTotal: true,
         }, "0"],
         ["Email/get", {
           accountId: targetAccountId,
@@ -3348,7 +3358,7 @@ export class JMAPClient implements IJMAPClient {
           properties: [...EMAIL_LIST_PROPERTIES],
         }, "1"],
         this.searchSnippetCall(targetAccountId, filter),
-      ]);
+      ], undefined, { timeoutMs: JMAPClient.SEARCH_TIMEOUT_MS });
       assertQuerySucceeded(response, 'Search');
 
       const queryResponse = response.methodResponses?.[0]?.[1];
@@ -3416,6 +3426,10 @@ export class JMAPClient implements IJMAPClient {
       // which servers reject; omit the key entirely to mean "no filter".
       const hasFilter = Object.keys(filter).length > 0;
 
+      // A search term (as opposed to a purely structural filter, which the
+      // cross-account views browse with) gets no total and the search
+      // deadline; see searchEmails.
+      const isTextSearch = hasFilter && filterHasSnippetTerms(filter);
       const response = await this.request([
         ["Email/query", {
           accountId: targetAccountId,
@@ -3423,7 +3437,7 @@ export class JMAPClient implements IJMAPClient {
           sort: [{ property: "receivedAt", isAscending: false }],
           limit,
           position,
-          calculateTotal: true,
+          ...(isTextSearch ? {} : { calculateTotal: true }),
         }, "0"],
         ["Email/get", {
           accountId: targetAccountId,
@@ -3431,7 +3445,7 @@ export class JMAPClient implements IJMAPClient {
           properties: [...EMAIL_LIST_PROPERTIES],
         }, "1"],
         this.searchSnippetCall(targetAccountId, hasFilter ? filter : undefined),
-      ]);
+      ], undefined, isTextSearch ? { timeoutMs: JMAPClient.SEARCH_TIMEOUT_MS } : undefined);
       assertQuerySucceeded(response, 'Search');
 
       const queryResponse = response.methodResponses?.[0]?.[1];

@@ -238,6 +238,8 @@
     "no_emails_description": "این صندوق پستی خالی است",
     "no_search_results": "نتیجه‌ای یافت نشد",
     "no_search_results_description": "جستجو یا فیلترهای خود را تنظیم کنید",
+    "search_failed": "جستجو کامل نشد",
+    "search_failed_description": "سرور به‌موقع پاسخ نداد. برای تلاش دوباره، دوباره جستجو کنید.",
     "loading": "در حال بارگذاری ایمیل‌ها...",
     "unread": "خوانده نشده",
     "to_me": "به من",

@@ -238,6 +238,8 @@
     "no_emails_description": "صندوق البريد هذا فارغ",
     "no_search_results": "لم يتم العثور على نتائج",
     "no_search_results_description": "حاول تعديل البحث أو عوامل التصفية",
+    "search_failed": "لم يكتمل البحث",
+    "search_failed_description": "لم يستجب الخادم في الوقت المحدد. ابحث مرة أخرى لإعادة المحاولة.",
     "loading": "جارٍ تحميل الرسائل...",
     "unread": "غير مقروءة",
     "to_me": "إليّ",

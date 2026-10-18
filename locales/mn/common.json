@@ -238,6 +238,8 @@
     "no_emails_description": "Энэ шуудангийн хайрцаг хоосон",
     "no_search_results": "Илэрц олдсонгүй",
     "no_search_results_description": "Хайлт эсвэл шүүлтүүрээ тохируулаад үзээрэй",
+    "search_failed": "Хайлт дуусаагүй",
+    "search_failed_description": "Сервер цагтаа хариу өгсөнгүй. Дахин хайж оролдоно уу.",
     "loading": "Имэйл ачаалж байна...",
     "unread": "уншаагүй",
     "to_me": "Надад",

@@ -238,6 +238,8 @@
     "no_emails_description": "此邮箱为空",
     "no_search_results": "未找到结果",
     "no_search_results_description": "请调整搜索条件或筛选器",
+    "search_failed": "搜索未完成",
+    "search_failed_description": "服务器未及时响应。请重新搜索以重试。",
     "loading": "正在加载邮件...",
     "unread": "未读",
     "to_me": "发给我",

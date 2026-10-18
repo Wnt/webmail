@@ -238,6 +238,8 @@
     "no_emails_description": "Cette boîte est vide",
     "no_search_results": "Aucun résultat trouvé",
     "no_search_results_description": "Essayez de modifier votre recherche ou vos filtres",
+    "search_failed": "La recherche n'a pas abouti",
+    "search_failed_description": "Le serveur n'a pas répondu à temps. Relancez la recherche pour réessayer.",
     "loading": "Chargement des emails...",
     "unread": "non lu",
     "to_me": "À moi",

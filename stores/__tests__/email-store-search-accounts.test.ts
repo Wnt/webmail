@@ -375,4 +375,38 @@ describe('Spam and Trash in the folder-less search scopes', () => {
     useEmailStore.getState().selectAccountMailbox('account-b', 'trash');
     expect(useEmailStore.getState().searchMailboxId).toBe('');
   });
+
+  // A free-text search the server could not finish in time (a timeout in
+  // every account) is not an empty result. This default scope is the one
+  // the failure was seen in.
+  it('marks a search that failed in every account as failed, not empty', async () => {
+    client.advancedSearchEmails.mockRejectedValue(new Error('Request timed out after 90s'));
+
+    await useEmailStore.getState().searchEmails(client, 'Sample');
+
+    const state = useEmailStore.getState();
+    expect(state.emails).toEqual([]);
+    expect(state.searchFailed).toBe(true);
+    expect(state.isLoading).toBe(false);
+  });
+
+  it('a search that finds nothing has not failed', async () => {
+    await useEmailStore.getState().searchEmails(client, 'nothing-matches-this');
+
+    expect(useEmailStore.getState().emails).toEqual([]);
+    expect(useEmailStore.getState().searchFailed).toBe(false);
+  });
+
+  it('a search that failed in one account still shows the other account\'s hits', async () => {
+    client.advancedSearchEmails.mockImplementation(async (_filter, accountId) => {
+      if (accountId === 'group') throw new Error('Request timed out after 90s');
+      return { emails: own, total: 0, hasMore: false };
+    });
+
+    await useEmailStore.getState().searchEmails(client, 'fatura');
+
+    expect(useEmailStore.getState().emails.map((e) => e.id)).toEqual(['own-1', 'own-2']);
+    expect(useEmailStore.getState().searchFailed).toBe(false);
+  });
 });
+

@@ -228,6 +228,21 @@ describe('JMAPClient resilience', () => {
       await assertion;
     });
 
+    it('gives a free-text search longer than the ordinary deadline', async () => {
+      // Without a full-text index the server reads the messages themselves;
+      // giving up at 30s turned a slow search into "No results found".
+      const client = await createConnectedClient();
+      fetchSpy.mockImplementation(stalledFetch());
+
+      let outcome: unknown = 'pending';
+      const pending = client.searchEmails('Sample').then(() => 'resolved', (e: unknown) => e);
+      void pending.then((v) => { outcome = v; });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(outcome).toBe('pending');
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await pending).toBeInstanceOf(RequestTimeoutError);
+    });
+
     it('does not replay a timed-out request', async () => {
       // The network-error path retries once, but a timeout may mean the server
       // received and acted on the request - replaying an EmailSubmission/set
@@ -945,6 +960,30 @@ describe('JMAPClient resilience', () => {
       const { emails } = await client.searchEmails('hello', undefined, 'owner-x');
 
       expect(emails[0].mailboxIds).toEqual({ 'owner-x:x-inbox': true });
+    });
+
+    // A total makes a server without a full-text index read every message;
+    // the list never shows it (RFC 8620 §5.5: ask only when needed).
+    it('a search asks for no total; a structural browse still does', async () => {
+      const client = await createConnectedClient();
+      const queryArgs = () => {
+        const body = JSON.parse(String((fetchSpy.mock.calls.at(-1) as [string, RequestInit])[1].body));
+        return body.methodCalls.find(([m]: [string]) => m === 'Email/query')[1];
+      };
+      const answer = () => mockFetchResponse(200, queryAndGet({ id: 'e1', receivedAt: '2026-01-01T00:00:00Z', mailboxIds: { inbox: true } }));
+
+      fetchSpy.mockResolvedValueOnce(answer());
+      const plain = await client.searchEmails('Sample', 'inbox');
+      expect(queryArgs().calculateTotal).toBeUndefined();
+      expect(plain.hasMore).toBe(false);
+
+      fetchSpy.mockResolvedValueOnce(answer());
+      await client.advancedSearchEmails({ operator: 'AND', conditions: [{ text: 'sample' }, { inMailboxOtherThan: ['trash'] }] });
+      expect(queryArgs().calculateTotal).toBeUndefined();
+
+      fetchSpy.mockResolvedValueOnce(answer());
+      await client.advancedSearchEmails({ inMailbox: 'inbox' });
+      expect(queryArgs().calculateTotal).toBe(true);
     });
 
     it('leaves own-account mailboxIds untouched (no foreign accountId)', async () => {

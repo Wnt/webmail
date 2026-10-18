@@ -238,6 +238,8 @@
     "no_emails_description": "Dieses Postfach ist leer",
     "no_search_results": "Keine Ergebnisse gefunden",
     "no_search_results_description": "Passen Sie Ihre Suche oder Filter an",
+    "search_failed": "Suche nicht abgeschlossen",
+    "search_failed_description": "Der Server hat nicht rechtzeitig geantwortet. Suche erneut, um es noch einmal zu versuchen.",
     "loading": "E-Mails werden geladen...",
     "unread": "ungelesen",
     "to_me": "An mich",

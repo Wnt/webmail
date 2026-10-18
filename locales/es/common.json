@@ -238,6 +238,8 @@
     "no_emails_description": "Este buzón está vacío",
     "no_search_results": "No se encontraron resultados",
     "no_search_results_description": "Intente ajustar su búsqueda o filtros",
+    "search_failed": "La búsqueda no terminó",
+    "search_failed_description": "El servidor no respondió a tiempo. Vuelve a buscar para intentarlo de nuevo.",
     "loading": "Cargando correos...",
     "unread": "no leído",
     "to_me": "Para mí",
