@@ -65,8 +65,11 @@ interface UseMailboxDropReturn {
 
 export function useMailboxDrop({ mailbox, onDropComplete, onSuccess, onError }: UseMailboxDropOptions): UseMailboxDropReturn {
   const [isOver, setIsOver] = useState(false);
-  const { client } = useAuthStore();
-  const { moveEmailsToMailbox, crossAccountMoveEmails, selectedEmailKeys, clearSelection, refreshCurrentMailbox, mailboxes } = useEmailStore();
+  // Fork (Wnt/webmail): read at drop time, not subscribed to - this hook runs
+  // in every folder row, and whole-store subscriptions re-rendered every row
+  // on every store write.
+  const client = useAuthStore((s) => s.client);
+  const { moveEmailsToMailbox, crossAccountMoveEmails, clearSelection, refreshCurrentMailbox } = useEmailStore.getState();
   const { isDragging, sourceMailboxId, draggedEmails, endDrag } = useDragDropContext();
 
   // Determine if this is a valid drop target
@@ -115,6 +118,7 @@ export function useMailboxDrop({ mailbox, onDropComplete, onSuccess, onError }: 
     e.preventDefault();
     e.stopPropagation();
     setIsOver(false);
+    const { selectedEmailKeys, mailboxes } = useEmailStore.getState();
 
     if (!client || !isValidTarget()) {
       endDrag();
@@ -224,7 +228,7 @@ export function useMailboxDrop({ mailbox, onDropComplete, onSuccess, onError }: 
     } finally {
       endDrag();
     }
-  }, [client, mailbox, mailboxes, isValidTarget, moveEmailsToMailbox, crossAccountMoveEmails, draggedEmails, sourceMailboxId, selectedEmailKeys, clearSelection, refreshCurrentMailbox, endDrag, onDropComplete, onSuccess, onError]);
+  }, [client, mailbox, isValidTarget, moveEmailsToMailbox, crossAccountMoveEmails, draggedEmails, sourceMailboxId, clearSelection, refreshCurrentMailbox, endDrag, onDropComplete, onSuccess, onError]);
 
   const valid = isValidTarget();
 

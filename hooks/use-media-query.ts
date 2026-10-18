@@ -68,7 +68,13 @@ function classifyPane(paneWidth: number | null) {
  * it directly (mobile navigation helpers etc.).
  */
 export function useDeviceDetection() {
-  const { setDeviceType, isMobile, isTablet, isDesktop } = useUIStore();
+  // Fork (Wnt/webmail): only the device flags - a whole-store subscription
+  // re-rendered each of its callers (the reading pane among them) on every
+  // UI-store write.
+  const setDeviceType = useUIStore((s) => s.setDeviceType);
+  const isMobile = useUIStore((s) => s.isMobile);
+  const isTablet = useUIStore((s) => s.isTablet);
+  const isDesktop = useUIStore((s) => s.isDesktop);
   const paneWidth = usePaneSize();
   const paneClassification = classifyPane(paneWidth);
 

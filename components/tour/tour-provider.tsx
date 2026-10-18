@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode, useMemo } from "react";
 import { useRouter, usePathname } from "@/i18n/navigation";
 import { useAuthStore } from "@/stores/auth-store";
 import { useCalendarStore } from "@/stores/calendar-store";
@@ -49,7 +49,10 @@ export function TourProvider({ children }: { children: ReactNode }) {
   const [currentStep, setCurrentStep] = useState(0);
   const [hasCompletedTour, setHasCompletedTour] = useState(false);
 
-  const steps = getTourSteps({ isDemoMode, supportsCalendar: supportsCalendar && calendarEnabled, supportsWebDAV: supportsWebDAV !== false });
+  const steps = useMemo(
+    () => getTourSteps({ isDemoMode, supportsCalendar: supportsCalendar && calendarEnabled, supportsWebDAV: supportsWebDAV !== false }),
+    [isDemoMode, supportsCalendar, calendarEnabled, supportsWebDAV],
+  );
 
   useEffect(() => {
     // One-time migration: if the legacy per-device flag is set but the synced
@@ -164,7 +167,9 @@ export function TourProvider({ children }: { children: ReactNode }) {
     } catch { /* */ }
   }, [updateSetting]);
 
-  const value: TourContextValue = {
+  // Fork (Wnt/webmail): one value per tour state - a fresh object on every
+  // render re-rendered every consumer (the reading pane among them).
+  const value: TourContextValue = useMemo(() => ({
     isActive,
     currentStep,
     totalSteps: steps.length,
@@ -175,7 +180,7 @@ export function TourProvider({ children }: { children: ReactNode }) {
     prevStep,
     hasCompletedTour,
     resetTourCompletion,
-  };
+  }), [isActive, currentStep, steps, startTour, stopTour, nextStep, prevStep, hasCompletedTour, resetTourCompletion]);
 
   return (
     <TourContext.Provider value={value}>

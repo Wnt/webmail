@@ -148,7 +148,9 @@ function getReadyBundle(emails: Email[]): { url: string; name: string } | null {
 }
 
 export function useEmailDrag({ email, sourceMailboxId, threadEmails }: UseEmailDragOptions): UseEmailDragReturn {
-  const { selectedEmailKeys, emails } = useEmailStore();
+  // Fork (Wnt/webmail): the selection and the list are read when a drag
+  // starts, not subscribed to - this hook runs in every list row, and a
+  // whole-store subscription re-rendered every row on every store write.
   const { startDrag, endDrag, isDragging, draggedEmails } = useDragDropContext();
   const isMobile = useUIStore((state) => state.isMobile);
   const client = useAuthStore((state) => state.client);
@@ -202,6 +204,7 @@ export function useEmailDrag({ email, sourceMailboxId, threadEmails }: UseEmailD
 
   const warmUp = useCallback(() => {
     if (!dragOutEnabled || !client) return;
+    const { selectedEmailKeys, emails } = useEmailStore.getState();
     const isSelected = selectedEmailKeys.has(emailKeyFor(email));
     const isMulti = isSelected && selectedEmailKeys.size > 1;
     if (isMulti) {
@@ -213,7 +216,7 @@ export function useEmailDrag({ email, sourceMailboxId, threadEmails }: UseEmailD
     } else {
       prefetchSingle();
     }
-  }, [dragOutEnabled, client, selectedEmailKeys, email, emails, prefetchSingle, filenameOptions, bundleOptions]);
+  }, [dragOutEnabled, client, email, prefetchSingle, filenameOptions, bundleOptions]);
 
   // Warming the drag-out file downloads the whole raw message (or a bundle
   // of them). Doing that on every pointerenter downloaded each row the
@@ -259,6 +262,7 @@ export function useEmailDrag({ email, sourceMailboxId, threadEmails }: UseEmailD
     // - If current email is selected, drag all selected
     // - If threadEmails provided (thread header), drag all thread emails
     // - Otherwise, drag only this email
+    const { selectedEmailKeys, emails } = useEmailStore.getState();
     const isSelected = selectedEmailKeys.has(emailKeyFor(email));
     const emailsToDrag = isSelected
       ? emails.filter(em => selectedEmailKeys.has(emailKeyFor(em)))
@@ -330,7 +334,7 @@ export function useEmailDrag({ email, sourceMailboxId, threadEmails }: UseEmailD
     });
 
     startDrag(emailsToDrag, sourceMailboxId);
-  }, [email, selectedEmailKeys, emails, sourceMailboxId, startDrag, threadEmails, dragOutEnabled, client, prefetchSingle, filenameOptions, bundleOptions]);
+  }, [email, sourceMailboxId, startDrag, threadEmails, dragOutEnabled, client, prefetchSingle, filenameOptions, bundleOptions]);
 
   const handleDragEnd = useCallback(() => {
     endDrag();

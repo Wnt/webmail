@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useMemo, ReactNode } from "react";
 import { Email } from "@/lib/jmap/types";
 
 interface DragDropState {
@@ -40,8 +40,13 @@ export function DragDropProvider({ children }: { children: ReactNode }) {
     setState(initialState);
   }, []);
 
+  // Fork (Wnt/webmail): one value per drag state. The provider wraps the
+  // whole mail app and re-renders with it; a fresh object each time
+  // re-rendered every drag consumer - every list row and folder row - on
+  // every store write, memoised or not.
+  const value = useMemo(() => ({ ...state, startDrag, endDrag }), [state, startDrag, endDrag]);
   return (
-    <DragDropContext.Provider value={{ ...state, startDrag, endDrag }}>
+    <DragDropContext.Provider value={value}>
       {children}
     </DragDropContext.Provider>
   );

@@ -1670,9 +1670,13 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
         markOpen(link.id, 'session');
       }
       setLoadingEmail(true);
+      // Phone: the reading pane right away (the list behind it is not drawn
+      // first and then replaced).
+      if (isMobile) setActiveView('viewer');
       try {
         const email = await fetchEmailContent(activeClient, link.id);
         if (!email) {
+          if (isMobile) setActiveView('list');
           toast.error(t('deep_link.message_not_found'));
           return;
         }

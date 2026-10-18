@@ -7,7 +7,11 @@ import { renderHook, act } from '@testing-library/react';
 const fetchBlobAsObjectUrl = vi.fn(async () => 'blob:x');
 const client = { fetchBlobAsObjectUrl };
 
-vi.mock('@/stores/email-store', () => ({ useEmailStore: () => ({ selectedEmailKeys: new Set(), emails: [] }) }));
+vi.mock('@/stores/email-store', () => {
+  const state = { selectedEmailKeys: new Set(), emails: [] };
+  // The hook reads the selection when a drag starts (getState), not by subscribing.
+  return { useEmailStore: Object.assign(() => state, { getState: () => state }) };
+});
 vi.mock('@/stores/auth-store', () => ({ useAuthStore: (sel: (s: unknown) => unknown) => sel({ client }) }));
 vi.mock('@/stores/ui-store', () => ({ useUIStore: (sel: (s: unknown) => unknown) => sel({ isMobile: false }) }));
 vi.mock('@/stores/settings-store', () => ({ useSettingsStore: (sel: (s: unknown) => unknown) => sel({}) }));

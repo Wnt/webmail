@@ -25,8 +25,10 @@ interface UseTagDropReturn {
 
 export function useTagDrop({ tagId, onSuccess, onError }: UseTagDropOptions): UseTagDropReturn {
   const [isOver, setIsOver] = useState(false);
-  const { client } = useAuthStore();
-  const { fetchEmails, fetchTagCounts, selectedMailbox } = useEmailStore();
+  // Fork (Wnt/webmail): read at drop time, not subscribed to (this runs in
+  // every tag row of the sidebar).
+  const client = useAuthStore((s) => s.client);
+  const { fetchEmails, fetchTagCounts } = useEmailStore.getState();
   const { isDragging, endDrag } = useDragDropContext();
 
   const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
@@ -88,7 +90,7 @@ export function useTagDrop({ tagId, onSuccess, onError }: UseTagDropOptions): Us
       }
 
       // Refresh the email list
-      await fetchEmails(client, selectedMailbox);
+      await fetchEmails(client, useEmailStore.getState().selectedMailbox);
 
       // Refresh tag counts
       fetchTagCounts(client);
@@ -100,7 +102,7 @@ export function useTagDrop({ tagId, onSuccess, onError }: UseTagDropOptions): Us
     } finally {
       endDrag();
     }
-  }, [client, isDragging, tagId, fetchEmails, fetchTagCounts, selectedMailbox, endDrag, onSuccess, onError]);
+  }, [client, isDragging, tagId, fetchEmails, fetchTagCounts, endDrag, onSuccess, onError]);
 
   return {
     dropHandlers: {
