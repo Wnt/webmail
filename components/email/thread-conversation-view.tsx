@@ -552,7 +552,9 @@ function EmailCard({
             {formatDate(email.receivedAt)}
           </div>
           {!isExpanded && density !== 'extra-compact' && (
-            <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
+            // As in the list rows: a long link breaks inside the card, so the
+            // clamp ends the last line with an ellipsis.
+            <p className="text-sm text-muted-foreground mt-1 line-clamp-2 wrap-anywhere">
               {cleanPreview(email.preview) || t('email_viewer.no_preview_available')}
             </p>
           )}
