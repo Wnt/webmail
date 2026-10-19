@@ -26,8 +26,14 @@ const WEBKIT_MIN_LIFETIME_MS = 30_000;
 type Note = { title: string; options: Record<string, unknown>; closed: boolean; at: number; byBrowser?: boolean };
 type Reply = { ok: boolean; status: number; body?: unknown };
 
-function loadWorker({ webkit = true, onShow, markerReadsThrow = false }: {
+function loadWorker({ webkit = true, onShow, markerReadsThrow = false, onList, beforePut, noSubscription = false }: {
   webkit?: boolean;
+  /** Runs after each getNotifications() listing (its 1-based count). */
+  onList?: (count: number) => void;
+  /** Awaited before a cache write lands (its key). */
+  beforePut?: (key: string) => Promise<void> | void;
+  /** The browser subscription is already gone (the page unsubscribed). */
+  noSubscription?: boolean;
   /** Runs while the worker's showNotification is in progress (e.g. iOS showing another one meanwhile). */
   onShow?: () => void;
   /** Reading a sign-out marker fails (Cache Storage error). */
@@ -36,6 +42,7 @@ function loadWorker({ webkit = true, onShow, markerReadsThrow = false }: {
   const listeners = new Map<string, (event: unknown) => void>();
   const all: Note[] = [];
   const onScreen = () => all.filter((n) => !n.closed);
+  let listings = 0;
   const cacheStore = new Map<string, string>();
   const subscription = {
     endpoint: webkit ? 'https://web.push.apple.com/QGx0abc' : 'https://fcm.googleapis.com/fcm/send/abc',
@@ -56,7 +63,8 @@ function loadWorker({ webkit = true, onShow, markerReadsThrow = false }: {
         all.push({ title, options, closed: false, at: Date.now() });
         onShow?.();
       },
-      getNotifications: async (filter?: { tag?: string }) => onScreen()
+      getNotifications: async (filter?: { tag?: string }) => {
+        const listed = onScreen()
         .filter((n) => !filter?.tag || n.options.tag === filter.tag)
         .map((n) => ({
           title: n.title, body: n.options.body, tag: n.options.tag,
@@ -67,8 +75,11 @@ function loadWorker({ webkit = true, onShow, markerReadsThrow = false }: {
             if (webkit && Date.now() - n.at < WEBKIT_MIN_LIFETIME_MS) return; // refused
             n.closed = true;
           },
-        })),
-      pushManager: { getSubscription: async () => subscription },
+        }));
+        onList?.(++listings);
+        return listed;
+      },
+      pushManager: { getSubscription: async () => (noSubscription ? null : subscription) },
     },
   };
   const caches = {
@@ -80,8 +91,10 @@ function loadWorker({ webkit = true, onShow, markerReadsThrow = false }: {
         return value === undefined ? undefined : { json: async () => JSON.parse(value) };
       },
       put: async (key: string, res: { text: () => Promise<string> }) => {
+        const text = await res.text();
+        await beforePut?.(key);
         cacheStore.delete(key);
-        cacheStore.set(key, await res.text());
+        cacheStore.set(key, text);
       },
       keys: async () => [...cacheStore.keys()].map((url) => ({ url })),
       delete: async (key: string | { url: string }) => cacheStore.delete(typeof key === 'string' ? key : key.url),
@@ -233,9 +246,9 @@ describe('a notification iOS showed itself (declarative push)', () => {
     // only the latest push of the account's topic.
     const w = loadWorker();
     w.showByBrowser(declarative({ emailIds: ['e0'] }));
-    (w.onScreen()[0].options as { navigate: string }).navigate = `${ORIGIN}/mail/message/e0`;
+    (w.onScreen()[0].options as { navigate: string }).navigate = `${ORIGIN}/mail/message/e0#sent=${SENT_AT - 60_000}`;
     await vi.advanceTimersByTimeAsync(35_000);
-    await w.push(payload({ email: { ...email, summary }, renotify: false }));
+    await w.push(payload({ email: { ...email, summary }, renotify: false, firstSentAt: SENT_AT }));
     expect(w.onScreen()).toHaveLength(1);
     expect(w.onScreen()[0].options.data).toMatchObject({ kind: 'email', emailId: 'e1' });
     expect(w.onScreen()[0].options).toMatchObject({ silent: true, renotify: false, body: `${email.subject}\n${summary}` });
@@ -245,9 +258,9 @@ describe('a notification iOS showed itself (declarative push)', () => {
     const w = loadWorker();
     await w.push(payload({ emailIds: ['e1'] }));
     w.showByBrowser(declarative({ emailIds: ['e2'] }));
-    (w.onScreen()[1].options as { navigate: string }).navigate = `${ORIGIN}/mail/message/e2`;
+    (w.onScreen()[1].options as { navigate: string }).navigate = `${ORIGIN}/mail/message/e2#sent=${SENT_AT + 10_000}`;
     await vi.advanceTimersByTimeAsync(35_000);
-    await w.push(payload({ email: { ...email, summary }, renotify: false }));
+    await w.push(payload({ email: { ...email, summary }, renotify: false, firstSentAt: SENT_AT }));
     const mine = w.onScreen().filter((n) => !n.byBrowser);
     expect(mine.map((n) => (n.options.data as { emailId: string }).emailId)).toEqual(['e2']);
     expect(mine[0].options.navigate).toBe(`${ORIGIN}/mail/message/e2`);
@@ -393,7 +406,8 @@ describe('ordering, sign-out and fail-closed keeping (review round 1)', () => {
     w.marker('signed-out/acc1');
     const port = { postMessage: vi.fn() };
     await w.fire('message', { data: { type: 'push-signout', accountIds: ['acc1'] }, ports: [port] }, 40_000);
-    expect(port.postMessage).toHaveBeenCalledWith({ done: true });
+    // Not settled while WebKit refuses the close (the page then drops the subscription); closed once it may.
+    expect(port.postMessage).toHaveBeenCalledWith({ done: false });
     expect(w.onScreen()).toEqual([]);
   });
 
@@ -430,3 +444,93 @@ describe('ordering, sign-out and fail-closed keeping (review round 1)', () => {
     expect(w.kept()).toEqual([expect.objectContaining({ email: fullEmail() })]);
   });
 });
+
+// Codex Astra review round 2 (audit/reviews/late-push-bulwark-r2.md).
+describe('ordering, sign-out and detached keeps (review round 2)', () => {
+  const shownByIos = (w: ReturnType<typeof loadWorker>, id: string, sentAt?: number) => {
+    w.showByBrowser({ notification: {
+      title: `Sender ${id}`, body: `Subject ${id}`, tag: 'bulwark-mail:acc1', silent: false,
+      navigate: `${ORIGIN}/mail/message/${id}${sentAt ? `#sent=${sentAt}` : ''}`,
+    } });
+  };
+  const ids = (w: ReturnType<typeof loadWorker>) => w.onScreen().map((n) => {
+    const d = n.options.data as { emailId?: string } | undefined;
+    return d?.emailId ?? /\/mail\/message\/([^#]+)/.exec(String(n.options.navigate))?.[1];
+  });
+
+  it('1A: a notification iOS shows after the push was decided on is never closed by it', async () => {
+    let w!: ReturnType<typeof loadWorker>;
+    let injected = false;
+    w = loadWorker({
+      onList: (count) => {
+        if (count === 1 && !injected) {
+          injected = true;
+          shownByIos(w, 'e2', SENT_AT + 30_000);
+        }
+      },
+    });
+    w.setTicket(() => ({ ok: true, status: 200, body: { email: fullEmail() } }));
+    shownByIos(w, 'e1', SENT_AT);
+    await vi.advanceTimersByTimeAsync(35_000);
+    await w.push(payload({ email: { ...email, summary }, renotify: false, firstSentAt: SENT_AT }));
+    expect(new Set(ids(w))).toEqual(new Set(['e1', 'e2']));
+  });
+
+  it('1B: the newest by send time counts, not the one listed last', async () => {
+    const w = loadWorker();
+    shownByIos(w, 'e2', SENT_AT + 10_000);
+    shownByIos(w, 'e1', SENT_AT); // delivered late, listed after e2
+    await vi.advanceTimersByTimeAsync(35_000);
+    await w.push(payload({ email: { ...email, summary }, renotify: false, firstSentAt: SENT_AT }));
+    expect(ids(w)).toEqual(['e2']);
+    expect(w.onScreen().some((n) => String(n.options.body).includes(summary))).toBe(false);
+  });
+
+  it('1: another message whose push time is unknown is left up, not replaced', async () => {
+    const w = loadWorker();
+    shownByIos(w, 'e9');
+    await vi.advanceTimersByTimeAsync(35_000);
+    await w.push(payload({ email: { ...email, summary }, renotify: false, firstSentAt: SENT_AT }));
+    expect(ids(w)).toContain('e9');
+    expect(ids(w)).not.toContain('e1');
+  });
+
+  it('2: a sign-out whose page already dropped the subscription still closes a young notification later', async () => {
+    const w = loadWorker({ noSubscription: true });
+    shownByIos(w, 'e1', SENT_AT);
+    w.marker('signed-out/acc1');
+    const port = { postMessage: vi.fn() };
+    await w.fire('message', { data: { type: 'push-signout', accountIds: ['acc1'] }, ports: [port] }, 40_000);
+    expect(port.postMessage).toHaveBeenCalledWith({ done: false });
+    expect(w.onScreen()).toEqual([]);
+  });
+
+  it('2: a sign-out with nothing left up reports settled', async () => {
+    const w = loadWorker();
+    shownByIos(w, 'e1', SENT_AT);
+    await vi.advanceTimersByTimeAsync(31_000); // old enough to close at once
+    w.marker('signed-out/acc1');
+    const port = { postMessage: vi.fn() };
+    await w.fire('message', { data: { type: 'push-signout', accountIds: ['acc1'] }, ports: [port] }, 0);
+    expect(port.postMessage).toHaveBeenCalledWith({ done: true });
+    expect(w.onScreen()).toEqual([]);
+  });
+
+  it('3: a ticket keep whose write lands after a sign-out does not stay kept', async () => {
+    let releasePut!: () => void;
+    const paused = new Promise<void>((r) => { releasePut = r; });
+    const w = loadWorker({ beforePut: (key) => (key.includes('/__push-state/prefetched/') ? paused : undefined) });
+    w.setTicket(() => ({ ok: true, status: 200, body: { email: fullEmail() } }));
+    const pushed = w.push(payload(), 0);
+    await vi.advanceTimersByTimeAsync(200); // the notification is up, the keep's write is held
+    w.marker('signed-out/acc1');
+    const port = { postMessage: vi.fn() };
+    const signout = w.fire('message', { data: { type: 'push-signout', accountIds: ['acc1'] }, ports: [port] }, 0);
+    await vi.advanceTimersByTimeAsync(100);
+    releasePut();
+    await vi.advanceTimersByTimeAsync(40_000);
+    await Promise.all([pushed, signout]);
+    expect(w.kept()).toEqual([]);
+  });
+});
+

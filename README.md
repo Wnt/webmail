@@ -18,11 +18,14 @@
 >      worker only when the next push came). The quiet summary push takes that notification over: the worker
 >      recognises it by its `navigate` message link and shows its own copy, with the tap data and the ledger
 >      entry. A quiet push never alerts again. Notifications are ordered by when the gateway sent their first
->      push (`data.sentAt`, or the `#sent=<ms>` fragment of an iOS-shown one's link): a late summary never
->      replaces a newer message's notification, and a replacement closes only notifications that were up before
->      it. Sign-out: on WebKit the worker closes what it found again once it is 30 s old; on Apple's push service
->      `lib/push-signout.ts` drops the browser subscription unless the server confirmed the teardown (the
->      markers cannot stop a notification the browser shows itself). Unknown sign-out state keeps nothing.
+>      push (`data.sentAt`, or the `#sent=<ms>` fragment of an iOS-shown one's link): each push decides on a
+>      snapshot of what is up, picks the newest by that time, leaves up another message's notification that is
+>      newer or cannot be ordered, and closes only what it chose then (never one the browser showed after).
+>      Sign-out: the worker answers "settled" only when nothing of the account is still up (WebKit refuses to
+>      close one younger than 30 s; it is closed later, on every browser), drains detached message keeps, and
+>      undoes a keep that lands after it; on Apple's push service `lib/push-signout.ts` drops the browser
+>      subscription unless the server confirmed the teardown (the markers cannot stop a notification the
+>      browser shows itself). Unknown sign-out state keeps nothing.
 >    - With the push's `previewTicket` (webmail-gateway, per device, one message, minutes) the worker keeps the
 >      message for the tap through the gateway's `POST /relay/api/push/preview` when the session-backed lookup
 >      fails (its access token lives an hour). The tap diagnostics record how late each push was handled (`lag`,
