@@ -44,6 +44,11 @@ function scaling(shape: (n: number) => () => unknown): { small: number; large: n
 }
 
 const part = (partId: string, type: string) => ({ partId, blobId: `blob-${partId}`, size: 1, type });
+const plainMail = (value: string) => ({
+  htmlBody: [part('1', 'text/plain')],
+  textBody: [part('1', 'text/plain')],
+  bodyValues: { 1: { value, isEncodingProblem: false, isTruncated: false } },
+});
 const htmlMail = (value: string) => ({
   htmlBody: [part('1', 'text/html')],
   textBody: [part('1', 'text/html')],
@@ -64,6 +69,11 @@ describe('hostile mail stays cheap (linear, capped)', () => {
     ['unclosed title elements in the body', (n) => () => verificationCodeBodyText(htmlMail('<title>x'.repeat(n / 8)))],
     ['style openings without a closing angle bracket', (n) => () => verificationCodeBodyText(htmlMail(`${'<style '.repeat(n / 7)}>x`))],
     ['line breaks followed by empty blocks', (n) => () => verificationCodeBodyText(htmlMail(`x${'<br>'.repeat(n / 15)}${'<div></div>'.repeat(n / 15)}`))],
+    ['many closed hidden elements', (n) => () => verificationCodeBodyText(htmlMail('<div hidden>x</div>'.repeat(n / 19)))],
+    ['a long inline style', (n) => () => verificationCodeBodyText(htmlMail(`<p style="${'a:b;'.repeat(n / 4)}">code 123456</p>`))],
+    ['quoted lines', (n) => () => findVerificationCode('Your code', verificationCodeBodyText(plainMail('> code 1234\n'.repeat(n / 12))))],
+    ['a long attribution-like line', (n) => () => findVerificationCode('Your code', verificationCodeBodyText(plainMail(`On ${'x'.repeat(n)} wrote:\ncode 123456`)))],
+    ['long separator-like lines', (n) => () => verificationCodeBodyText(plainMail(`${'-'.repeat(n / 2)}\n${'_'.repeat(n / 2)}\ncode 123456`))],
   ];
 
   it.each(shapes)('%s: well under the bound, and 4x the input takes at most about 8x the time', (_, shape) => {
@@ -225,5 +235,15 @@ describe('hostile mail stays cheap (linear, capped)', () => {
     expect(findVerificationCode('', 'Your code is 482913. It expires in 10 minutes.', 'preview')).toBe('482913');
     expect(findVerificationCode('', `Your code is 482913. ${pad(230)}`, 'preview')).toBe('482913');
     expect(findVerificationCode('', `${pad(170)} Your code is 482913`, 'preview')).toBe('482913'); // 190 characters: complete
+  });
+
+  it('the converter reads every element unless told otherwise; the reader leaves hidden and quoted ones out', () => {
+    const html = '<p>Visible</p><div style="display:none">Hidden</div><blockquote>Quoted</blockquote><div class="gmail_quote">Earlier</div>';
+    expect(htmlToPlainText(html)).toBe('Visible\nHidden\nQuoted\nEarlier');
+    const read = htmlToPlainTextBounded(html, Infinity, {
+      exclude: (el) => (el.classList.contains('gmail_quote') ? 'rest' : el.tagName === 'BLOCKQUOTE' || el.getAttribute('style') ? 'element' : null),
+    });
+    expect(read).toEqual({ text: 'Visible', truncated: false, stopped: true });
+    expect(verificationCodeBodyText(htmlMail(html)).trim()).toBe('Visible');
   });
 });

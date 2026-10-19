@@ -24,12 +24,11 @@ describe('findVerificationCode on real mail', () => {
   });
 
   // Mail whose preview was cut ("...", or long enough to have been cut by the
-  // server without a mark) within 80 characters after its code: a code that
-  // close to a cut may be a fragment, so the list offers none and the reader,
-  // from the whole body, does.
-  const CUT_NEAR_CODE = new Set([
-    'Sendcloud', 'Mozilla', 'Bluesky', 'otelo', 'Registercheck', 'Amazon', 'Kleinanzeigen', 'Google', 'STACKIT',
-  ]);
+  // server without a mark) within 40 characters after its code: the text that
+  // decides whether it is a code (promotion words, a next group of digits) or
+  // the rest of the code itself may be past the cut, so the list offers none
+  // and the reader, from the whole body, does.
+  const CUT_NEAR_CODE = new Set(['Sendcloud', 'Mozilla', 'Registercheck', 'Amazon', 'Kleinanzeigen', 'Google']);
 
   it.each(mails.map((m) => [m.sender, m] as const))('finds the code of %s in the list, or nothing', (sender, mail) => {
     const expected = NOT_IN_PREVIEW.has(sender) || CUT_NEAR_CODE.has(sender) ? null : mail.code;

@@ -61,6 +61,12 @@ export interface HtmlToPlainTextOptions {
    * the text part of a reply could not tell the reply from the quote.
    */
   mailMarkup?: boolean;
+  /**
+   * Leave elements out (the verification-code reader: hidden and quoted
+   * parts): 'element' skips it with its content, 'rest' ends the text there
+   * (everything after is prior correspondence). Unset: every element is read.
+   */
+  exclude?: (element: Element) => 'element' | 'rest' | null;
 }
 
 function normalizeLineBreaks(value: string): string {
@@ -96,14 +102,16 @@ export function htmlToPlainTextBounded(
   html: string,
   maxLength: number,
   options: HtmlToPlainTextOptions = {},
-): { text: string; truncated: boolean } {
-  const { paragraphSpacing = false, mailMarkup = false } = options;
+): { text: string; truncated: boolean; stopped: boolean } {
+  const { paragraphSpacing = false, mailMarkup = false, exclude } = options;
   const document = parseHtmlSafely(html);
   const chunks: string[] = [];
   // Newline characters trailing the accumulated output, and its length.
   let trailing = 0;
   let produced = 0;
   let truncated = false;
+  // An `exclude` verdict of 'rest' ended the text: what is left is complete.
+  let stopped = false;
 
   const push = (chunk: string) => {
     chunks.push(chunk);
@@ -135,6 +143,7 @@ export function htmlToPlainTextBounded(
   // Walks the children until enough text has been produced.
   const walkChildren = (node: Node) => {
     for (const child of Array.from(node.childNodes)) {
+      if (stopped) return;
       if (produced >= maxLength) {
         truncated = true;
         return;
@@ -155,6 +164,13 @@ export function htmlToPlainTextBounded(
 
     const element = node as HTMLElement;
     const tagName = element.tagName.toLowerCase();
+
+    const verdict = exclude?.(element) ?? null;
+    if (verdict === 'rest') {
+      stopped = true;
+      return;
+    }
+    if (verdict === 'element') return;
 
     if (tagName === 'br') {
       // Additive so consecutive <br> can form a blank line (capped by normalize).
@@ -216,5 +232,5 @@ export function htmlToPlainTextBounded(
   };
 
   walkChildren(document.body);
-  return { text: normalizeLineBreaks(chunks.join('')), truncated };
+  return { text: normalizeLineBreaks(chunks.join('')), truncated, stopped };
 }
