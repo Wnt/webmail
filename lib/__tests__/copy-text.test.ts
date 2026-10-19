@@ -67,6 +67,19 @@ describe('copyText', () => {
     expect(String(window.getSelection())).toBe('');
   });
 
+  it('the fallback puts back what the user had selected', async () => {
+    stubClipboard(() => Promise.reject(new DOMException('not allowed', 'NotAllowedError')));
+    execCommand.mockReturnValue(true);
+    const p = document.createElement('p');
+    p.textContent = 'an earlier selection';
+    document.body.appendChild(p);
+    const range = document.createRange();
+    range.selectNodeContents(p);
+    window.getSelection()!.addRange(range);
+    expect(await copyText(CODE)).toBe('copied');
+    expect(String(window.getSelection())).toBe('an earlier selection');
+  });
+
   it('both refused: failed, never copied', async () => {
     stubClipboard(() => Promise.reject(new DOMException('not allowed', 'NotAllowedError')));
     expect(await copyText(CODE)).toBe('failed');

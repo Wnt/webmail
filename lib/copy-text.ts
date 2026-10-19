@@ -54,6 +54,9 @@ function execCommandCopy(text: string): boolean {
   if (typeof document === 'undefined' || typeof document.execCommand !== 'function' || !document.body) return false;
   const selection = window.getSelection();
   if (!selection) return false;
+  // Whatever the user had selected comes back afterwards.
+  const saved: Range[] = [];
+  for (let i = 0; i < selection.rangeCount; i++) saved.push(selection.getRangeAt(i).cloneRange());
   // A span, not a text field: focusing a field would bring up the keyboard
   // and zoom on a phone.
   const holder = document.createElement('span');
@@ -73,6 +76,11 @@ function execCommandCopy(text: string): boolean {
   } finally {
     selection.removeAllRanges();
     holder.remove();
+    try {
+      for (const range of saved) selection.addRange(range);
+    } catch {
+      // A selection the page changed meanwhile stays cleared.
+    }
   }
 }
 
