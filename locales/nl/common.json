@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "Code {code} kopiëren",
       "copied": "Code gekopieerd",
-      "copy_failed": "Kan de code niet kopiëren"
+      "copy_failed": "Kan de code niet kopiëren",
+      "label": "Verificatiecode",
+      "copy_button": "Code kopiëren",
+      "copied_button": "Gekopieerd",
+      "copy_failed_select": "Kopiëren is mislukt. De code is geselecteerd: kopieer hem handmatig."
     },
     "mv_position": "{index} van {total}"
   },

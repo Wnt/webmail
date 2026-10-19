@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "Kopēt kodu {code}",
       "copied": "Kods nokopēts",
-      "copy_failed": "Neizdevās nokopēt kodu"
+      "copy_failed": "Neizdevās nokopēt kodu",
+      "label": "Verifikācijas kods",
+      "copy_button": "Kopēt kodu",
+      "copied_button": "Nokopēts",
+      "copy_failed_select": "Neizdevās nokopēt. Kods ir atlasīts: nokopējiet to manuāli."
     },
     "mv_position": "{index} no {total}"
   },

@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "Скопіювати код {code}",
       "copied": "Код скопійовано",
-      "copy_failed": "Не вдалося скопіювати код"
+      "copy_failed": "Не вдалося скопіювати код",
+      "label": "Код підтвердження",
+      "copy_button": "Скопіювати код",
+      "copied_button": "Скопійовано",
+      "copy_failed_select": "Не вдалося скопіювати. Код виділено: скопіюйте його вручну."
     },
     "mv_position": "{index} з {total}"
   },

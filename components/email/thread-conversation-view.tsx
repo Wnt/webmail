@@ -4,8 +4,9 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Email, ThreadGroup } from "@/lib/jmap/types";
 import { applyEmailLinkPolicy, emailIframeCsp, plainTextToSafeHtml, sanitizeEmailBodyForIframe, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
 import { getRenderableHtmlBody } from "@/lib/email-body-selection";
-import { findVerificationCode, verificationCodeBodyText } from "@/lib/verification-code";
+import { findVerificationCode, isFreshForVerificationCode, verificationCodeBodyText } from "@/lib/verification-code";
 import { VerificationCodeChip } from "./verification-code-chip";
+import { VerificationCodeBar } from "./verification-code-bar";
 import { collectReferencedCids, isEmbeddedInBody } from "@/lib/attachment-visibility";
 import { collapsePlainTextQuotes, setupQuoteCollapse } from "@/lib/quote-collapse";
 import { fitEmailBodyWidth } from "@/lib/email-fit-width";
@@ -258,6 +259,8 @@ function EmailCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [showVerificationCodes, isExpanded, email.id, email.subject, email.bodyValues],
   );
+  // Fork: a fresh code gets the reader's code bar at the top of the card.
+  const codeBarCode = verificationCode && isFreshForVerificationCode(email.receivedAt) ? verificationCode : null;
   const sender = email.from?.[0];
   const formatAddress = useOwnDomainAddress();
   const isUnread = !email.keywords?.$seen;
@@ -546,6 +549,8 @@ function EmailCard({
       {/* Expanded Content */}
       {isExpanded && (
         <div className="border-t border-border animate-in slide-in-from-top-2 duration-200">
+          {codeBarCode && <VerificationCodeBar code={codeBarCode} />}
+
           {/* External content warning */}
           {hasBlockedContent && !allowExternal && (
             <div className="px-4 py-2 bg-muted/50 flex items-center justify-between text-sm">
@@ -579,7 +584,7 @@ function EmailCard({
             </div>
           )}
 
-          {verificationCode && (
+          {verificationCode && !codeBarCode && (
             <div className="flex" style={{ paddingInline: 'var(--density-card-p)', paddingTop: 'var(--density-card-p)' }}>
               <VerificationCodeChip code={verificationCode} className="py-1 text-sm" />
             </div>

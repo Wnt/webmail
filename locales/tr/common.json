@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "{code} kodunu kopyala",
       "copied": "Kod kopyalandı",
-      "copy_failed": "Kod kopyalanamadı"
+      "copy_failed": "Kod kopyalanamadı",
+      "label": "Doğrulama kodu",
+      "copy_button": "Kodu kopyala",
+      "copied_button": "Kopyalandı",
+      "copy_failed_select": "Kopyalanamadı. Kod seçili: elle kopyalayın."
     },
     "mv_position": "{index} / {total}"
   },

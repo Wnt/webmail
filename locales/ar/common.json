@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "نسخ الرمز {code}",
       "copied": "تم نسخ الرمز",
-      "copy_failed": "تعذّر نسخ الرمز"
+      "copy_failed": "تعذّر نسخ الرمز",
+      "label": "رمز التحقق",
+      "copy_button": "نسخ الرمز",
+      "copied_button": "تم النسخ",
+      "copy_failed_select": "تعذّر النسخ. الرمز محدد: انسخه يدويًا."
     },
     "mv_position": "{index} من {total}"
   },

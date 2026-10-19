@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "{code} кодыг хуулах",
       "copied": "Код хуулагдлаа",
-      "copy_failed": "Кодыг хуулж чадсангүй"
+      "copy_failed": "Кодыг хуулж чадсангүй",
+      "label": "Баталгаажуулах код",
+      "copy_button": "Код хуулах",
+      "copied_button": "Хуулсан",
+      "copy_failed_select": "Хуулж чадсангүй. Код сонгогдсон байна: гараар хуулна уу."
     },
     "mv_position": "{total}-с {index}"
   },

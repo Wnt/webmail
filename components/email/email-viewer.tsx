@@ -118,8 +118,9 @@ import { imageBlobUrl, inertBlobType, isFilePreviewable, isMimeTypeSafeForInline
 import { useWopiStatus, canWopiOpen } from "@/hooks/use-wopi-status";
 import { parseTnef, isTnefAttachment } from "@/lib/tnef";
 import { debug } from "@/lib/debug";
-import { findVerificationCode, verificationCodeBodyText } from "@/lib/verification-code";
+import { findVerificationCode, isFreshForVerificationCode, verificationCodeBodyText } from "@/lib/verification-code";
 import { VerificationCodeChip } from "./verification-code-chip";
+import { VerificationCodeBar } from "./verification-code-bar";
 import type { TnefAttachment } from "@/lib/tnef";
 import { PluginSlot } from "@/components/plugins/plugin-slot";
 import { RulesPanel, useRulesAvailability } from "./rules-menu";
@@ -910,6 +911,9 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [showVerificationCodes, email?.id, email?.subject, email?.bodyValues],
   );
+  // A fresh code (the list's 24 h) gets the bar at the top of the message, so
+  // a notification tap lands on it; an older one only the chip by the subject.
+  const codeBarCode = verificationCode && isFreshForVerificationCode(email?.receivedAt) ? verificationCode : null;
   const dragOutActive = useMemo(() => isDragOutSupported(), []);
   const emailDownloadTemplate = useSettingsStore((state) => state.emailDownloadTemplate) || DEFAULT_EMAIL_TEMPLATE;
   const attachmentDownloadTemplate = useSettingsStore((state) => state.attachmentDownloadTemplate) || DEFAULT_ATTACHMENT_TEMPLATE;
@@ -4114,6 +4118,13 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
         data-message-swipe-page={isMobile ? "" : undefined}
         className={isMobile ? "shrink-0 w-full min-h-0 snap-start flex flex-col" : "contents"}
       >
+      {/* Fork: the one-time code first, above the subject and outside the
+          pane that scrolls, so it is on screen at once (a notification tap,
+          a long subject) and stays there; on the phone it swipes with its
+          message. Keyed by message: a copy result never carries over. */}
+      {codeBarCode && (
+        <VerificationCodeBar key={email.id} code={codeBarCode} className="flex-shrink-0" />
+      )}
       {/* === SUBJECT BLOCK === */}
       <div className={cn(
         "bg-background",
@@ -4169,7 +4180,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
                   </span>
                 )}
               </div>
-              {verificationCode && (
+              {verificationCode && !codeBarCode && (
                 <div className="mt-1.5 flex">
                   <VerificationCodeChip code={verificationCode} className="py-1 text-sm" />
                 </div>

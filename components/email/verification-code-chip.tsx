@@ -6,6 +6,7 @@ import { Check, Key } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import type { Email } from "@/lib/jmap/types";
 import { listVerificationCode } from "@/lib/verification-code";
+import { copyText } from "@/lib/copy-text";
 import { useSettingsStore } from "@/stores/settings-store";
 import { toast } from "@/stores/toast-store";
 import { CHIP_BOX_CLASS, CHIP_ICON_CLASS } from "./attachment-chips";
@@ -36,12 +37,13 @@ export function VerificationCodeChip({ code, className }: VerificationCodeChipPr
     return () => clearTimeout(timer);
   }, [copied]);
 
+  // copyText starts the write in the click itself (browsers allow it only
+  // there) and says "copied" only when the browser confirmed it.
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(code);
+    if ((await copyText(code)) === "copied") {
       setCopied(true);
       toast.success(t("copied"));
-    } catch {
+    } else {
       toast.error(t("copy_failed"));
     }
   };

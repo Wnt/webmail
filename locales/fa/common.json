@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "کپی کد {code}",
       "copied": "کد کپی شد",
-      "copy_failed": "کپی کد ممکن نشد"
+      "copy_failed": "کپی کد ممکن نشد",
+      "label": "کد تأیید",
+      "copy_button": "کپی کد",
+      "copied_button": "کپی شد",
+      "copy_failed_select": "کپی نشد. کد انتخاب شده است: آن را دستی کپی کنید."
     },
     "mv_position": "{index} از {total}"
   },

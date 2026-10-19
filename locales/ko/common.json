@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "코드 {code} 복사",
       "copied": "코드를 복사했습니다",
-      "copy_failed": "코드를 복사할 수 없습니다"
+      "copy_failed": "코드를 복사할 수 없습니다",
+      "label": "인증 코드",
+      "copy_button": "코드 복사",
+      "copied_button": "복사됨",
+      "copy_failed_select": "복사하지 못했습니다. 코드가 선택되어 있으니 직접 복사하세요."
     },
     "mv_position": "{index} / {total}"
   },

@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "{code} kód másolása",
       "copied": "Kód másolva",
-      "copy_failed": "Nem sikerült másolni a kódot"
+      "copy_failed": "Nem sikerült másolni a kódot",
+      "label": "Ellenőrző kód",
+      "copy_button": "Kód másolása",
+      "copied_button": "Másolva",
+      "copy_failed_select": "A másolás nem sikerült. A kód ki van jelölve: másolja ki kézzel."
     },
     "mv_position": "{index} / {total}"
   },

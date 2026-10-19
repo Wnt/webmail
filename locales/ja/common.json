@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "コード {code} をコピー",
       "copied": "コードをコピーしました",
-      "copy_failed": "コードをコピーできませんでした"
+      "copy_failed": "コードをコピーできませんでした",
+      "label": "確認コード",
+      "copy_button": "コードをコピー",
+      "copied_button": "コピーしました",
+      "copy_failed_select": "コピーできませんでした。コードを選択しました。手動でコピーしてください。"
     },
     "mv_position": "{index} / {total}"
   },

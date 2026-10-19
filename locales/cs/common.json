@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "Kopírovat kód {code}",
       "copied": "Kód zkopírován",
-      "copy_failed": "Kód se nepodařilo zkopírovat"
+      "copy_failed": "Kód se nepodařilo zkopírovat",
+      "label": "Ověřovací kód",
+      "copy_button": "Kopírovat kód",
+      "copied_button": "Zkopírováno",
+      "copy_failed_select": "Kopírování se nezdařilo. Kód je označen: zkopírujte ho ručně."
     },
     "mv_position": "{index} z {total}"
   },

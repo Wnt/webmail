@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "Copiar código {code}",
       "copied": "Código copiado",
-      "copy_failed": "No se pudo copiar el código"
+      "copy_failed": "No se pudo copiar el código",
+      "label": "Código de verificación",
+      "copy_button": "Copiar código",
+      "copied_button": "Copiado",
+      "copy_failed_select": "No se pudo copiar. El código está seleccionado: cópialo manualmente."
     },
     "mv_position": "{index} de {total}"
   },

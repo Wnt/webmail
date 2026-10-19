@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "Kopiér kode {code}",
       "copied": "Kode kopieret",
-      "copy_failed": "Koden kunne ikke kopieres"
+      "copy_failed": "Koden kunne ikke kopieres",
+      "label": "Bekræftelseskode",
+      "copy_button": "Kopiér kode",
+      "copied_button": "Kopieret",
+      "copy_failed_select": "Kunne ikke kopiere. Koden er markeret: kopiér den manuelt."
     },
     "mv_position": "{index} af {total}"
   },

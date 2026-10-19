@@ -621,7 +621,11 @@
     "verification_code": {
       "copy": "複製驗證碼 {code}",
       "copied": "驗證碼已複製",
-      "copy_failed": "無法複製驗證碼"
+      "copy_failed": "無法複製驗證碼",
+      "label": "驗證碼",
+      "copy_button": "複製驗證碼",
+      "copied_button": "已複製",
+      "copy_failed_select": "無法複製。驗證碼已選取：請手動複製。"
     },
     "mv_position": "第 {index} 封，共 {total} 封"
   },

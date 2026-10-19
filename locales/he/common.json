@@ -586,7 +586,11 @@
     "verification_code": {
       "copy": "העתקת הקוד {code}",
       "copied": "הקוד הועתק",
-      "copy_failed": "לא ניתן להעתיק את הקוד"
+      "copy_failed": "לא ניתן להעתיק את הקוד",
+      "label": "קוד אימות",
+      "copy_button": "העתקת הקוד",
+      "copied_button": "הועתק",
+      "copy_failed_select": "לא ניתן להעתיק. הקוד מסומן: העתיקו אותו ידנית."
     },
     "mv_position": "{index} מתוך {total}"
   },
