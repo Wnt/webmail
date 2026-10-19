@@ -2586,17 +2586,34 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   }, []);
 
   // Phone: swipe sideways between messages instead of previous / next buttons.
-  // The body's frame is wired in handleIframeLoad below (attachFrame).
+  // The swipe is the native horizontal scroll of a track around the message
+  // (lib/message-swipe.ts), so it works from the sandboxed body iframe too.
+  // An unsent quick reply would be lost by leaving: then it only bounces.
+  const swipeTrackRef = useRef<HTMLDivElement>(null);
+  const swipePageRef = useRef<HTMLDivElement>(null);
   const swipeRootRef = useRef<HTMLDivElement>(null);
+  const swipePrevGutterRef = useRef<HTMLDivElement>(null);
+  const swipeNextGutterRef = useRef<HTMLDivElement>(null);
   const swipeHintLeftRef = useRef<HTMLDivElement>(null);
   const swipeHintRightRef = useRef<HTMLDivElement>(null);
-  const { attachFrame: attachSwipeFrame } = useMessageSwipe({
+  const tSettings = useTranslations('settings');
+  const swipeBlocked = quickReplyText.length > 0;
+  const onSwipeBlocked = useCallback(() => {
+    toast.info(tSettings('unsaved_changes'));
+  }, [tSettings]);
+  const { modes: swipeGutters } = useMessageSwipe({
     enabled: isMobile,
-    rootRef: swipeRootRef,
+    trackRef: swipeTrackRef,
+    pageRef: swipePageRef,
+    paneRef: swipeRootRef,
+    prevGutterRef: swipePrevGutterRef,
+    nextGutterRef: swipeNextGutterRef,
     hintLeftRef: swipeHintLeftRef,
     hintRightRef: swipeHintRightRef,
     onNext: onNavigateNext,
     onPrev: onNavigatePrev,
+    blocked: swipeBlocked,
+    onBlocked: onSwipeBlocked,
     resetKey: email?.id ?? null,
   });
 
@@ -2732,15 +2749,11 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
           window.open(ctx.href, '_blank', 'noopener,noreferrer');
         };
         doc.addEventListener('click', onLinkClick, true);
-
-        // Touches on the body land in this document, not ours: the swipe
-        // between messages listens here too (passive, host-side listeners).
-        attachSwipeFrame(doc, iframe);
       }
     } catch {
       // Cross-origin restrictions - iframe will still display content
     }
-  }, [isDark, effectiveEmailContent.externalBlocked, email?.id, t, openCidPartLink, attachSwipeFrame]);
+  }, [isDark, effectiveEmailContent.externalBlocked, email?.id, t, openCidPartLink]);
 
   // Wire up the iframe as soon as its sandboxed document has parsed, rather than
   // waiting for the iframe 'load' event. 'load' also waits on every subresource,
@@ -4070,6 +4083,33 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
         </div>
       )}
 
+      {/* Phone: the swipe track. The message page (subject, then the pane
+          that scrolls the message) rests between two gutters in a horizontal
+          scroll-snap container; a sideways pan anywhere on it - the sandboxed
+          body iframe included - scrolls the track, and settling on a whole
+          "go" gutter opens that neighbour (hooks/use-message-swipe.ts). The
+          top toolbar stays put. Desktop: neither wrapper has a box. */}
+      <div
+        ref={swipeTrackRef}
+        data-message-swipe-track={isMobile ? "" : undefined}
+        className={isMobile
+          ? "relative flex-1 min-h-0 flex overflow-x-auto overflow-y-hidden snap-x snap-mandatory overscroll-x-contain scroll-hidden"
+          : "contents"}
+      >
+      {isMobile && swipeGutters.prev !== 'off' && (
+        <div
+          ref={swipePrevGutterRef}
+          aria-hidden="true"
+          data-swipe-gutter="prev"
+          data-mode={swipeGutters.prev}
+          className={cn("shrink-0 self-stretch", swipeGutters.prev === 'go' ? "w-[40%] snap-start" : "w-12")}
+        />
+      )}
+      <div
+        ref={swipePageRef}
+        data-message-swipe-page={isMobile ? "" : undefined}
+        className={isMobile ? "shrink-0 w-full min-h-0 snap-start flex flex-col" : "contents"}
+      >
       {/* === SUBJECT BLOCK === */}
       <div className={cn(
         "bg-background",
@@ -4197,11 +4237,18 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
 
       {/* Email Content Area. Mountain View reads the conversation on one plain
           sheet, so the reply buttons under the message sit on the page colour
-          rather than on a tinted strip. */}
+          rather than on a tinted strip. On the phone it scrolls vertically
+          only, so a sideways pan passes through to the track. */}
       <div
         ref={swipeRootRef}
         data-message-swipe={isMobile ? "" : undefined}
-        className={cn("flex-1 overflow-auto overscroll-contain", mvViewer || mvMobileViewer ? "bg-background" : "bg-muted/30", isMobile && !mvMobileViewer && "pb-[calc(3.25rem+env(safe-area-inset-bottom)/2)] sm:pb-0")}
+        className={cn(
+          isMobile
+            ? "flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain"
+            : "flex-1 overflow-auto overscroll-contain",
+          mvViewer || mvMobileViewer ? "bg-background" : "bg-muted/30",
+          isMobile && !mvMobileViewer && "pb-[calc(3.25rem+env(safe-area-inset-bottom)/2)] sm:pb-0",
+        )}
       >
       <div className="min-h-full flex flex-col">
 
@@ -5737,6 +5784,17 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
           </div>)}
         </div>
       </div>
+      </div>
+      </div>
+      {isMobile && swipeGutters.next !== 'off' && (
+        <div
+          ref={swipeNextGutterRef}
+          aria-hidden="true"
+          data-swipe-gutter="next"
+          data-mode={swipeGutters.next}
+          className={cn("shrink-0 self-stretch", swipeGutters.next === 'go' ? "w-[40%] snap-end" : "w-12")}
+        />
+      )}
       </div>
 
       {/* Email Source Modal - pane-scoped inside a Pro pane so it never

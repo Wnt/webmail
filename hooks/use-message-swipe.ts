@@ -1,10 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  MessageSwipeTracker,
-  MESSAGE_SWIPE_DEFAULTS,
-  swipeOffset,
+  gutterModes,
+  isRevealed,
+  isZoomed,
+  restingScrollLeft,
+  swipeProgress,
+  visibleWidth,
+  type GutterModes,
   type SwipeDirection,
 } from "@/lib/message-swipe";
 
@@ -12,43 +16,56 @@ import {
  * Swipe between messages on the phone: finger left opens the next message,
  * finger right the previous one (mirrored in RTL).
  *
- * Why native listeners, and two kinds of them:
- *  - The message body is a sandboxed, script-free iframe. Touches that start
- *    on it are dispatched to the iframe's document and never reach ours. The
- *    sandbox keeps `allow-same-origin` (the viewer already reads the parsed
- *    document to size it and to route link clicks), so the host binds its own
- *    passive listeners on that document via `attachFrame` - no script runs
- *    inside the frame and the sandbox and CSP stay as they are.
- *  - The iframe is sized to its content and the viewer's own pane scrolls, so
- *    one pane-level listener set plus the frame's covers the whole message.
- *  - Every listener is passive and nothing calls preventDefault: vertical
- *    scrolling, pinch-zoom and taps stay entirely native. Classification
- *    (angle, slop, long-press, edges, flick) lives in `lib/message-swipe.ts`.
- *  - The content follows the finger by writing `transform` on the pane
- *    directly, without a React render per touchmove.
+ * The swipe is native horizontal scrolling (see `lib/message-swipe.ts` for
+ * why): the caller renders a horizontal scroll-snap track holding
+ *   [prev gutter] [the message page] [next gutter]
+ * with the gutters this hook's `modes` ask for. The hook keeps the page at
+ * rest between them, drives the edge hint chips from the scroll position,
+ * and when the track settles with a whole `go` gutter on screen it slides
+ * the message out, opens that neighbour, and brings the new one in.
+ *
+ * It needs no touch listeners for the swipe itself, so touches that start on
+ * the sandboxed body iframe (where WebKit runs no listener of ours) work like
+ * any other, and nothing here can get in the way of scrolling, zoom,
+ * selection or typing. The only touch listeners (passive) lock the track
+ * during a long-press or while a second finger is down.
  */
 
 export interface UseMessageSwipeOptions {
   enabled: boolean;
-  /** The pane that scrolls the message; touches on it are watched. */
-  rootRef: React.RefObject<HTMLElement | null>;
+  /** The horizontal scroll-snap track (position: relative). */
+  trackRef: React.RefObject<HTMLElement | null>;
+  /** The message page between the gutters; it slides on a commit. */
+  pageRef: React.RefObject<HTMLElement | null>;
+  /** The pane inside the page that scrolls the message vertically. */
+  paneRef?: React.RefObject<HTMLElement | null>;
+  prevGutterRef: React.RefObject<HTMLElement | null>;
+  nextGutterRef: React.RefObject<HTMLElement | null>;
   /** Fixed hint chips at the left and right edge (opacity is driven here). */
   hintLeftRef?: React.RefObject<HTMLElement | null>;
   hintRightRef?: React.RefObject<HTMLElement | null>;
   onNext?: () => void;
   onPrev?: () => void;
+  /** Leaving would lose something (an unsent quick reply): never navigate. */
+  blocked?: boolean;
+  /** A swipe was tried while blocked (once per gesture). */
+  onBlocked?: () => void;
   /** Changes when another message is shown (its id): the new one slides in. */
   resetKey?: string | null;
 }
 
-/** Text fields, editors and anything opting out keep their own touch behaviour. */
-const EXCLUDED = 'input, textarea, select, [contenteditable=""], [contenteditable="true"], [data-no-swipe], [role="slider"], video, audio';
-
 const OUT_MS = 170;
 const IN_MS = 220;
-const BOUNCE_MS = 300;
 /** Give up waiting for the next message to arrive and show what is there. */
 const ENTER_FALLBACK_MS = 1500;
+/** A blocked swipe this far into a gutter says why it does not navigate. */
+const BLOCKED_NOTICE_PX = 16;
+/** Without `scrollend` (older engines): settled after this long without a scroll event. */
+const SETTLE_MS = 180;
+/** A finger resting this long before it moves is a long-press (selection, menus), never a swipe. */
+const LONG_PRESS_MS = 450;
+/** Movement (px) that counts as "moved" before the long-press time. */
+const LONG_PRESS_SLOP = 10;
 
 function prefersReducedMotion(): boolean {
   try {
@@ -58,86 +75,59 @@ function prefersReducedMotion(): boolean {
   }
 }
 
-function hasSelection(doc: Document | null | undefined): boolean {
+/** `scrollend`: fires in iOS 26 WebKit (checked in the simulator), Chrome 114+, Firefox 109+; older engines settle on a timer. */
+function hasScrollEnd(): boolean {
+  return typeof window !== "undefined" && "onscrollend" in (window as object);
+}
+
+function isRtl(el: Element): boolean {
   try {
-    const sel = doc?.getSelection();
-    return !!sel && !sel.isCollapsed && sel.toString().length > 0;
+    return getComputedStyle(el).direction === "rtl";
   } catch {
     return false;
   }
 }
 
-/**
- * Whether something between the touched node and `root` can still scroll
- * sideways in the direction the finger pushes it. Crosses from the body's
- * frame into the host document through `frame`.
- */
-export function canScrollSideways(
-  start: Element | null,
-  fingerDx: number,
-  root: Element | null,
-  frame: HTMLIFrameElement | null,
-): boolean {
-  let el: Element | null = start;
-  let inFrame = !!frame;
-  while (el) {
-    const doc = el.ownerDocument;
-    const isFrameRoot = inFrame && (el === doc.documentElement || el === doc.body);
-    if (!isFrameRoot) {
-      const view = doc.defaultView;
-      const ox = view ? view.getComputedStyle(el).overflowX : "visible";
-      if ((ox === "auto" || ox === "scroll") && el.scrollWidth > el.clientWidth + 1) {
-        const left = Math.abs(el.scrollLeft);
-        const max = el.scrollWidth - el.clientWidth;
-        // Finger left reveals content further along; finger right goes back.
-        if (fingerDx < 0 ? left < max - 1 : left > 1) return true;
-      }
-    }
-    if (el === root) return false;
-    if (inFrame && el === doc.documentElement) {
-      el = frame;
-      inFrame = false;
-      continue;
-    }
-    el = el.parentElement;
-  }
-  return false;
-}
-
-/** A touch in host-viewport coordinates (a frame's touches are frame-relative). */
-function point(t: Touch, frame: HTMLIFrameElement | null) {
-  if (!frame) return { x: t.clientX, y: t.clientY };
-  // Live rect: it includes the pane's own translate and scroll.
-  const r = frame.getBoundingClientRect();
-  return { x: t.clientX + r.left, y: t.clientY + r.top };
-}
-
 export function useMessageSwipe({
   enabled,
-  rootRef,
+  trackRef,
+  pageRef,
+  paneRef,
+  prevGutterRef,
+  nextGutterRef,
   hintLeftRef,
   hintRightRef,
   onNext,
   onPrev,
+  blocked = false,
+  onBlocked,
   resetKey,
-}: UseMessageSwipeOptions) {
-  const live = useRef({ enabled, onNext, onPrev });
-  live.current = { enabled, onNext, onPrev };
+}: UseMessageSwipeOptions): { modes: GutterModes } {
+  // A pinch-zoomed page pans with the finger; the track must not take that pan.
+  const [zoomed, setZoomed] = useState(false);
+  useEffect(() => {
+    if (!enabled) return;
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    if (!vv) return;
+    const update = () => setZoomed(isZoomed(vv.scale));
+    update();
+    vv.addEventListener("resize", update);
+    return () => vv.removeEventListener("resize", update);
+  }, [enabled]);
 
-  const tracker = useRef<MessageSwipeTracker | null>(null);
-  if (!tracker.current) tracker.current = new MessageSwipeTracker();
+  const modes = gutterModes({ enabled, zoomed, blocked, canPrev: !!onPrev, canNext: !!onNext });
 
-  const gesture = useRef<{
-    target: Element | null;
-    frame: HTMLIFrameElement | null;
-    reduced: boolean;
-    claimed: boolean;
-    lastDx: number;
-  } | null>(null);
-  const suppressClickUntil = useRef(0);
-  const pendingEnter = useRef<{ timer: number } | null>(null);
+  const live = useRef({ onNext, onPrev, onBlocked, blocked, modes });
+  live.current = { onNext, onPrev, onBlocked, blocked, modes };
+
+  /** idle; out = sliding away before navigating; waiting = for the next message. */
+  const phase = useRef<"idle" | "out" | "waiting">("idle");
+  const pendingEnter = useRef<{ timer: number; reduced: boolean } | null>(null);
+  const scrolling = useRef(false);
+  const noticed = useRef(false);
+  const frame = useRef(0);
+  const settleTimer = useRef(0);
   const timers = useRef<number[]>([]);
-  const attached = useRef<WeakSet<Document>>(new WeakSet());
 
   const later = useCallback((fn: () => void, ms: number) => {
     const id = window.setTimeout(() => {
@@ -170,216 +160,275 @@ export function useMessageSwipe({
     delete el.dataset.swipe;
   }, []);
 
-  const follow = useCallback((dx: number, direction: SwipeDirection) => {
-    const g = gesture.current;
-    const root = rootRef.current;
-    if (!g || !root) return;
-    g.lastDx = dx;
-    const go = direction === "next" ? !!live.current.onNext : !!live.current.onPrev;
-    const progress = go ? Math.min(1, Math.abs(dx) / MESSAGE_SWIPE_DEFAULTS.commitDistance) : 0;
-    setHints(dx < 0 ? "right" : "left", progress);
-    root.dataset.swipe = go ? "tracking" : "edge";
-    if (g.reduced) return;
-    root.style.transition = "none";
-    root.style.willChange = "transform";
-    root.style.transform = `translate3d(${swipeOffset(dx, go, root.clientWidth || window.innerWidth)}px,0,0)`;
-  }, [rootRef, setHints]);
+  /** Put the page back at rest, flush with the track, without animating. */
+  const center = useCallback(() => {
+    const track = trackRef.current;
+    const page = pageRef.current;
+    if (!track || !page) return;
+    const left = restingScrollLeft({
+      pageOffsetLeft: page.offsetLeft,
+      scrollWidth: track.scrollWidth,
+      clientWidth: track.clientWidth,
+      rtl: isRtl(track),
+    });
+    if (Math.abs(track.scrollLeft - left) > 0.5) track.scrollLeft = left;
+  }, [trackRef, pageRef]);
 
-  const snapBack = useCallback(() => {
-    const root = rootRef.current;
-    setHints(null, 0);
-    if (!root) return;
-    if (prefersReducedMotion() || !root.style.transform) {
-      clearSurface(root);
-      return;
+  /** The gutters' geometry inside the track right now. */
+  const gutters = useCallback(() => {
+    const track = trackRef.current;
+    if (!track) return [];
+    const t = track.getBoundingClientRect();
+    const rtl = isRtl(track);
+    const out: { dir: SwipeDirection; side: "left" | "right"; width: number; visible: number }[] = [];
+    for (const [dir, ref] of [["prev", prevGutterRef], ["next", nextGutterRef]] as const) {
+      const el = ref.current;
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      // prev is the start side: the left in LTR, the right in RTL.
+      out.push({ dir, side: (dir === "prev") !== rtl ? "left" : "right", width: r.width, visible: visibleWidth(t, r) });
     }
-    root.dataset.swipe = "bounce";
-    root.style.transition = `transform ${BOUNCE_MS}ms cubic-bezier(0.34, 1.56, 0.64, 1)`;
-    root.style.transform = "translate3d(0,0,0)";
-    later(() => { if (root.dataset.swipe === "bounce") clearSurface(root); }, BOUNCE_MS + 20);
-  }, [rootRef, setHints, clearSurface, later]);
+    return out;
+  }, [trackRef, prevGutterRef, nextGutterRef]);
 
   const enter = useCallback(() => {
     const p = pendingEnter.current;
     pendingEnter.current = null;
     if (p) window.clearTimeout(p.timer);
-    const root = rootRef.current;
+    phase.current = "idle";
+    const track = trackRef.current;
+    const root = pageRef.current;
+    if (track) track.style.overflowX = "";
+    center();
+    setHints(null, 0);
     if (!root) return;
-    root.scrollTop = 0;
+    const pane = paneRef?.current;
+    if (pane) pane.scrollTop = 0;
+    if (!p || p.reduced || !root.style.transform) {
+      clearSurface(root);
+      return;
+    }
     root.dataset.swipe = "enter";
     root.style.transition = `transform ${IN_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity ${IN_MS}ms ease-out`;
     root.style.transform = "translate3d(0,0,0)";
     root.style.opacity = "1";
     later(() => { if (root.dataset.swipe === "enter") clearSurface(root); }, IN_MS + 20);
-  }, [rootRef, clearSurface, later]);
+  }, [trackRef, pageRef, paneRef, center, setHints, clearSurface, later]);
 
-  const commit = useCallback((direction: SwipeDirection, lastDx: number, reduced: boolean) => {
+  /** `sign`: the way the message moved (+1 right, -1 left). */
+  const commit = useCallback((direction: SwipeDirection, sign: number) => {
     const nav = direction === "next" ? live.current.onNext : live.current.onPrev;
-    const root = rootRef.current;
     setHints(null, 0);
-    if (!nav) { snapBack(); return; }
-    if (reduced || !root) {
-      if (root) clearSurface(root);
+    if (!nav) { center(); return; }
+    const track = trackRef.current;
+    const root = pageRef.current;
+    // No second swipe until the next message is in.
+    if (track) track.style.overflowX = "hidden";
+    const reduced = prefersReducedMotion();
+    const width = root?.clientWidth || window.innerWidth;
+    const go = () => {
+      phase.current = "waiting";
+      if (root && !reduced) {
+        // The next message comes in from the side the finger pulled it from.
+        root.style.transition = "none";
+        root.style.transform = `translate3d(${-sign * Math.round(width * 0.3)}px,0,0)`;
+        root.dataset.swipe = "waiting";
+      }
+      const timer = later(() => enter(), ENTER_FALLBACK_MS);
+      pendingEnter.current = { timer, reduced };
       nav();
-      return;
-    }
-    const sign = lastDx < 0 ? -1 : 1;
-    const width = root.clientWidth || window.innerWidth;
+    };
+    if (reduced || !root) { go(); return; }
+    phase.current = "out";
     root.dataset.swipe = "out";
+    root.style.willChange = "transform, opacity";
     root.style.transition = `transform ${OUT_MS}ms ease-in, opacity ${OUT_MS}ms ease-in`;
     root.style.transform = `translate3d(${sign * width}px,0,0)`;
     root.style.opacity = "0";
-    later(() => {
-      // The next message comes in from the side the finger pulled it from.
-      root.style.transition = "none";
-      root.style.transform = `translate3d(${-sign * Math.round(width * 0.3)}px,0,0)`;
-      root.dataset.swipe = "waiting";
-      const timer = later(() => enter(), ENTER_FALLBACK_MS);
-      pendingEnter.current = { timer };
-      nav();
-    }, OUT_MS);
-  }, [rootRef, setHints, snapBack, clearSurface, enter, later]);
+    later(go, OUT_MS);
+  }, [trackRef, pageRef, center, setHints, enter, later]);
 
-  // ---- touch plumbing -------------------------------------------------------
+  const onScrollEnd = useCallback(() => {
+    window.clearTimeout(settleTimer.current);
+    scrolling.current = false;
+    noticed.current = false;
+    if (phase.current !== "idle") return;
+    const gs = gutters();
+    for (const g of gs) {
+      if (live.current.modes[g.dir] === "go" && isRevealed(g.visible, g.width)) {
+        commit(g.dir, g.side === "left" ? 1 : -1);
+        return;
+      }
+    }
+    setHints(null, 0);
+    // Settled part-way into a gutter (an engine without scroll snapping): back to rest.
+    if (gs.some((g) => g.visible > 1)) {
+      const track = trackRef.current;
+      const page = pageRef.current;
+      if (track && page) {
+        const left = restingScrollLeft({
+          pageOffsetLeft: page.offsetLeft, scrollWidth: track.scrollWidth, clientWidth: track.clientWidth, rtl: isRtl(track),
+        });
+        try { track.scrollTo({ left, behavior: prefersReducedMotion() ? "auto" : "smooth" }); } catch { track.scrollLeft = left; }
+      }
+    }
+  }, [gutters, commit, setHints, trackRef, pageRef]);
 
-  const onStart = useCallback((e: TouchEvent, frame: HTMLIFrameElement | null) => {
-    gesture.current = null;
-    if (!live.current.enabled || pendingEnter.current) return;
-    const t = e.touches[0];
-    if (!t) return;
-    const node = e.target as Node | null;
-    const target = node?.nodeType === 1 ? (node as Element) : node?.parentElement ?? null;
-    const { x, y } = point(t, frame);
-    const vv = window.visualViewport;
-    const excluded = !!target?.closest(EXCLUDED)
-      || hasSelection(document)
-      || (!!frame && hasSelection(frame.contentDocument));
-    const rejected = tracker.current!.start(x, y, performance.now(), {
-      width: window.innerWidth,
-      height: window.innerHeight,
-      rtl: document.documentElement.dir === "rtl",
-    }, {
-      touches: e.touches.length,
-      zoomed: !!vv && vv.scale > 1.01,
-      excluded,
-    });
-    if (rejected) return;
-    gesture.current = { target, frame, reduced: prefersReducedMotion(), claimed: false, lastDx: 0 };
-  }, []);
-
-  const onMove = useCallback((e: TouchEvent, frame: HTMLIFrameElement | null) => {
-    const g = gesture.current;
-    if (!g || g.frame !== frame) return;
-    const t = e.touches[0];
-    if (!t) return;
-    const { x, y } = point(t, frame);
-    const r = tracker.current!.move(x, y, performance.now(), e.touches.length);
-    switch (r.kind) {
-      case "claim":
-        if (canScrollSideways(g.target, r.dx, rootRef.current, frame)) {
-          tracker.current!.veto();
-          gesture.current = null;
-          return;
+  const onScroll = useCallback(() => {
+    scrolling.current = true;
+    if (!hasScrollEnd()) {
+      window.clearTimeout(settleTimer.current);
+      settleTimer.current = window.setTimeout(onScrollEnd, SETTLE_MS);
+    }
+    if (phase.current !== "idle" || frame.current) return;
+    const raf = typeof window.requestAnimationFrame === "function"
+      ? window.requestAnimationFrame.bind(window)
+      : (fn: FrameRequestCallback) => { fn(performance.now()); return 0; };
+    frame.current = raf(() => {
+      frame.current = 0;
+      if (phase.current !== "idle") return;
+      let side: "left" | "right" | null = null;
+      let progress = 0;
+      for (const g of gutters()) {
+        if (g.visible <= 0.5) continue;
+        const mode = live.current.modes[g.dir];
+        if (mode === "go") {
+          side = g.side;
+          progress = swipeProgress(g.visible, g.width);
+        } else if (live.current.blocked && g.visible >= BLOCKED_NOTICE_PX && !noticed.current) {
+          noticed.current = true;
+          live.current.onBlocked?.();
         }
-        g.claimed = true;
-        follow(r.dx, r.direction);
-        return;
-      case "track":
-        follow(r.dx, r.direction);
-        return;
-      case "cancel":
-        snapBack();
-        suppressClickUntil.current = performance.now() + 400;
-        gesture.current = null;
-        return;
-      case "ignored":
-        gesture.current = null;
-        return;
-      default:
-        return;
-    }
-  }, [follow, snapBack, rootRef]);
+      }
+      setHints(side, progress);
+    });
+  }, [gutters, setHints, onScrollEnd]);
 
-  const onEnd = useCallback((frame: HTMLIFrameElement | null, cancelled = false) => {
-    const g = gesture.current;
-    if (!g || g.frame !== frame) return;
-    gesture.current = null;
-    const r = tracker.current!.end(performance.now());
-    if (g.claimed) suppressClickUntil.current = performance.now() + 400;
-    if (cancelled || r.kind === "cancel") { snapBack(); return; }
-    if (r.kind === "commit") {
-      if (r.direction === "next" ? live.current.onNext : live.current.onPrev) commit(r.direction, g.lastDx, g.reduced);
-      else snapBack();
-    } else if (g.claimed) {
-      snapBack();
-    }
-  }, [commit, snapBack]);
-
-  /** A claimed swipe must not also click the link or button it started on. */
-  const onClickCapture = useCallback((e: Event) => {
-    if (performance.now() < suppressClickUntil.current) {
-      suppressClickUntil.current = 0;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }
-  }, []);
-
+  // Listen to the track's own scrolling (passive; nothing is ever prevented).
   useEffect(() => {
-    const root = rootRef.current;
-    if (!enabled || !root) return;
-    const start = (e: TouchEvent) => onStart(e, null);
-    const move = (e: TouchEvent) => onMove(e, null);
-    const end = () => onEnd(null);
-    const cancel = () => onEnd(null, true);
+    const track = trackRef.current;
+    if (!enabled || !track) return;
     const opts: AddEventListenerOptions = { passive: true };
-    root.addEventListener("touchstart", start, opts);
-    root.addEventListener("touchmove", move, opts);
-    root.addEventListener("touchend", end, opts);
-    root.addEventListener("touchcancel", cancel, opts);
-    root.addEventListener("click", onClickCapture, true);
+    track.addEventListener("scroll", onScroll, opts);
+    track.addEventListener("scrollend", onScrollEnd, opts);
     return () => {
-      root.removeEventListener("touchstart", start);
-      root.removeEventListener("touchmove", move);
-      root.removeEventListener("touchend", end);
-      root.removeEventListener("touchcancel", cancel);
-      root.removeEventListener("click", onClickCapture, true);
+      track.removeEventListener("scroll", onScroll);
+      track.removeEventListener("scrollend", onScrollEnd);
+      if (frame.current) window.cancelAnimationFrame(frame.current);
+      frame.current = 0;
+      window.clearTimeout(settleTimer.current);
     };
-    // resetKey: the pane can be a new element after another message renders.
-  }, [enabled, rootRef, resetKey, onStart, onMove, onEnd, onClickCapture]);
+    // resetKey: the track can be a new element after another message renders.
+  }, [enabled, trackRef, resetKey, onScroll, onScrollEnd]);
 
-  /**
-   * Watch touches on the message body's parsed document. Call once per
-   * document (repeat calls are ignored); the listeners go away with it.
-   */
-  const attachFrame = useCallback((doc: Document, frame: HTMLIFrameElement) => {
-    if (attached.current.has(doc)) return;
-    attached.current.add(doc);
+  // Long-presses and second fingers never swipe. Where the platform starts a
+  // text selection on a long-press (iOS) the track would not move anyway; on
+  // blank areas, and in engines without touch selection, the drag after a
+  // long-press would pan the track - so a touch on the page (outside the body
+  // frame, whose touches never reach us on WebKit and select natively there)
+  // that rests before moving, or a second finger, locks the track's sideways
+  // scrolling until every finger is up. Passive: nothing is prevented.
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!enabled || !track) return;
+    let timer = 0;
+    let locked = false;
+    let moved = false;
+    let x0 = 0;
+    let y0 = 0;
+    const lock = () => {
+      if (locked || phase.current !== "idle" || scrolling.current) return;
+      locked = true;
+      track.style.overflowX = "hidden";
+    };
+    const unlock = () => {
+      window.clearTimeout(timer);
+      timer = 0;
+      if (!locked) return;
+      locked = false;
+      if (phase.current === "idle") track.style.overflowX = "";
+    };
+    const start = (e: TouchEvent) => {
+      if (e.touches.length > 1) {
+        window.clearTimeout(timer);
+        timer = 0;
+        lock();
+        return;
+      }
+      unlock();
+      moved = false;
+      x0 = e.touches[0]?.clientX ?? 0;
+      y0 = e.touches[0]?.clientY ?? 0;
+      timer = window.setTimeout(() => {
+        timer = 0;
+        if (!moved) lock();
+      }, LONG_PRESS_MS);
+    };
+    const move = (e: TouchEvent) => {
+      if (moved || !timer) return;
+      const t = e.touches[0];
+      if (t && Math.hypot(t.clientX - x0, t.clientY - y0) >= LONG_PRESS_SLOP) {
+        moved = true;
+        window.clearTimeout(timer);
+        timer = 0;
+      }
+    };
+    const end = (e: TouchEvent) => {
+      if (e.touches.length === 0) unlock();
+    };
     const opts: AddEventListenerOptions = { passive: true };
-    doc.addEventListener("touchstart", (e) => onStart(e, frame), opts);
-    doc.addEventListener("touchmove", (e) => onMove(e, frame), opts);
-    doc.addEventListener("touchend", () => onEnd(frame), opts);
-    doc.addEventListener("touchcancel", () => onEnd(frame, true), opts);
-    // Window capture runs before the viewer's own document-level link handler.
-    doc.defaultView?.addEventListener("click", onClickCapture, true);
-  }, [onStart, onMove, onEnd, onClickCapture]);
+    track.addEventListener("touchstart", start, opts);
+    track.addEventListener("touchmove", move, opts);
+    track.addEventListener("touchend", end, opts);
+    track.addEventListener("touchcancel", end, opts);
+    return () => {
+      track.removeEventListener("touchstart", start);
+      track.removeEventListener("touchmove", move);
+      track.removeEventListener("touchend", end);
+      track.removeEventListener("touchcancel", end);
+      unlock();
+    };
+  }, [enabled, trackRef, resetKey]);
+
+  // At rest whenever the gutters change (a neighbour appears, a reply is typed,
+  // zoom) or another message is shown - unless a commit is mid-flight.
+  useLayoutEffect(() => {
+    if (!enabled || phase.current !== "idle" || scrolling.current) return;
+    center();
+  }, [enabled, modes.prev, modes.next, resetKey, center]);
+
+  // Keep at rest across rotation and pane resizes.
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!enabled || !track || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (phase.current === "idle" && !scrolling.current) center();
+    });
+    ro.observe(track);
+    return () => ro.disconnect();
+  }, [enabled, trackRef, resetKey, center]);
 
   // Another message is on screen: bring it in.
   useEffect(() => {
     if (pendingEnter.current) enter();
   }, [resetKey, enter]);
 
-  // Leaving mobile (rotation, resize) or unmounting mid-gesture: no stray transform.
+  // Leaving the phone layout (rotation, resize) or unmounting mid-swipe: no stray styles.
   useEffect(() => {
     if (enabled) return;
-    gesture.current = null;
+    phase.current = "idle";
+    if (pendingEnter.current) window.clearTimeout(pendingEnter.current.timer);
+    pendingEnter.current = null;
     setHints(null, 0);
-    clearSurface(rootRef.current);
-  }, [enabled, rootRef, setHints, clearSurface]);
+    clearSurface(pageRef.current);
+    const track = trackRef.current;
+    if (track) track.style.overflowX = "";
+  }, [enabled, pageRef, trackRef, setHints, clearSurface]);
 
   useEffect(() => () => {
     timers.current.forEach((t) => window.clearTimeout(t));
     timers.current = [];
   }, []);
 
-  return { attachFrame };
+  return { modes };
 }
