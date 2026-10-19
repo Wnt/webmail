@@ -132,7 +132,10 @@ import {
   type MailDeepLink,
 } from "@/lib/deep-links";
 import { consumePendingDeepLink, subscribePendingDeepLink } from "@/lib/deep-link-handoff";
-import { takeNotificationOpen } from "@/lib/notification-open";
+import { findTappedNotification, forgetShownNotificationsFor, takeNotificationOpen, tapFallbackApplies, type TappedNotificationCheck } from "@/lib/notification-open";
+import { navigationKind, scheduleTapTraceFlush, tapTraceApplies, traceTap } from "@/lib/tap-trace";
+import { checkWorkerRevision } from "@/lib/sw-revision";
+import { usePasskeyGateStore } from "@/stores/passkey-gate-store";
 import { takePrefetchedEmail } from "@/lib/push-prefetch";
 import { afterBodyPainted, beginOpen, bodyPainted, markOpen } from "@/lib/open-timing";
 import { useProInterfaceActive } from "@/components/pro/pro-interface-redirect";
@@ -170,6 +173,23 @@ function freshMailboxes(previous: Mailbox[], timeoutMs = 10_000): Promise<Mailbo
     });
   });
 }
+
+/** The lost-tap lookup a start runs while its session is restored (see earlyTapRef). */
+interface EarlyTapLookup {
+  promise: Promise<TappedNotificationCheck>;
+  result: TappedNotificationCheck | null;
+  /** Its message was handed to the deep link. */
+  used: boolean;
+}
+const NO_TAP: TappedNotificationCheck = { tapped: null, kept: 0, listed: 0, vanished: 0 };
+
+/** What a message link opened at (lib/tap-trace.ts `open.reason`). */
+type DeepLinkResult = 'ok' | 'not_found' | 'account' | 'moved_on' | 'no_client' | 'error' | 'embedded';
+
+// Fork (Wnt/webmail): the tap diagnostics trace a document's start and its
+// sign-in once (the mail app can mount more than once in one document).
+let startTraced = false;
+let sessionTraced = false;
 
 export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
   // Static Lite build: the route params are empty, read the link from the URL.
@@ -243,6 +263,52 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     // Its viewer is code-split: fetch the chunk now, not when the message arrives.
     if (id) void import("@/components/email/email-viewer");
   }
+  // Fork (Wnt/webmail): did this document start at a message link (the tap
+  // diagnostics' `start.link`), read once like the start link above.
+  const startedAtMessageLinkRef = useRef<boolean | null>(null);
+  if (startedAtMessageLinkRef.current === null) {
+    startedAtMessageLinkRef.current = typeof window !== 'undefined' && !!linkSegments
+      && parseMailPath(linkSegments, new URLSearchParams(window.location.search))?.kind === 'message';
+  }
+  useEffect(() => {
+    if (startTraced || !tapTraceApplies()) return;
+    startTraced = true;
+    const facts = {
+      link: startedAtMessageLinkRef.current === true, nav: navigationKind(),
+      ctl: !!navigator.serviceWorker?.controller, vis: document.visibilityState === 'visible',
+    };
+    // Asked once the start is over: the worker is busy with it (kept copies).
+    setTimeout(() => {
+      void checkWorkerRevision().then((swrev) => traceTap('start', { ...facts, swrev }));
+    }, 2000);
+  }, []);
+  // Fork (Wnt/webmail): the iPhone Home Screen app, started without a
+  // message in its URL, looks for a tap WebKit lost (findTappedNotification)
+  // while its session is being restored. Found in time, the tapped message
+  // is this start's link and opens first, as at a message link, instead of
+  // after the folder list and the Inbox.
+  const earlyTapRef = useRef<EarlyTapLookup | null>(null);
+  // The initial load has taken this start's link (startLinkIdRef).
+  const startLinkTakenRef = useRef(false);
+  const [earlyTapSettled, setEarlyTapSettled] = useState(false);
+  useEffect(() => {
+    if (earlyTapRef.current || startedAtMessageLinkRef.current || !tapFallbackApplies()) return;
+    const lookup: EarlyTapLookup = { promise: Promise.resolve(NO_TAP), result: null, used: false };
+    lookup.promise = (async () => {
+      let registration: ServiceWorkerRegistration | undefined;
+      try {
+        registration = await navigator.serviceWorker?.getRegistration();
+      } catch {
+        registration = undefined;
+      }
+      const found = await findTappedNotification(registration);
+      lookup.result = found;
+      if (found.tapped && !startLinkTakenRef.current && !startLinkIdRef.current) startLinkIdRef.current = found.tapped.emailId;
+      setEarlyTapSettled(true);
+      return found;
+    })();
+    earlyTapRef.current = lookup;
+  }, []);
   /** A message link opens before the bootstrap (see the deep-link effect): not in the Pro shell's tab. */
   const earlyMessageLinkApplies = () => !isEmbedded;
   // Fork (Wnt/webmail): a wider screen opened at a message link draws the
@@ -1408,19 +1474,42 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     // cold start at its link) shows that message first. The folder list, the
     // Inbox page and their rendering competed with it for the network and the
     // main thread; they follow once its body is on screen (1.5 s at most).
-    const linkedId = startLinkIdRef.current;
-    startLinkIdRef.current = null;
     let cancelWait: (() => void) | null = null;
     let started = false;
     const start = () => { started = true; if (!cancelled) void loadData(); };
-    if (linkedId && earlyMessageLinkApplies() && !bodyPainted(linkedId)) {
-      cancelWait = afterBodyPainted(linkedId, start, 1500);
+    const decide = () => {
+      if (cancelled) return;
+      const linkedId = startLinkIdRef.current;
+      startLinkIdRef.current = null;
+      startLinkTakenRef.current = true;
+      if (linkedId && earlyMessageLinkApplies() && !bodyPainted(linkedId)) {
+        cancelWait = afterBodyPainted(linkedId, start, 1500);
+      } else {
+        start();
+      }
+    };
+    // Fork (Wnt/webmail): the lost-tap lookup (earlyTapRef) only reads the
+    // cache and the notification list; a session that is up before it ends
+    // waits for it a moment, so a tapped message still comes first.
+    const early = earlyTapRef.current;
+    let holdTimer: ReturnType<typeof setTimeout> | null = null;
+    if (early && !early.result && !startLinkTakenRef.current) {
+      let decided = false;
+      const go = () => {
+        if (decided) return;
+        decided = true;
+        if (holdTimer) clearTimeout(holdTimer);
+        decide();
+      };
+      holdTimer = setTimeout(go, 300);
+      void early.promise.then(go, go);
     } else {
-      start();
+      decide();
     }
 
     return () => {
       cancelled = true;
+      if (holdTimer) clearTimeout(holdTimer);
       cancelWait?.();
       // Cancelled before it began: let the next run load.
       if (!started) initialMailLoadClientRef.current = null;
@@ -1599,7 +1688,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     void showOwningFolderRef.current(client, email);
   }, [initialMailLoadDone, client]);
 
-  const applyMailDeepLink = async (link: MailDeepLink, opts?: { onLoad?: boolean }) => {
+  const applyMailDeepLink = async (link: MailDeepLink, opts?: { onLoad?: boolean }): Promise<DeepLinkResult> => {
     // The folder list before an account switch, if one happened: until the
     // new mailbox's folders arrive the store still holds these (or nothing).
     let switchedFrom: Mailbox[] | null = null;
@@ -1620,21 +1709,21 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       // rather than calling a late mailbox unavailable.
       if (!(await waitForConnectedAccount(linkAccountId))) {
         toast.error(t('deep_link.account_unavailable'));
-        return;
+        return 'account';
       }
       // The user moved on while the login reconnected: don't pull them away.
       if (!mailAppMountedRef.current
         || useAuthStore.getState().activeAccountId !== startedOn
         || useEmailStore.getState().selectedMailbox !== startedIn
-        || (useEmailStore.getState().selectedEmail?.id ?? null) !== startedWith) return;
+        || (useEmailStore.getState().selectedEmail?.id ?? null) !== startedWith) return 'moved_on';
       switchedFrom = useEmailStore.getState().mailboxes;
       await switchAccount(linkAccountId);
       // Overtaken or failed: the folders on screen are not the link's account's.
-      if (useAuthStore.getState().activeAccountId !== linkAccountId) return;
+      if (useAuthStore.getState().activeAccountId !== linkAccountId) return 'account';
     }
 
     const activeClient = useAuthStore.getState().client;
-    if (!activeClient) return;
+    if (!activeClient) return 'no_client';
 
     if (link.kind === 'folder') {
       const mailboxes = switchedFrom
@@ -1644,7 +1733,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       const mailboxId = resolveFolderRef(link.ref, mailboxes);
       if (!mailboxId) {
         toast.error(t('deep_link.folder_not_found'));
-        return;
+        return 'not_found';
       }
       // Reloading the page lands here with the folder the boot fetch has just
       // loaded; selecting it again re-fetched it under the loading overlay,
@@ -1656,10 +1745,10 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
         selectedKeyword: state.selectedKeyword,
         hasSearch: !!state.searchQuery || !isFilterEmpty(state.searchFilters),
       })) {
-        return;
+        return 'ok';
       }
       await handleMailboxSelect(mailboxId);
-      return;
+      return 'ok';
     }
 
     if (link.kind === 'message') {
@@ -1672,7 +1761,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
           mailboxId: null,
           title: t('common.loading'),
         });
-        return;
+        return 'embedded';
       }
       // A document opened at the link (a notification tap on WebKit, a cold
       // start) is timed from its own start; a tap the running app opens in
@@ -1701,7 +1790,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
         if (!email) {
           if (isMobile) setActiveView('list');
           toast.error(t('deep_link.message_not_found'));
-          return;
+          return 'not_found';
         }
         markOpen(link.id, 'data');
         // Fork patch (Wnt/webmail): a message link opens as soon as the
@@ -1725,7 +1814,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       } finally {
         setLoadingEmail(false);
       }
-      return;
+      return 'ok';
     }
 
     // Conversation. One fetch serves both layouts: mobile opens the dedicated
@@ -1737,7 +1826,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       const [group] = groupEmailsByThread(threadEmails);
       if (!group) {
         toast.error(t('deep_link.thread_not_found'));
-        return;
+        return 'not_found';
       }
       if (isMobile) {
         setConversationThread(group);
@@ -1750,6 +1839,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     } finally {
       setLoadingEmail(false);
     }
+    return 'ok';
   };
 
   // Held in a ref rather than memoised: the handlers it calls (notably
@@ -1758,6 +1848,17 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
   // first-render ones by the time the session is up and the link is applied.
   const applyMailDeepLinkRef = useRef(applyMailDeepLink);
   applyMailDeepLinkRef.current = applyMailDeepLink;
+
+  // Fork (Wnt/webmail): the tap diagnostics' last link - whether the message
+  // a tap (or a message link) asked for opened, or why not.
+  const traceTapOpen = (how: 'link' | 'pending' | 'vanished' | 'inplace', started: number, result: Promise<DeepLinkResult>) => {
+    void result.catch((): DeepLinkResult => 'error').then((reason) => {
+      if (!tapTraceApplies()) return;
+      const ms = typeof performance !== 'undefined' ? Math.round(performance.now() - started) : 0;
+      traceTap('open', { how, ok: reason === 'ok', reason, ms: Math.min(600_000, Math.max(0, ms)) });
+      scheduleTapTraceFlush();
+    });
+  };
 
   // Pro shell only: this MailApp stays mounted for the whole session, so the
   // mount-time consume below never sees a link that arrives later (an in-app
@@ -1819,8 +1920,19 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     // Inside the Pro shell the route is /pro, so the segments arrive through
     // the handoff the redirect parked them in rather than as route params.
     const segments = linkSegments ?? (pendingLinkSegmentsRef.current ??= consumePendingDeepLink('mail') ?? []);
-    const link = parseMailPath(segments, params);
+    let link = parseMailPath(segments, params);
     const openLatestUnread = params.get('openLatestUnread') === '1';
+    // Fork (Wnt/webmail): a tap WebKit lost, found while the app started
+    // (earlyTapRef): its message is this start's link.
+    const early = earlyTapRef.current;
+    let viaLostTap = false;
+    if (!link && !openLatestUnread && early && !early.used) {
+      if (!early.result) return; // still looking; runs again once it has
+      if (early.result.tapped) {
+        link = { kind: 'message', id: early.result.tapped.emailId, slot: early.result.tapped.slot };
+        viaLostTap = true;
+      }
+    }
 
     if (!link && !openLatestUnread) {
       deepLinkHandledRef.current = true;
@@ -1838,7 +1950,8 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
         .find((a) => a.id === useAuthStore.getState().activeAccountId)?.cookieSlot;
       if (link.slot === undefined || link.slot === activeSlot) {
         deepLinkHandledRef.current = true;
-        void applyMailDeepLinkRef.current(link, { onLoad: true });
+        if (viaLostTap && early) early.used = true;
+        traceTapOpen(viaLostTap ? 'vanished' : 'link', 0, applyMailDeepLinkRef.current(link, { onLoad: true }));
         return;
       }
     }
@@ -1854,7 +1967,10 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     deepLinkHandledRef.current = true;
 
     if (link) {
-      void applyMailDeepLinkRef.current(link, { onLoad: true });
+      if (viaLostTap && early) early.used = true;
+      const opening = applyMailDeepLinkRef.current(link, { onLoad: true });
+      if (link.kind === 'message') traceTapOpen(viaLostTap ? 'vanished' : 'link', 0, opening);
+      else void opening;
       return;
     }
 
@@ -1863,7 +1979,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     if (newestUnread) {
       selectEmail(newestUnread);
     }
-  }, [isAuthenticated, client, mailboxes.length, emails, linkSegments, initialMailLoadDone, selectEmail, isEmbedded]);
+  }, [isAuthenticated, client, mailboxes.length, emails, linkSegments, initialMailLoadDone, selectEmail, isEmbedded, earlyTapSettled]);
 
   // Fork patch (Wnt/webmail): a tapped push notification whose message the
   // service worker could not bring the app to (lib/notification-open.ts),
@@ -1880,31 +1996,93 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     if (!notificationOpenReady) return;
     let busy = false;
     let again = false;
+    let recheck: ReturnType<typeof setTimeout> | null = null;
+    // When the page was last hidden, for the diagnostics' `hidden` seconds.
+    let hiddenAt: number | null = null;
     // `force`: the worker is bringing this very window to the front for the
     // tap (it asked us to open it), so a still-hidden page takes it too.
-    const check = async (force = false) => {
+    // `when`: what made us look (the tap diagnostics' `found.when`).
+    const check = async (force = false, when: 'start' | 'resume' | 'recheck' | 'message' = 'resume') => {
       if (busy) { if (force) again = true; return; }
       if (!force && document.visibilityState === 'hidden') return;
       busy = true;
       try {
         const pending = await takeNotificationOpen();
-        if (!pending || !mailAppMountedRef.current) return;
+        let target: { emailId: string; slot?: number } | null = pending ? { emailId: pending.emailId, slot: pending.slot } : null;
+        let how: 'link' | 'pending' | 'vanished' | 'inplace' | 'ambiguous' | 'none' = pending ? (when === 'message' ? 'inplace' : 'pending') : 'none';
+        // Fork (Wnt/webmail): a tap that reached neither the worker nor this
+        // page - an iPhone bringing the backgrounded app back without the
+        // notification's URL - is the notification that is gone from the
+        // list (lib/notification-open.ts findTappedNotification).
+        let counts = { kept: 0, listed: 0, vanished: 0 };
+        if (!target && tapFallbackApplies()) {
+          // At start, the lookup the start already ran (earlyTapRef): its
+          // message may be open by now, through the deep link.
+          const early = when === 'start' ? earlyTapRef.current : null;
+          let found: TappedNotificationCheck;
+          let openedAtStart = false;
+          if (early) {
+            found = await early.promise;
+            if (found.tapped && early.used) openedAtStart = true;
+            else if (found.tapped) early.used = true;
+          } else {
+            let registration: ServiceWorkerRegistration | undefined;
+            try {
+              registration = await navigator.serviceWorker?.getRegistration();
+            } catch {
+              registration = undefined;
+            }
+            found = await findTappedNotification(registration);
+          }
+          counts = { kept: found.kept, listed: found.listed, vanished: found.vanished };
+          if (found.tapped) {
+            how = 'vanished';
+            if (!openedAtStart) target = found.tapped;
+          } else if (found.vanished > 1) {
+            how = 'ambiguous';
+          }
+        }
         // This page was opened at that very message (openWindow, navigate,
         // or WebKit's notification URL): its deep link already opens it.
         const pageStart = typeof performance !== 'undefined' ? performance.timeOrigin : 0;
         const initialLink = parseMailPath(linkSegments ?? [], new URLSearchParams(initialSearchRef.current ?? ''));
-        if (pending.at <= pageStart && initialLink?.kind === 'message' && initialLink.id === pending.emailId) return;
-        if (useEmailStore.getState().selectedEmail?.id === pending.emailId) {
+        if (target && initialLink?.kind === 'message' && initialLink.id === target.emailId
+          && (!pending || pending.at <= pageStart)) {
+          target = null;
+          how = 'link';
+        }
+        if (when === 'start' && how === 'none' && startedAtMessageLinkRef.current) how = 'link';
+        if (tapTraceApplies() && (when === 'start' || how !== 'none' || counts.kept > 0)) {
+          const hidden = when === 'resume' && hiddenAt !== null ? Math.min(10_000_000, Math.round((Date.now() - hiddenAt) / 1000)) : undefined;
+          traceTap('found', { how, when, ...counts, ...(hidden !== undefined ? { hidden } : {}) });
+          scheduleTapTraceFlush();
+        }
+        if (when === 'resume') hiddenAt = null;
+        // Just back to the front with notifications kept but none gone yet:
+        // the list may lag the tap a moment. Look once more.
+        if (!target && when === 'resume' && counts.kept > 0 && counts.vanished === 0 && !recheck) {
+          recheck = setTimeout(() => { recheck = null; void check(false, 'recheck'); }, 1200);
+        }
+        if (!target || !mailAppMountedRef.current) return;
+        if (useEmailStore.getState().selectedEmail?.id === target.emailId) {
           if (isMobile) setActiveView('viewer');
           return;
         }
-        await applyMailDeepLinkRef.current({ kind: 'message', id: pending.emailId, slot: pending.slot });
+        const tapHow = how === 'vanished' || how === 'inplace' ? how : 'pending';
+        traceTapOpen(tapHow, typeof performance !== 'undefined' ? performance.now() : 0,
+          applyMailDeepLinkRef.current({ kind: 'message', id: target.emailId, slot: target.slot }));
       } finally {
         busy = false;
-        if (again) { again = false; void check(true); }
+        if (again) { again = false; void check(true, 'message'); }
       }
     };
-    const onVisible = () => { if (document.visibilityState === 'visible') void check(); };
+    const onVisible = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now();
+        return;
+      }
+      void check(false, 'resume');
+    };
     const onSwMessage = (e: MessageEvent) => {
       const msg = e.data as { kind?: string; open?: boolean; at?: number; data?: { kind?: string } } | null;
       if (!msg || msg.kind !== 'notificationclick') return;
@@ -1922,15 +2100,16 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
         beginOpen(tappedId, 'tap', { t0: at !== undefined && at <= performance.now() ? at : undefined });
         markOpen(tappedId, 'msg');
       }
-      void check(inPlace);
+      void check(inPlace, 'message');
     };
-    void check();
+    void check(false, 'start');
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
     window.addEventListener('pageshow', onVisible);
     const sw = typeof navigator !== 'undefined' ? navigator.serviceWorker : undefined;
     sw?.addEventListener('message', onSwMessage);
     return () => {
+      if (recheck) clearTimeout(recheck);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onVisible);
       window.removeEventListener('pageshow', onVisible);
@@ -1938,6 +2117,22 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notificationOpenReady]);
+
+  // Fork (Wnt/webmail): the tap diagnostics - signed in by a kept session or
+  // after a sign-in on this page - and the records waiting to be sent.
+  useEffect(() => {
+    if (!isAuthenticated || !client || sessionTraced || !tapTraceApplies()) return;
+    sessionTraced = true;
+    traceTap('session', { how: usePasskeyGateStore.getState().epoch > 0 ? 'login' : 'restored' });
+    scheduleTapTraceFlush(4000);
+  }, [isAuthenticated, client]);
+
+  // Fork (Wnt/webmail): a message open here is no tap waiting any more: its
+  // notification's later absence must not reopen it (findTappedNotification).
+  const selectedEmailId = selectedEmail?.id;
+  useEffect(() => {
+    if (selectedEmailId && tapFallbackApplies()) void forgetShownNotificationsFor(selectedEmailId);
+  }, [selectedEmailId]);
 
   // Auto-fetch full email content when an email is auto-selected (e.g. after delete/archive)
   useEffect(() => {

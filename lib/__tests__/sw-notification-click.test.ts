@@ -371,8 +371,10 @@ describe('the message kept for the tap', () => {
   it('keeps the newest five', async () => {
     let n = 0;
     const w = loadWorker({ preview: { ok: true, body: {} } });
-    const fetchMock = (w.context as unknown as { fetch: { mockImplementation: (f: () => unknown) => void } }).fetch;
-    fetchMock.mockImplementation(async () => {
+    const fetchMock = (w.context as unknown as { fetch: { mockImplementation: (f: (url?: unknown) => unknown) => void } }).fetch;
+    fetchMock.mockImplementation(async (url?: unknown) => {
+      // The worker also posts its tap diagnostics (/api/perf/tap).
+      if (!String(url).includes('/api/push/preview')) return { ok: true, status: 204, json: async () => ({}) };
       const id = `m${n++}`;
       return { ok: true, status: 200, json: async () => ({ email: { id, threadId: `t${id}`, from: [{ name: 'A' }], subject: 'S' }, unreadTotal: 1, full: whole(id) }) };
     });

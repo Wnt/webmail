@@ -25,6 +25,12 @@ function getBasePath() {
 const BASE_PATH = getBasePath();
 const MAILTO_CLIENTS = new Map();
 
+// Fork patch (Wnt/webmail): this worker's revision. The page compares it with
+// the one it was built with (lib/sw-revision.ts, kept equal by a unit test)
+// and asks the browser for the newer worker when they differ: an iPhone can
+// keep running an old worker. Bump both whenever this file changes.
+const SW_REVISION = "2026-10-19.tap1";
+
 self.addEventListener("install", () => {
   self.skipWaiting();
 });
@@ -39,7 +45,8 @@ self.addEventListener("push", (event) => {
   // Fork patch (Wnt/webmail): whether this push showed a notification, and
   // work that may outlive the handler (a delayed close, see showReplacing),
   // which keeps the event alive without holding up the account's next push.
-  const work = { pending: [], displayed: false };
+  // `trace`: what happened, for the tap diagnostics (tracePush).
+  const work = { pending: [], displayed: false, trace: {} };
   event.waitUntil(handlePushInOrder(event, work).then(() => Promise.all(work.pending)));
 });
 
@@ -48,8 +55,21 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil(handleNotificationClick(event));
 });
 
+// Fork patch (Wnt/webmail): the user dismissed one of our notifications, so
+// its disappearance from the list is not a tap (see rememberShown).
+self.addEventListener("notificationclose", (event) => {
+  event.waitUntil(handleNotificationClose(event));
+});
+
 self.addEventListener("message", (event) => {
   const data = event.data || {};
+  // Fork patch (Wnt/webmail): the page asks which worker revision runs.
+  if (data.type === "sw-revision") {
+    const port = event.ports && event.ports[0];
+    if (port) port.postMessage({ revision: SW_REVISION });
+    return;
+  }
+
   if (data.type === "mailto-client-ready") {
     if (event.source && event.source.id) {
       MAILTO_CLIENTS.set(event.source.id, {
@@ -126,6 +146,9 @@ function handlePushInOrder(event, work) {
     } finally {
       // Fork patch (Wnt/webmail): see acknowledgeUnshownPush.
       if (!work.displayed) await acknowledgeUnshownPush(payload, work);
+      // Fork patch (Wnt/webmail): the first link of a tap's chain, without
+      // any id (traceTap). Outlives the handler like a delayed close.
+      work.pending.push(tracePush(payload, work));
     }
   });
   const settled = run.catch(() => undefined);
@@ -190,7 +213,10 @@ async function handlePush(event, work) {
       : null;
     // The summary is for the newest of its ids (the gateway summarises the
     // headline message); it only replaces a notification that shows that one.
-    if (content) await replaceWithSummary("bulwark-mail:" + (accountId || "default"), content, accountId, emailIds[emailIds.length - 1], work);
+    if (content) {
+      work.trace.shown = "summary";
+      await replaceWithSummary("bulwark-mail:" + (accountId || "default"), content, accountId, emailIds[emailIds.length - 1], work);
+    }
     return;
   }
 
@@ -206,6 +232,7 @@ async function handlePush(event, work) {
   // a generic "New mail" so the user still sees something.
   let preview = null;
   let previewOk = false;
+  work.trace.preview = "fail";
   try {
     const query = new URLSearchParams();
     if (accountId) query.set("accountId", accountId);
@@ -234,6 +261,7 @@ async function handlePush(event, work) {
       if (res.ok) {
         preview = await res.json();
         previewOk = true;
+        work.trace.preview = "ok";
       }
     } finally {
       if (timer) clearTimeout(timer);
@@ -323,6 +351,7 @@ async function handlePush(event, work) {
   }
 
   const quiet = await withinQuietWindow(accountId);
+  work.trace.shown = "new";
   await showMailNotification(accountId, title, {
     body,
     // Shared per-account tag: each new push replaces the account's single
@@ -482,8 +511,10 @@ async function handlePushSignOut(event) {
     ? await Promise.race([drain, new Promise((resolve) => setTimeout(() => resolve(false), SIGNOUT_DRAIN_MS))])
     : await drain;
   await closeShown();
-  // Fork patch (Wnt/webmail): no kept message outlives a sign-out.
+  // Fork patch (Wnt/webmail): no kept message outlives a sign-out, and no
+  // closed notification of those accounts may later look tapped.
   await forgetPrefetchedEmails(everyAccount ? null : accountIds);
+  await forgetShown((entry) => everyAccount || accountIds.includes(entry.accountId || "default"));
   if (port) port.postMessage({ done: drained === true });
   if (!drained) {
     // Still part of this message's lifetime (waitUntil above).
@@ -512,6 +543,7 @@ async function showMailNotification(accountId, title, options, work) {
   if (await pushSignedOut(accountId) === true) {
     try {
       const shown = await self.registration.getNotifications({ tag: options.tag });
+      await forgetShown((entry) => (entry.accountId || "default") === (accountId || "default"));
       for (const n of shown) n.close();
       // WebKit refuses to close it this young; try again once it may.
       if (work && typeof setTimeout === "function" && await usesApplePush()) {
@@ -578,23 +610,61 @@ async function showReplacing(title, options, work) {
   if (navigate) options.navigate = navigate;
   await self.registration.showNotification(title, options);
   if (work) work.displayed = true;
-  await closeOthersWithTag(options.tag, shownId, work);
+  const listed = await closeOthersWithTag(options.tag, shownId, work);
+  if (work && work.trace) {
+    work.trace.nav = !!navigate;
+    work.trace.listed = listed;
+  }
+  // Fork patch (Wnt/webmail): see rememberShown. Not listed at once on
+  // WebKit (the ledger only matters there): look again a little later (it
+  // outlives the handler like a delayed close).
+  await rememberShown(options.data, listed);
+  if (!listed && work && typeof setTimeout === "function" && await usesApplePush()) {
+    work.listedCheck = confirmListed(options.tag, shownId, work);
+    work.pending.push(work.listedCheck);
+  }
 }
 
+/** The browser lists the notification `shownId` a moment after showing it: its ledger entry can be trusted. */
+async function confirmListed(tag, shownId, work) {
+  for (const wait of LISTED_RETRY_MS) {
+    await delay(wait);
+    let shown = [];
+    try {
+      shown = await self.registration.getNotifications({ tag });
+    } catch (_) {
+      shown = [];
+    }
+    if (shown.some((n) => n.data && n.data.shownId === shownId)) {
+      await markShownListed(shownId);
+      if (work && work.trace) work.trace.listed = true;
+      return;
+    }
+  }
+}
+
+const LISTED_RETRY_MS = [500, 1500, 3000];
+
+/**
+ * Closes the other notifications with `tag` (see showReplacing). Returns
+ * whether the browser listed the one just shown, with its data.
+ */
 async function closeOthersWithTag(tag, shownId, work) {
-  if (!tag) return;
+  if (!tag) return false;
   let shown;
   try {
     shown = await self.registration.getNotifications({ tag });
   } catch (_) {
-    return;
+    return false;
   }
   // Only when the new notification can be told apart (its data came back):
   // otherwise this could close the very one just shown.
-  if (!shown.some((n) => n.data && n.data.shownId === shownId)) return;
+  if (!shown.some((n) => n.data && n.data.shownId === shownId)) return false;
   for (const n of shown) {
     if (n.data && n.data.shownId === shownId) continue;
-    const close = () => {
+    const close = async () => {
+      // Fork patch (Wnt/webmail): closed by us, so its absence is no tap.
+      await markShownClosed(n.data && n.data.shownId);
       try {
         n.close();
       } catch (_) {
@@ -603,13 +673,14 @@ async function closeOthersWithTag(tag, shownId, work) {
     };
     const at = n.data ? Number(n.data.shownAt) : NaN;
     const wait = Number.isFinite(at) ? at + MIN_CLOSE_AGE_MS - Date.now() : NaN;
-    if (!(wait > 0)) close();
+    if (!(wait > 0)) await close();
     // A young one (or one of unknown age, which may be refused now) is
     // closed again once it is old enough.
     if (typeof setTimeout === "function" && work && (wait > 0 || Number.isNaN(wait))) {
       work.pending.push(delay(Math.min(wait > 0 ? wait : MIN_CLOSE_AGE_MS, MIN_CLOSE_AGE_MS)).then(close));
     }
   }
+  return true;
 }
 
 let applePushPromise = null;
@@ -644,6 +715,7 @@ function usesApplePush() {
  */
 async function acknowledgeUnshownPush(payload, work) {
   if (!(await usesApplePush())) return;
+  if (work.trace) work.trace.shown = "ack";
   const accountId = pushPayloadAccountId(payload);
   const tag = "bulwark-mail:" + (accountId || "default");
   const quiet = {
@@ -792,13 +864,38 @@ async function writeNotifiedIds(accountId, ids) {
 
 async function handleNotificationClick(event) {
   const data = event.notification.data || {};
-  const tag = event.notification.tag || "";
-  // Fork patch (Wnt/webmail): when the tap happened, for the app's open timing.
-  const clickedAt = Date.now();
-
   if (data.kind === "protocol-mailto-focus") {
     return handleMailtoFocusNotificationClick();
   }
+  // Fork patch (Wnt/webmail): what the tap did, for the tap diagnostics.
+  const outcome = { act: "none", win: 0 };
+  // This tap is handled here: the page must not take its absence from the
+  // list for a lost tap (rememberShown).
+  const forgetting = forgetShown((entry) => typeof data.shownId === "string" && entry.shownId === data.shownId);
+  try {
+    return await notificationClickAction(event, outcome);
+  } catch (error) {
+    outcome.act = "error";
+    throw error;
+  } finally {
+    await forgetting;
+    // Not sent from here: the app this tap starts reads the kept message
+    // from the same cache against a short deadline. The app (or the next
+    // push) sends it.
+    await traceTap("click", {
+      target: data.kind === "email" && typeof data.emailId === "string" && data.emailId !== "",
+      win: Math.min(outcome.win, 99),
+      act: outcome.act,
+      age: ageSeconds(data.shownAt),
+    });
+  }
+}
+
+async function notificationClickAction(event, outcome) {
+  const data = event.notification.data || {};
+  const tag = event.notification.tag || "";
+  // Fork patch (Wnt/webmail): when the tap happened, for the app's open timing.
+  const clickedAt = Date.now();
 
   const targetUrl = buildClickUrl(data);
 
@@ -813,6 +910,7 @@ async function handleNotificationClick(event) {
     type: "window",
     includeUncontrolled: true,
   });
+  outcome.win = allClients.length;
 
   // Fork patch (Wnt/webmail): the window the tap brings to the front - the
   // one the user looked at last, so a tap never lands in a forgotten tab.
@@ -859,13 +957,18 @@ async function handleNotificationClick(event) {
         // came to the front. Focusing first uses the activation while it is still live;
         // navigate() does not need one of its own once the client is focused.
         const focused = await client.focus();
+        outcome.act = "focus";
         // Fork patch (Wnt/webmail): the app said it opens the message in
         // place - a navigate() now would throw that away and start the
         // whole app again (seconds, measured).
-        if (client === front && await opening) return focused;
+        if (client === front && await opening) {
+          outcome.act = "inplace";
+          return focused;
+        }
         if (focused && "navigate" in focused && targetUrl) {
           try {
             await focused.navigate(targetUrl);
+            outcome.act = "navigate";
           } catch (_) {
             // Focused but not navigated still beats nothing opening at all.
           }
@@ -879,7 +982,9 @@ async function handleNotificationClick(event) {
   }
 
   if (self.clients.openWindow) {
-    return self.clients.openWindow(targetUrl || `${BASE_PATH}/`);
+    const opened = await self.clients.openWindow(targetUrl || `${BASE_PATH}/`);
+    outcome.act = "open";
+    return opened;
   }
 }
 
@@ -1103,6 +1208,216 @@ async function rememberNotificationOpen(data, url) {
     );
   } catch (_) {
     // Best effort: navigate() and openWindow() still carry the link.
+  }
+}
+
+// Fork patch (Wnt/webmail): every mail notification this worker put on
+// screen, by its one-off id, so the app can tell which one was tapped when
+// the tap reached neither the worker nor the page. On an iPhone, a tap on a
+// notification with a `navigate` URL never fires notificationclick, and when
+// the Home Screen app was in the background (the phone asleep) WebKit brings
+// its window back without loading that URL (bugs.webkit.org 268797, comments
+// 37-38; the owner's iPhone, 2026-10-19). What the tap still does is remove
+// that notification from the list: the app compares this ledger with
+// registration.getNotifications() when it shows (lib/notification-open.ts).
+// An entry leaves when this worker closes the notification itself (marked
+// `closed`), when a tap reaches notificationclick, when the user dismisses it
+// (notificationclose), at a sign-out, or once the app has looked at it.
+// `listed`: the browser listed it right after it was shown, so its absence
+// can be trusted to mean something.
+const SHOWN_KEEP = 20;
+
+function shownPrefix() {
+  return `${self.location.origin}${BASE_PATH}/__push-state/shown/`;
+}
+
+async function rememberShown(data, listed) {
+  if (!data || data.kind !== "email" || typeof data.emailId !== "string" || !data.emailId
+    || typeof data.shownId !== "string" || !data.shownId) return;
+  try {
+    const cache = await caches.open(PUSH_STATE_CACHE);
+    await cache.put(`${shownPrefix()}${encodeURIComponent(data.shownId)}`, new Response(JSON.stringify({
+      shownId: data.shownId,
+      emailId: data.emailId,
+      accountId: typeof data.accountId === "string" ? data.accountId : "",
+      slot: Number.isInteger(data.slot) ? data.slot : undefined,
+      at: Number(data.shownAt) || Date.now(),
+      listed: listed === true,
+    }), { headers: { "Content-Type": "application/json" } }));
+    // Oldest out: keys() lists in insertion order.
+    const kept = (await cache.keys()).filter((r) => r.url.startsWith(shownPrefix()));
+    for (const r of kept.slice(0, Math.max(0, kept.length - SHOWN_KEEP))) await cache.delete(r);
+  } catch (_) {
+    // Best effort: without it a lost tap opens the Inbox, as before.
+  }
+}
+
+async function markShownClosed(shownId) {
+  if (typeof shownId !== "string" || !shownId) return;
+  try {
+    const cache = await caches.open(PUSH_STATE_CACHE);
+    const key = `${shownPrefix()}${encodeURIComponent(shownId)}`;
+    const res = await cache.match(key);
+    if (!res) return;
+    const entry = await res.json();
+    await cache.put(key, new Response(JSON.stringify({ ...entry, closed: true }), {
+      headers: { "Content-Type": "application/json" },
+    }));
+  } catch (_) {
+    // Best effort.
+  }
+}
+
+async function markShownListed(shownId) {
+  try {
+    const cache = await caches.open(PUSH_STATE_CACHE);
+    const key = `${shownPrefix()}${encodeURIComponent(shownId)}`;
+    const res = await cache.match(key);
+    if (!res) return;
+    const entry = await res.json();
+    await cache.put(key, new Response(JSON.stringify({ ...entry, listed: true }), {
+      headers: { "Content-Type": "application/json" },
+    }));
+  } catch (_) {
+    // Best effort.
+  }
+}
+
+/** Drops the ledger entries `match` accepts. */
+async function forgetShown(match) {
+  try {
+    const cache = await caches.open(PUSH_STATE_CACHE);
+    for (const r of await cache.keys()) {
+      if (!r.url.startsWith(shownPrefix())) continue;
+      const res = await cache.match(r);
+      let entry = null;
+      try {
+        entry = res ? await res.json() : null;
+      } catch (_) {
+        entry = null;
+      }
+      if (!entry || match(entry)) await cache.delete(r);
+    }
+  } catch (_) {
+    // Nothing kept.
+  }
+}
+
+async function handleNotificationClose(event) {
+  const data = (event.notification && event.notification.data) || {};
+  if (data.kind !== "email") return;
+  await forgetShown((entry) => typeof data.shownId === "string" && entry.shownId === data.shownId);
+  await traceTap("close", { age: ageSeconds(data.shownAt) });
+  await flushTapTrace();
+}
+
+function ageSeconds(shownAt) {
+  const at = Number(shownAt);
+  if (!Number.isFinite(at) || at <= 0) return 0;
+  return Math.max(0, Math.min(10_000_000, Math.round((Date.now() - at) / 1000)));
+}
+
+// Fork patch (Wnt/webmail): the tap diagnostics. Each link of a tap's chain
+// (push received, notificationclick, the app's start, how it found the
+// message, whether it opened) is one small record: a stage name and yes/no
+// facts, never an id, address, subject or content. Records wait in the
+// push-state cache and go to /api/perf/tap (read with the ops repo's
+// tools/perf-beacon --taps). This worker sends them after a push or a
+// dismissal when it can; the app sends what is left once it is signed in
+// (lib/tap-trace.ts, same keys).
+const TRACE_KEEP = 60;
+const TRACE_POST_TIMEOUT_MS = 5000;
+
+function tracePrefix() {
+  return `${self.location.origin}${BASE_PATH}/__push-state/tap-trace/`;
+}
+
+function engineName() {
+  const ua = (self.navigator && self.navigator.userAgent) || "";
+  if (/Firefox\//.test(ua)) return "gecko";
+  if (/Chrome\/|Chromium\/|Edg\//.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua)) return "blink";
+  if (/AppleWebKit\//.test(ua)) return "webkit";
+  return "other";
+}
+
+async function traceTap(ev, facts) {
+  try {
+    const id = newShownId().replace(/[^0-9a-z]/gi, "").slice(0, 16).toLowerCase();
+    const at = Date.now();
+    const cache = await caches.open(PUSH_STATE_CACHE);
+    await cache.put(`${tracePrefix()}${at}-${id}`, new Response(JSON.stringify({
+      id, src: "sw", ev, at, sw: SW_REVISION, eng: engineName(), f: facts,
+    }), { headers: { "Content-Type": "application/json" } }));
+    const kept = (await cache.keys()).filter((r) => r.url.startsWith(tracePrefix()));
+    for (const r of kept.slice(0, Math.max(0, kept.length - TRACE_KEEP))) await cache.delete(r);
+  } catch (_) {
+    // Diagnostics only.
+  }
+}
+
+async function tracePush(payload, work) {
+  // A notification the browser listed only a moment later counts as listed.
+  if (work && work.listedCheck) await work.listedCheck;
+  const t = (work && work.trace) || {};
+  const emailIds = payload && Array.isArray(payload.emailIds) ? payload.emailIds.filter((id) => typeof id === "string" && id) : [];
+  let win = 0;
+  let vis = false;
+  try {
+    const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    win = all.length;
+    vis = all.some((c) => c.focused || c.visibilityState === "visible");
+  } catch (_) {
+    // Unknown: reported as none.
+  }
+  await traceTap("push", {
+    target: emailIds.length > 0,
+    preview: t.preview || "skip",
+    shown: work && work.displayed ? (t.shown || "new") : "none",
+    nav: t.nav === true,
+    listed: t.listed === true,
+    win: Math.min(win, 99),
+    vis,
+  });
+  await flushTapTrace();
+}
+
+/** Sends the waiting records; drops them once the server took them (or refused them for good). */
+async function flushTapTrace() {
+  if (typeof fetch !== "function") return;
+  try {
+    const cache = await caches.open(PUSH_STATE_CACHE);
+    const keys = (await cache.keys()).filter((r) => r.url.startsWith(tracePrefix())).slice(0, 30);
+    if (keys.length === 0) return;
+    const events = [];
+    for (const r of keys) {
+      const res = await cache.match(r);
+      try {
+        if (res) events.push(await res.json());
+      } catch (_) {
+        // Unreadable: dropped below.
+      }
+    }
+    const controller = typeof AbortController === "function" && typeof setTimeout === "function" ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), TRACE_POST_TIMEOUT_MS) : null;
+    let res;
+    try {
+      res = await fetch(`${BASE_PATH}/api/perf/tap`, {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ v: 1, events }),
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    // 401 (no session cookie right now) and server errors: the app sends them later.
+    if (res && (res.ok || res.status === 400 || res.status === 413)) {
+      for (const r of keys) await cache.delete(r);
+    }
+  } catch (_) {
+    // Offline: the app sends them later.
   }
 }
 
