@@ -63,6 +63,23 @@ async function closeNotifications(accountIds: string[], everyAccount: boolean): 
   }
 }
 
+/**
+ * Whether this browser's push subscription is Apple's (Safari, iOS Home
+ * Screen apps). There our gateway sends new mail as a Declarative Web Push
+ * message that the browser shows by itself, without the service worker, so
+ * the sign-out markers the worker reads cannot stop it.
+ */
+async function browserUsesApplePush(): Promise<boolean> {
+  const registration = await swRegistration();
+  try {
+    const subscription = await registration?.pushManager?.getSubscription();
+    const host = subscription?.endpoint ? new URL(subscription.endpoint).hostname : '';
+    return host === 'push.apple.com' || host.endsWith('.push.apple.com');
+  } catch {
+    return false;
+  }
+}
+
 async function unsubscribeBrowser(stillOk: () => boolean = () => true): Promise<boolean> {
   const registration = await swRegistration();
   try {
@@ -210,6 +227,10 @@ export function teardownPushOnSignOut(params: {
     });
     // Pushes the worker is already handling settle (alongside the network work).
     const worker = settleWorker(accountIds, params.everyAccount, suppressed);
+    // Fork (Wnt/webmail): whether the server side confirmed the teardown of
+    // every account (see the Apple fallback below).
+    let remoteConfirmed = true;
+    let networkDone = false;
     const network = (async () => {
       if (params.everyAccount) await underLock(() => unsubscribeBrowser(allOwned));
       // The locked/configured relay, the same one push was enabled against.
@@ -217,9 +238,11 @@ export function teardownPushOnSignOut(params: {
       for (const [accountId, client] of targets) {
         await underLock(async () => {
           if (!owned(accountId)) return;
-          if (client) await disableWebPush({ client, relayBaseUrl, stillOwned: () => owned(accountId) }).catch(() => undefined);
-          else if (owned(accountId)) await dropRelayRegistration(accountId, relayBaseUrl).catch(() => undefined);
-        });
+          let ok = true;
+          if (client) ok = await disableWebPush({ client, relayBaseUrl, stillOwned: () => owned(accountId) }).catch(() => false);
+          else if (owned(accountId)) ok = await dropRelayRegistration(accountId, relayBaseUrl).catch(() => false);
+          if (!ok) remoteConfirmed = false;
+        }).catch(() => { remoteConfirmed = false; });
       }
       // The browser subscription is shared: it goes once no other account here uses it.
       if (!params.everyAccount) {
@@ -227,6 +250,7 @@ export function teardownPushOnSignOut(params: {
           await unsubscribeBrowser(() => allOwned() && !locallyOptedInAccounts().some((id) => !targets.has(id)));
         });
       }
+      networkDone = true;
     })();
     void Promise.allSettled([network, worker.final]).then(() => finishTracking());
 
@@ -240,12 +264,23 @@ export function teardownPushOnSignOut(params: {
 
     // Suppression that cannot be confirmed falls back to dropping the
     // browser's push subscription: then nothing can arrive at all.
+    // Fork (Wnt/webmail): on Apple's push service the markers suppress
+    // nothing the browser shows by itself (a declarative push), so there the
+    // server side must have confirmed the teardown within the wait, or the
+    // browser subscription goes too (for every account on this device until
+    // the app is opened again, when a re-sync re-subscribes the others).
+    const declarativeUnconfirmed = !(networkDone && remoteConfirmed) && await browserUsesApplePush();
     let browserUnsubscribed = false;
-    if (!suppressed || settlement === 'pending') {
+    if (!suppressed || settlement === 'pending' || declarativeUnconfirmed) {
       await underLock(async () => {
         browserUnsubscribed = await unsubscribeBrowser(allOwned);
       });
-      console.warn(`[push] Sign-out ${!suppressed ? 'could not store its marker' : 'is still being settled by the service worker'}; this browser's push subscription was dropped`);
+      const why = !suppressed
+        ? 'could not store its marker'
+        : settlement === 'pending'
+          ? 'is still being settled by the service worker'
+          : 'was not confirmed by the server (Apple push: the browser shows declarative pushes itself)';
+      console.warn(`[push] Sign-out ${why}; this browser's push subscription was dropped`);
     }
 
     // Even when the server side is still running: the opt-in is over, so no

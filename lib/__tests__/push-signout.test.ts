@@ -8,7 +8,7 @@ vi.mock('@/lib/push-relay-current', () => ({ currentRelayUrl: async () => 'https
 
 const RELAY_DELETE = 'DELETE https://mail.example.com/relay/api/push/register/device1';
 
-function installWorker(answer: 'done' | 'not-done' | 'never') {
+function installWorker(answer: 'done' | 'not-done' | 'never', endpoint?: string) {
   const posted: unknown[] = [];
   const unsubscribe = vi.fn(async () => true);
   const active = {
@@ -21,7 +21,7 @@ function installWorker(answer: 'done' | 'not-done' | 'never') {
   Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: {
     getRegistration: vi.fn(async () => ({
       active,
-      pushManager: { getSubscription: async () => ({ unsubscribe }) },
+      pushManager: { getSubscription: async () => ({ unsubscribe, ...(endpoint ? { endpoint } : {}) }) },
       getNotifications: async () => [],
     })),
   }});
@@ -154,4 +154,70 @@ it('the sign-out generation is bumped synchronously, before anything is awaited'
   const done = teardownPushOnSignOut({ clients: [makeClient() as never], everyAccount: true });
   expect(signOutGeneration('acc1')).not.toBe(before);
   await done;
+});
+
+// Fork (Wnt/webmail), Codex Astra late-push review: on Apple's push service our
+// gateway sends new mail as a Declarative Web Push message the browser shows by
+// itself, so the worker's sign-out markers cannot stop it. There the server side
+// must confirm the teardown, or the browser subscription goes too.
+const APPLE = 'https://web.push.apple.com/QGx0abc';
+const FCM = 'https://fcm.googleapis.com/fcm/send/abc';
+
+it('Apple push: a teardown the server confirmed keeps the browser subscription the other account uses', async () => {
+  stubCaches();
+  const { unsubscribe } = installWorker('done', APPLE);
+  const { teardownPushOnSignOut } = await import('@/lib/push-signout');
+  const result = await teardownPushOnSignOut({ clients: [makeClient() as never], everyAccount: false });
+  expect(result).toEqual({ suppressed: true, worker: 'settled', browserUnsubscribed: false });
+  expect(unsubscribe).not.toHaveBeenCalled();
+  expect(requests).toContain(RELAY_DELETE);
+});
+
+for (const [what, fail] of [
+  ['the relay record\'s DELETE failed', 'relay'],
+  ['the PushSubscription destroy failed', 'destroy'],
+] as const) {
+  it(`Apple push: ${what}, so the browser subscription is dropped`, async () => {
+    stubCaches();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { unsubscribe } = installWorker('done', APPLE);
+    if (fail === 'relay') {
+      vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
+        requests.push(`${init?.method ?? 'GET'} ${String(input)}`);
+        return new Response('{}', { status: init?.method === 'DELETE' ? 503 : 200 });
+      }));
+    }
+    const client = makeClient();
+    if (fail === 'destroy') client.destroyPushSubscription.mockRejectedValue(new Error('offline'));
+    const { teardownPushOnSignOut } = await import('@/lib/push-signout');
+    const result = await teardownPushOnSignOut({ clients: [client as never], everyAccount: false });
+    expect(result).toEqual({ suppressed: true, worker: 'settled', browserUnsubscribed: true });
+    expect(unsubscribe).toHaveBeenCalled();
+  });
+}
+
+it('Apple push: a teardown still running after the wait drops the browser subscription', async () => {
+  stubCaches();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const { unsubscribe } = installWorker('done', APPLE);
+  const client = makeClient();
+  client.destroyPushSubscription.mockImplementation(() => new Promise<void>(() => {}));
+  const { teardownPushOnSignOut } = await import('@/lib/push-signout');
+  const done = teardownPushOnSignOut({ clients: [client as never], everyAccount: false });
+  await vi.advanceTimersByTimeAsync(10_001);
+  const result = await done;
+  expect(result.browserUnsubscribed).toBe(true);
+  expect(unsubscribe).toHaveBeenCalled();
+});
+
+it('other push services: an unconfirmed teardown keeps the subscription (the worker\'s marker suppresses)', async () => {
+  stubCaches();
+  const { unsubscribe } = installWorker('done', FCM);
+  const client = makeClient();
+  client.destroyPushSubscription.mockRejectedValue(new Error('offline'));
+  const { teardownPushOnSignOut } = await import('@/lib/push-signout');
+  const result = await teardownPushOnSignOut({ clients: [client as never], everyAccount: false });
+  expect(result).toEqual({ suppressed: true, worker: 'settled', browserUnsubscribed: false });
+  expect(unsubscribe).not.toHaveBeenCalled();
 });

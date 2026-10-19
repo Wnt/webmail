@@ -26,7 +26,13 @@ const WEBKIT_MIN_LIFETIME_MS = 30_000;
 type Note = { title: string; options: Record<string, unknown>; closed: boolean; at: number; byBrowser?: boolean };
 type Reply = { ok: boolean; status: number; body?: unknown };
 
-function loadWorker({ webkit = true } = {}) {
+function loadWorker({ webkit = true, onShow, markerReadsThrow = false }: {
+  webkit?: boolean;
+  /** Runs while the worker's showNotification is in progress (e.g. iOS showing another one meanwhile). */
+  onShow?: () => void;
+  /** Reading a sign-out marker fails (Cache Storage error). */
+  markerReadsThrow?: boolean;
+} = {}) {
   const listeners = new Map<string, (event: unknown) => void>();
   const all: Note[] = [];
   const onScreen = () => all.filter((n) => !n.closed);
@@ -48,6 +54,7 @@ function loadWorker({ webkit = true } = {}) {
           for (const n of onScreen()) if (n.options.tag === options.tag) n.closed = true;
         }
         all.push({ title, options, closed: false, at: Date.now() });
+        onShow?.();
       },
       getNotifications: async (filter?: { tag?: string }) => onScreen()
         .filter((n) => !filter?.tag || n.options.tag === filter.tag)
@@ -67,7 +74,9 @@ function loadWorker({ webkit = true } = {}) {
   const caches = {
     open: async () => ({
       match: async (key: string | { url: string }) => {
-        const value = cacheStore.get(typeof key === 'string' ? key : key.url);
+        const url = typeof key === 'string' ? key : key.url;
+        if (markerReadsThrow && url.includes('/__push-state/signed-out')) throw new Error('cache read failed');
+        const value = cacheStore.get(url);
         return value === undefined ? undefined : { json: async () => JSON.parse(value) };
       },
       put: async (key: string, res: { text: () => Promise<string> }) => {
@@ -79,7 +88,7 @@ function loadWorker({ webkit = true } = {}) {
     }),
   };
   let previewReply: Reply = { ok: false, status: 401 };
-  let ticketReply: (body: Record<string, unknown>) => Reply = () => ({ ok: false, status: 403 });
+  let ticketReply: (body: Record<string, unknown>) => Reply | Promise<Reply> = () => ({ ok: false, status: 403 });
   const ticketRequests: { url: string; init: Record<string, unknown>; body: Record<string, unknown> }[] = [];
   const previewRequests: string[] = [];
   const posted: Record<string, unknown>[] = [];
@@ -92,7 +101,7 @@ function loadWorker({ webkit = true } = {}) {
     if (u === `${ORIGIN}/relay/api/push/preview`) {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       ticketRequests.push({ url: u, init, body });
-      const r = ticketReply(body);
+      const r = await ticketReply(body);
       return { ok: r.ok, status: r.status, json: async () => r.body };
     }
     if (u.includes('/api/push/preview')) {
@@ -107,6 +116,12 @@ function loadWorker({ webkit = true } = {}) {
   });
   vm.runInContext(SW_SOURCE, context);
 
+  async function fire(type: string, event: Record<string, unknown>, advanceMs = 40_000) {
+    const waits: Promise<unknown>[] = [];
+    listeners.get(type)?.({ ...event, waitUntil: (p: Promise<unknown>) => waits.push(p) });
+    await vi.advanceTimersByTimeAsync(advanceMs);
+    await Promise.all(waits);
+  }
   async function push(payload: unknown, advanceMs = 40_000) {
     const waits: Promise<unknown>[] = [];
     listeners.get('push')?.({ data: { json: () => payload }, waitUntil: (p: Promise<unknown>) => waits.push(p) });
@@ -120,12 +135,13 @@ function loadWorker({ webkit = true } = {}) {
   }
   const entries = (prefix: string) => [...cacheStore.entries()].filter(([k]) => k.startsWith(prefix)).map(([, v]) => JSON.parse(v));
   return {
-    push, showByBrowser, all, onScreen, cacheStore, ticketRequests, previewRequests,
+    push, fire, showByBrowser, all, onScreen, cacheStore, ticketRequests, previewRequests,
     kept: () => entries(KEPT), ledger: () => entries(SHOWN), notified: () => entries(NOTIFIED),
     /** The push records, sent or still waiting. */
     traces: () => [...posted, ...entries(TRACE)].filter((r) => r.ev === 'push') as { f: Record<string, unknown> }[],
     setPreview: (r: Reply) => { previewReply = r; },
-    setTicket: (fn: (body: Record<string, unknown>) => Reply) => { ticketReply = fn; },
+    setTicket: (fn: (body: Record<string, unknown>) => Reply | Promise<Reply>) => { ticketReply = fn; },
+    listeners,
     marker: (path: string) => cacheStore.set(`${ORIGIN}/__push-state/${path}`, '{"at":1}'),
   };
 }
@@ -318,5 +334,99 @@ describe('keeping the message with the push\'s preview ticket', () => {
     const f = w.traces()[0].f;
     expect(f.lag).toBeUndefined();
     expect(f.kept).toBeUndefined();
+  });
+});
+
+// Codex Astra review round 1 (audit/reviews/late-push-bulwark-r1.md).
+describe('ordering, sign-out and fail-closed keeping (review round 1)', () => {
+  /** A notification iOS showed by itself for `id`, its push sent at `sentAt`. */
+  const shownByIos = (w: ReturnType<typeof loadWorker>, id: string, sentAt: number) => {
+    w.showByBrowser({ notification: {
+      title: `Sender ${id}`, body: `Subject ${id}`, navigate: `${ORIGIN}/mail/message/${id}#sent=${sentAt}`, tag: 'bulwark-mail:acc1', silent: false,
+    } });
+  };
+  const emailIdsOnScreen = (w: ReturnType<typeof loadWorker>) => w.onScreen().map((n) => {
+    const d = n.options.data as { emailId?: string } | undefined;
+    return d?.emailId ?? /\/mail\/message\/([^#]+)/.exec(String(n.options.navigate))?.[1];
+  });
+
+  it('issue 1A: a late summary for an older message iOS showed keeps the newer one iOS showed after it', async () => {
+    const w = loadWorker();
+    shownByIos(w, 'e1', SENT_AT);
+    shownByIos(w, 'e2', SENT_AT + 10_000);
+    await vi.advanceTimersByTimeAsync(35_000);
+    await w.push(payload({ email: { ...email, summary }, renotify: false, firstSentAt: SENT_AT, sentAt: SENT_AT + 36_000 }));
+    expect(emailIdsOnScreen(w), 'e1 (older) is closed or never re-shown').not.toContain('e1_summary');
+    const mine = w.onScreen().filter((n) => !n.byBrowser);
+    expect(mine.every((n) => (n.options.data as { emailId: string }).emailId === 'e2'), 'only e2 is re-shown').toBe(true);
+    expect(w.onScreen().some((n) => String(n.options.body).includes(summary)), 'the stale summary is not shown').toBe(false);
+  });
+
+  it('issue 1A: a summary for a message newer than the one on screen still replaces it', async () => {
+    const w = loadWorker();
+    shownByIos(w, 'e0', SENT_AT - 60_000);
+    await vi.advanceTimersByTimeAsync(35_000);
+    await w.push(payload({ email: { ...email, summary }, renotify: false, firstSentAt: SENT_AT }));
+    expect(emailIdsOnScreen(w)).toEqual(['e1']);
+  });
+
+  it('issue 1B: a notification iOS shows while the worker replaces another is left alone', async () => {
+    let injected = false;
+    const w = loadWorker({
+      onShow: () => {
+        if (injected) return;
+        injected = true;
+        shownByIos(w, 'e2', SENT_AT + 30_000);
+      },
+    });
+    w.setTicket(() => ({ ok: true, status: 200, body: { email: fullEmail() } }));
+    shownByIos(w, 'e1', SENT_AT);
+    await vi.advanceTimersByTimeAsync(35_000);
+    await w.push(payload({ email: { ...email, summary }, renotify: false, firstSentAt: SENT_AT }));
+    expect(new Set(emailIdsOnScreen(w))).toEqual(new Set(['e1', 'e2']));
+    expect(w.onScreen().find((n) => n.byBrowser)?.options.navigate).toContain('/mail/message/e2');
+  });
+
+  it('issue 2: a sign-out closes a young notification iOS showed once WebKit allows it', async () => {
+    const w = loadWorker();
+    shownByIos(w, 'e1', SENT_AT);
+    w.marker('signed-out/acc1');
+    const port = { postMessage: vi.fn() };
+    await w.fire('message', { data: { type: 'push-signout', accountIds: ['acc1'] }, ports: [port] }, 40_000);
+    expect(port.postMessage).toHaveBeenCalledWith({ done: true });
+    expect(w.onScreen()).toEqual([]);
+  });
+
+  it('issue 3: an unreadable sign-out state keeps nothing and uses no ticket', async () => {
+    const w = loadWorker({ markerReadsThrow: true });
+    w.setTicket(() => ({ ok: true, status: 200, body: { email: fullEmail() } }));
+    await w.push(payload());
+    expect(w.onScreen()).toHaveLength(1);
+    expect(w.onScreen()[0].title).toBe('New mail');
+    expect(w.ticketRequests).toHaveLength(0);
+    expect(w.kept()).toEqual([]);
+  });
+
+  it('issue 3: a session-backed whole message is not kept when the sign-out state is unreadable', async () => {
+    const w = loadWorker({ markerReadsThrow: true });
+    w.setPreview({ ok: true, status: 200, body: { email: { id: 'e1', from: [{ name: 'Examplepaja' }], subject: email.subject }, unreadTotal: 1, full: fullEmail() } });
+    await w.push(payload());
+    expect(w.kept()).toEqual([]);
+  });
+
+  it('a slow ticket read does not hold up the account\'s next push', async () => {
+    const w = loadWorker();
+    let release!: (r: Reply) => void;
+    w.setTicket(() => new Promise<Reply>((r) => { release = r; }));
+    const first = w.push(payload(), 0);
+    await vi.advanceTimersByTimeAsync(100);
+    const second = w.push(payload({ emailIds: ['e2'], previewTicket: undefined }), 0);
+    await vi.advanceTimersByTimeAsync(100);
+    // Shown while the first push's ticket read still waits.
+    expect(w.all.map((n) => (n.options.data as { emailId: string }).emailId)).toEqual(['e1', 'e2']);
+    release({ ok: true, status: 200, body: { email: fullEmail() } });
+    await vi.advanceTimersByTimeAsync(40_000);
+    await Promise.all([first, second]);
+    expect(w.kept()).toEqual([expect.objectContaining({ email: fullEmail() })]);
   });
 });

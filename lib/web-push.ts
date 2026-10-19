@@ -669,11 +669,13 @@ export function locallyOptedInAccounts(): string[] {
  * without a connected client, which stops delivery to this device. The JMAP
  * PushSubscription needs a credential and is left to expire.
  */
-export async function dropRelayRegistration(accountId: string, relayBaseUrl?: string): Promise<void> {
+/** Deletes the account's relay record; true when it is gone (or there was none), false when the DELETE failed. */
+export async function dropRelayRegistration(accountId: string, relayBaseUrl?: string): Promise<boolean> {
   const deviceClientId = localStorage.getItem(deviceClientIdKey(accountId));
   const relay = (relayBaseUrl ?? DEFAULT_RELAY_BASE_URL).replace(/\/+$/, '');
-  if (!deviceClientId || !relay) return;
-  await fetch(buildRelayUrl(relay, `/api/push/register/${encodeURIComponent(deviceClientId)}`), { method: 'DELETE' });
+  if (!deviceClientId || !relay) return true;
+  const res = await fetch(buildRelayUrl(relay, `/api/push/register/${encodeURIComponent(deviceClientId)}`), { method: 'DELETE' });
+  return res.ok;
 }
 
 /**
@@ -703,7 +705,13 @@ export interface DisableWebPushParams {
 // (only when no other accounts still need it) the browser-wide
 // PushSubscription. Any single failure is swallowed so the user always ends
 // up in a "disabled" state locally.
-export async function disableWebPush(params: DisableWebPushParams): Promise<void> {
+/**
+ * Turn push off for the client's account on this device. Resolves true when
+ * the server side is confirmed gone (every PushSubscription destroy and the
+ * relay record's DELETE succeeded, or there was nothing to remove), false
+ * when any of it failed (fork: lib/push-signout.ts falls back on that).
+ */
+export async function disableWebPush(params: DisableWebPushParams): Promise<boolean> {
   const relayBaseUrl = (params.relayBaseUrl ?? DEFAULT_RELAY_BASE_URL).replace(/\/+$/, '');
   const accountId = params.client.getAccountId();
 
@@ -713,6 +721,7 @@ export async function disableWebPush(params: DisableWebPushParams): Promise<void
   const storedServerId = localStorage.getItem(subIdKey);
   const deviceClientId = localStorage.getItem(devIdKey);
   const owned = params.stillOwned ?? (() => true);
+  let confirmed = true;
 
   // Destroy every subscription the server holds for this device, not just the
   // id we happen to have recorded. A destroy that lost its round-trip, a failed
@@ -728,18 +737,19 @@ export async function disableWebPush(params: DisableWebPushParams): Promise<void
     }
   }
   for (const id of idsToDestroy) {
-    if (!owned()) return;
-    await params.client.destroyPushSubscription(id).catch(() => undefined);
+    if (!owned()) return true;
+    await params.client.destroyPushSubscription(id).catch(() => { confirmed = false; });
   }
-  if (!owned()) return;
+  if (!owned()) return true;
   localStorage.removeItem(subIdKey);
   localStorage.removeItem(subscriptionRelayKey(accountId));
 
   if (deviceClientId && relayBaseUrl && owned()) {
-    await fetch(
+    const res = await fetch(
       buildRelayUrl(relayBaseUrl, `/api/push/register/${encodeURIComponent(deviceClientId)}`),
       { method: 'DELETE' },
-    ).catch(() => undefined);
+    ).catch(() => null);
+    if (!res || !res.ok) confirmed = false;
   }
   // Keep the deviceClientId around so a later re-enable for this account
   // reuses the same relay subscriptionId rather than scattering orphans.
@@ -755,6 +765,7 @@ export async function disableWebPush(params: DisableWebPushParams): Promise<void
     const sub = await registration?.pushManager.getSubscription();
     if (sub && owned()) await sub.unsubscribe().catch(() => undefined);
   }
+  return confirmed;
 }
 
 export interface PushDevice {

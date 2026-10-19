@@ -17,7 +17,12 @@
 >      itself, at once, with no data (iOS launched a not-running Home Screen app for a classic push but ran its
 >      worker only when the next push came). The quiet summary push takes that notification over: the worker
 >      recognises it by its `navigate` message link and shows its own copy, with the tap data and the ledger
->      entry. A quiet push never alerts again.
+>      entry. A quiet push never alerts again. Notifications are ordered by when the gateway sent their first
+>      push (`data.sentAt`, or the `#sent=<ms>` fragment of an iOS-shown one's link): a late summary never
+>      replaces a newer message's notification, and a replacement closes only notifications that were up before
+>      it. Sign-out: on WebKit the worker closes what it found again once it is 30 s old; on Apple's push service
+>      `lib/push-signout.ts` drops the browser subscription unless the server confirmed the teardown (the
+>      markers cannot stop a notification the browser shows itself). Unknown sign-out state keeps nothing.
 >    - With the push's `previewTicket` (webmail-gateway, per device, one message, minutes) the worker keeps the
 >      message for the tap through the gateway's `POST /relay/api/push/preview` when the session-backed lookup
 >      fails (its access token lives an hour). The tap diagnostics record how late each push was handled (`lag`,

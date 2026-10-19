@@ -219,6 +219,16 @@ async function handlePush(event, work) {
     const announced = notified.includes(headline);
     const newest = announced ? null : await newestMailNotification(tag, accountId);
     const shownByBrowser = newest && newest.byBrowser && newest.data.headlineEmailId === headline ? newest.n : null;
+    // Another message's notification is up, and it went out after this
+    // message's: this quiet push is old news (a late summary), so the account
+    // keeps showing the newer one (acknowledgeUnshownPush on WebKit). Without
+    // a time on either, it is announced: what is on screen is then older
+    // (the gateway summarises only its newest message).
+    if (newest && !shownByBrowser && newest.data.headlineEmailId !== headline) {
+      const mine = pushSentAt(payload);
+      const theirs = Number(newest.data.sentAt);
+      if (mine > 0 && Number.isFinite(theirs) && theirs > mine) return;
+    }
     if (announced || shownByBrowser) {
       const content = payload.email && typeof payload.email.summary === "string" && payload.email.summary.trim()
         ? buildPayloadEmailContent(payload.email)
@@ -235,9 +245,7 @@ async function handlePush(event, work) {
       }
       // Kept for the tap unless it already is (the first push's lookup may
       // have failed, or this worker never saw that push).
-      if (work.displayed && await pushSignedOut(accountId) !== true) {
-        await keepWithTicket(accountId, headline, payload, work);
-      }
+      if (work.displayed) deferKeep(accountId, headline, payload, work);
       return;
     }
   }
@@ -337,6 +345,7 @@ async function handlePush(event, work) {
   // session expired). That includes a "+N more" group: it headlines its
   // newest message, and the inbox is one step back from there. Only a push
   // with no id at all (an older server's bare state change) opens the list.
+  const sentAt = pushSentAt(payload);
   const data = headlineEmailId
     ? {
       kind: "email",
@@ -345,6 +354,9 @@ async function handlePush(event, work) {
       slot,
       accountId,
       headlineEmailId,
+      // Fork patch (Wnt/webmail): when the gateway sent this message's first
+      // push, which orders notifications (see the quiet path above).
+      ...(sentAt > 0 ? { sentAt } : {}),
     }
     : { kind: "mail-list", accountId, slot, headlineEmailId };
 
@@ -403,15 +415,39 @@ async function handlePush(event, work) {
   // notification is up, so keeping it never delays the alert; not when the
   // account was signed out meanwhile.
   if (preview && preview.full && typeof preview.full === "object" && preview.full.id === headlineEmailId
-    && work.displayed && await pushSignedOut(accountId) !== true) {
-    await rememberPrefetchedEmail(accountId, preview.full);
-    work.trace.kept = "preview";
-  } else if (headlineEmailId && work.displayed && await pushSignedOut(accountId) !== true) {
+    && work.displayed) {
+    if (await mayKeepFor(accountId)) {
+      await rememberPrefetchedEmail(accountId, preview.full);
+      work.trace.kept = "preview";
+    }
+  } else if (headlineEmailId && work.displayed) {
     // Fork patch (Wnt/webmail): the lookup failed (an expired session: its
     // access token lives an hour) or named no whole message. The push's own
     // preview ticket reads that one message (keepWithTicket).
-    await keepWithTicket(accountId, headlineEmailId, payload, work);
+    deferKeep(accountId, headlineEmailId, payload, work);
   }
+}
+
+// Fork patch (Wnt/webmail): when the gateway sent the first push of this
+// message (the quiet replacement names it as `firstSentAt`), ms; 0 unknown.
+function pushSentAt(payload) {
+  const v = payload ? Number(payload.firstSentAt || payload.sentAt) : NaN;
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+// Fork patch (Wnt/webmail): only for an account known to be signed in here:
+// an unreadable sign-out state keeps nothing (audit bulwark-1, fail closed).
+async function mayKeepFor(accountId) {
+  if (SIGNOUTS_IN_PROGRESS.has("*") || SIGNOUTS_IN_PROGRESS.has(accountId || "default")) return false;
+  return (await pushSignedOut(accountId)) === false;
+}
+
+// The ticket read outlives the handler (like a delayed close), so it never
+// holds up the account's next push; the tap record waits for it.
+function deferKeep(accountId, emailId, payload, work) {
+  const keep = keepWithTicket(accountId, emailId, payload, work).catch(() => undefined);
+  work.keepDone = keep;
+  work.pending.push(keep);
 }
 
 // Fork patch (Wnt/webmail): our push gateway may include an optional
@@ -470,7 +506,11 @@ function notificationDataOf(n, accountId) {
   if (!n) return null;
   if (n.data && typeof n.data === "object" && typeof n.data.kind === "string") return n.data;
   const emailId = emailIdFromNavigate(n.navigate);
-  return emailId ? { kind: "email", emailId, accountId: accountId || "", headlineEmailId: emailId } : null;
+  if (!emailId) return null;
+  // The gateway puts the push's send time in the link's fragment (#sent=<ms>).
+  const sent = /#(?:.*&)?sent=(\d{1,16})(?:&|$)/.exec(typeof n.navigate === "string" ? n.navigate : "");
+  const sentAt = sent ? Number(sent[1]) : 0;
+  return { kind: "email", emailId, accountId: accountId || "", headlineEmailId: emailId, ...(sentAt > 0 ? { sentAt } : {}) };
 }
 
 function emailIdFromNavigate(navigate) {
@@ -535,6 +575,7 @@ const KEPT_EMAIL_BODY_OPTIONS = {
 async function keepWithTicket(accountId, emailId, payload, work) {
   const ticket = payload && typeof payload.previewTicket === "string" ? payload.previewTicket : "";
   if (!ticket || !emailId || typeof fetch !== "function") return;
+  if (!(await mayKeepFor(accountId))) return;
   try {
     const cache = await caches.open(PUSH_STATE_CACHE);
     if (await cache.match(prefetchedKey(accountId, emailId))) return;
@@ -567,9 +608,12 @@ async function keepWithTicket(accountId, emailId, payload, work) {
     if (timer) clearTimeout(timer);
     if (controller) lookups.delete(controller);
   }
-  if (work && work.trace) work.trace.kept = email ? "ticket" : "none";
-  if (!email || await pushSignedOut(accountId) === true) return;
+  if (!email || !(await mayKeepFor(accountId))) {
+    if (work && work.trace) work.trace.kept = "none";
+    return;
+  }
   await rememberPrefetchedEmail(accountId, email);
+  if (work && work.trace) work.trace.kept = "ticket";
 }
 
 // Fork patch (Wnt/webmail), audit bulwark-1: markers the page writes on an
@@ -621,11 +665,17 @@ async function handlePushSignOut(event) {
   // (the page also drops the browser's push subscription).
   const persisted = data.persisted !== false;
   for (const key of keys) SIGNOUTS_IN_PROGRESS.set(key, (SIGNOUTS_IN_PROGRESS.get(key) || 0) + 1);
+  // Fork patch (Wnt/webmail): what each close attempt found; WebKit refuses
+  // to close one younger than 30 s, so those are closed again later (below).
+  const closing = new Set();
   const closeShown = async () => {
     try {
       for (const n of await self.registration.getNotifications()) {
         const tag = n.tag || "";
-        if (tag.startsWith("bulwark-mail:") && affected(tag.slice("bulwark-mail:".length))) n.close();
+        if (tag.startsWith("bulwark-mail:") && affected(tag.slice("bulwark-mail:".length))) {
+          closing.add(n);
+          n.close();
+        }
       }
     } catch (_) {
       // Nothing to close.
@@ -664,6 +714,20 @@ async function handlePushSignOut(event) {
     await closeShown();
   }
   if (persisted) release();
+  // Fork patch (Wnt/webmail): on WebKit, close the ones found again once
+  // they are old enough (a notification iOS showed by itself from a
+  // declarative push never passed this worker's sign-out check). Still this
+  // message's lifetime; only those found here, never a newer one.
+  if (closing.size > 0 && typeof setTimeout === "function" && await usesApplePush()) {
+    await delay(MIN_CLOSE_AGE_MS);
+    for (const n of closing) {
+      try {
+        n.close();
+      } catch (_) {
+        // Already gone.
+      }
+    }
+  }
 }
 
 // Every mail notification goes through here. The marker is read again right
@@ -750,12 +814,21 @@ async function showReplacing(title, options, work) {
   options = { ...options, data: { ...(options.data || {}), shownId, shownAt: Date.now() } };
   const navigate = notificationNavigateUrl(options.data);
   if (navigate) options.navigate = navigate;
+  // Fork patch (Wnt/webmail): what this one replaces is what was up before
+  // it; one the browser shows meanwhile by itself (a declarative push for a
+  // newer mail) is not replaced.
+  let before = [];
+  try {
+    before = options.tag ? await self.registration.getNotifications({ tag: options.tag }) : [];
+  } catch (_) {
+    before = [];
+  }
   await self.registration.showNotification(title, options);
   if (work) {
     work.displayed = true;
     if (!work.shownAt) work.shownAt = Date.now();
   }
-  const listed = await closeOthersWithTag(options.tag, shownId, work);
+  const listed = await closeOthersWithTag(options.tag, shownId, work, before);
   if (work && work.trace) {
     work.trace.nav = !!navigate;
     work.trace.listed = listed;
@@ -791,10 +864,11 @@ async function confirmListed(tag, shownId, work) {
 const LISTED_RETRY_MS = [500, 1500, 3000];
 
 /**
- * Closes the other notifications with `tag` (see showReplacing). Returns
- * whether the browser listed the one just shown, with its data.
+ * Closes the notifications with `tag` that were up before the one just shown
+ * (`before`, see showReplacing). Returns whether the browser listed the one
+ * just shown, with its data.
  */
-async function closeOthersWithTag(tag, shownId, work) {
+async function closeOthersWithTag(tag, shownId, work, before) {
   if (!tag) return false;
   let shown;
   try {
@@ -805,8 +879,12 @@ async function closeOthersWithTag(tag, shownId, work) {
   // Only when the new notification can be told apart (its data came back):
   // otherwise this could close the very one just shown.
   if (!shown.some((n) => n.data && n.data.shownId === shownId)) return false;
+  // Those still up that were up before (one the browser replaced by tag
+  // meanwhile is gone already; one that came after is left alone).
+  const earlier = new Set((Array.isArray(before) ? before : []).map(notificationKey));
   for (const n of shown) {
     if (n.data && n.data.shownId === shownId) continue;
+    if (!earlier.has(notificationKey(n))) continue;
     const close = async () => {
       // Fork patch (Wnt/webmail): closed by us, so its absence is no tap.
       await markShownClosed(n.data && n.data.shownId);
@@ -826,6 +904,12 @@ async function closeOthersWithTag(tag, shownId, work) {
     }
   }
   return true;
+}
+
+/** Tells one listed notification from another across getNotifications() calls. */
+function notificationKey(n) {
+  if (n && n.data && typeof n.data === "object" && n.data.shownId) return `s:${n.data.shownId}`;
+  return `n:${(n && n.navigate) || ""}\u0000${(n && n.title) || ""}\u0000${(n && n.body) || ""}`;
 }
 
 let applePushPromise = null;
@@ -1504,6 +1588,7 @@ async function traceTap(ev, facts) {
 async function tracePush(payload, work) {
   // A notification the browser listed only a moment later counts as listed.
   if (work && work.listedCheck) await work.listedCheck;
+  if (work && work.keepDone) await work.keepDone;
   const t = (work && work.trace) || {};
   const emailIds = payload && Array.isArray(payload.emailIds) ? payload.emailIds.filter((id) => typeof id === "string" && id) : [];
   let win = 0;

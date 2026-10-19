@@ -176,7 +176,8 @@ describe('the ledger of shown notifications (lost iPhone taps)', () => {
     const w = loadWorker();
     await w.push(payload());
     const port = { postMessage: vi.fn() };
-    await w.fire('message', { data: { type: 'push-signout', accountIds: ['acc1'] }, ports: [port] }, 0);
+    // On WebKit the worker closes what it found again once WebKit allows it (30 s), within the message's lifetime.
+    await w.fire('message', { data: { type: 'push-signout', accountIds: ['acc1'] }, ports: [port] }, 40_000);
     expect(w.ledger()).toEqual([]);
   });
 
