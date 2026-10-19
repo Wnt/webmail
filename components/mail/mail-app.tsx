@@ -132,7 +132,7 @@ import {
   type MailDeepLink,
 } from "@/lib/deep-links";
 import { consumePendingDeepLink, subscribePendingDeepLink } from "@/lib/deep-link-handoff";
-import { findTappedNotification, forgetShownNotificationsFor, takeNotificationOpen, tapFallbackApplies, type TappedNotificationCheck } from "@/lib/notification-open";
+import { findTappedNotification, forgetShownNotificationsFor, settleTap, takeNotificationOpen, tapFallbackApplies, type TappedNotification, type TappedNotificationCheck } from "@/lib/notification-open";
 import { navigationKind, scheduleTapTraceFlush, tapTraceApplies, traceTap } from "@/lib/tap-trace";
 import { checkWorkerRevision } from "@/lib/sw-revision";
 import { usePasskeyGateStore } from "@/stores/passkey-gate-store";
@@ -1851,8 +1851,10 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
 
   // Fork (Wnt/webmail): the tap diagnostics' last link - whether the message
   // a tap (or a message link) asked for opened, or why not.
-  const traceTapOpen = (how: 'link' | 'pending' | 'vanished' | 'inplace', started: number, result: Promise<DeepLinkResult>) => {
+  const traceTapOpen = (how: 'link' | 'pending' | 'vanished' | 'handover' | 'inplace', started: number, result: Promise<DeepLinkResult>, tap?: TappedNotification) => {
     void result.catch((): DeepLinkResult => 'error').then((reason) => {
+      // A found tap stays for a page replacing this one (lib/notification-open.ts settleTap).
+      if (tap) void settleTap(tap, reason === 'ok');
       if (!tapTraceApplies()) return;
       const ms = typeof performance !== 'undefined' ? Math.round(performance.now() - started) : 0;
       traceTap('open', { how, ok: reason === 'ok', reason, ms: Math.min(600_000, Math.max(0, ms)) });
@@ -1925,12 +1927,13 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     // Fork (Wnt/webmail): a tap WebKit lost, found while the app started
     // (earlyTapRef): its message is this start's link.
     const early = earlyTapRef.current;
-    let viaLostTap = false;
-    if (!link && !openLatestUnread && early && !early.used) {
+    let viaLostTap: TappedNotification | null = null;
+    // A folder in the URL is only where the app was last (WebKit restores it).
+    if ((!link || link.kind === 'folder') && !openLatestUnread && early && !early.used) {
       if (!early.result) return; // still looking; runs again once it has
       if (early.result.tapped) {
         link = { kind: 'message', id: early.result.tapped.emailId, slot: early.result.tapped.slot };
-        viaLostTap = true;
+        viaLostTap = early.result.tapped;
       }
     }
 
@@ -1951,7 +1954,8 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       if (link.slot === undefined || link.slot === activeSlot) {
         deepLinkHandledRef.current = true;
         if (viaLostTap && early) early.used = true;
-        traceTapOpen(viaLostTap ? 'vanished' : 'link', 0, applyMailDeepLinkRef.current(link, { onLoad: true }));
+        traceTapOpen(viaLostTap ? (viaLostTap.handover ? 'handover' : 'vanished') : 'link', 0,
+          applyMailDeepLinkRef.current(link, { onLoad: true }), viaLostTap ?? undefined);
         return;
       }
     }
@@ -1969,7 +1973,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     if (link) {
       if (viaLostTap && early) early.used = true;
       const opening = applyMailDeepLinkRef.current(link, { onLoad: true });
-      if (link.kind === 'message') traceTapOpen(viaLostTap ? 'vanished' : 'link', 0, opening);
+      if (link.kind === 'message') traceTapOpen(viaLostTap ? (viaLostTap.handover ? 'handover' : 'vanished') : 'link', 0, opening, viaLostTap ?? undefined);
       else void opening;
       return;
     }
@@ -2009,7 +2013,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       try {
         const pending = await takeNotificationOpen();
         let target: { emailId: string; slot?: number } | null = pending ? { emailId: pending.emailId, slot: pending.slot } : null;
-        let how: 'link' | 'pending' | 'vanished' | 'inplace' | 'ambiguous' | 'none' = pending ? (when === 'message' ? 'inplace' : 'pending') : 'none';
+        let how: 'link' | 'pending' | 'vanished' | 'handover' | 'inplace' | 'ambiguous' | 'none' = pending ? (when === 'message' ? 'inplace' : 'pending') : 'none';
+        // A tap found from the notification list: settled once its open ends (settleTap).
+        let foundTap: TappedNotification | null = null;
         // Fork (Wnt/webmail): a tap that reached neither the worker nor this
         // page - an iPhone bringing the backgrounded app back without the
         // notification's URL - is the notification that is gone from the
@@ -2036,8 +2042,11 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
           }
           counts = { kept: found.kept, listed: found.listed, vanished: found.vanished };
           if (found.tapped) {
-            how = 'vanished';
-            if (!openedAtStart) target = found.tapped;
+            how = found.tapped.handover ? 'handover' : 'vanished';
+            if (!openedAtStart) {
+              target = found.tapped;
+              foundTap = found.tapped;
+            }
           } else if (found.vanished > 1) {
             how = 'ambiguous';
           }
@@ -2050,6 +2059,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
           && (!pending || pending.at <= pageStart)) {
           target = null;
           how = 'link';
+          if (foundTap) void settleTap(foundTap, true);
         }
         if (when === 'start' && how === 'none' && startedAtMessageLinkRef.current) how = 'link';
         if (tapTraceApplies() && (when === 'start' || how !== 'none' || counts.kept > 0)) {
@@ -2066,11 +2076,12 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
         if (!target || !mailAppMountedRef.current) return;
         if (useEmailStore.getState().selectedEmail?.id === target.emailId) {
           if (isMobile) setActiveView('viewer');
+          if (foundTap) void settleTap(foundTap, true);
           return;
         }
-        const tapHow = how === 'vanished' || how === 'inplace' ? how : 'pending';
+        const tapHow = how === 'vanished' || how === 'handover' || how === 'inplace' ? how : 'pending';
         traceTapOpen(tapHow, typeof performance !== 'undefined' ? performance.now() : 0,
-          applyMailDeepLinkRef.current({ kind: 'message', id: target.emailId, slot: target.slot }));
+          applyMailDeepLinkRef.current({ kind: 'message', id: target.emailId, slot: target.slot }), foundTap ?? undefined);
       } finally {
         busy = false;
         if (again) { again = false; void check(true, 'message'); }

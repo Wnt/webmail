@@ -15,6 +15,7 @@
 // repo prints them as a timeline.
 
 import { deviceClass } from '@/lib/open-timing';
+import { tapFallbackApplies } from '@/lib/notification-open';
 
 const PUSH_STATE_CACHE = 'bulwark-push-state-v1';
 const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, '');
@@ -149,13 +150,18 @@ export function navigationKind(): 'navigate' | 'reload' | 'back_forward' | 'prer
   }
 }
 
-/** Only devices that can get a push notification trace their starts. */
+/**
+ * Only devices that can get a push notification trace their starts: notifications
+ * allowed, or the iPhone/iPad Home Screen app, whose page can read the permission
+ * as "default" after WebKit restarted it (iOS Simulator, 2026-10-19).
+ */
 export function tapTraceApplies(): boolean {
   try {
-    return typeof Notification !== 'undefined' && Notification.permission === 'granted';
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') return true;
   } catch {
-    return false;
+    // Fall through.
   }
+  return tapFallbackApplies();
 }
 
 /** Tests only. */

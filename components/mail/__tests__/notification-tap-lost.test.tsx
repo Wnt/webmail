@@ -52,6 +52,7 @@ vi.mock('@/components/email/email-list', () => ({ EmailList: () => <div>message 
 vi.mock('@/components/ui/welcome-banner', () => ({ WelcomeBanner: () => null }));
 
 const { MailApp } = await import('../mail-app');
+const { __resetTapHandover } = await import('@/lib/notification-open');
 
 const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.4 Mobile/15E148 Safari/604.1';
 const CHROME = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36';
@@ -76,6 +77,7 @@ let visibility: DocumentVisibilityState = 'visible';
 
 beforeEach(() => {
   store.clear();
+  __resetTapHandover();
   listed = [];
   visibility = 'visible';
   vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
@@ -152,7 +154,7 @@ describe('a notification tap WebKit lost (no URL, no notificationclick)', () => 
     await waitFor(() => expect(fetchEmailContent).toHaveBeenCalledWith(expect.anything(), 'm-tapped'));
     expect(fetchEmailContent).toHaveBeenCalledTimes(1);
     expect(useUIStore.getState().activeView).toBe('viewer');
-    expect(store.size).toBe(0);
+    expect([...store.keys()].filter((k) => k.startsWith(shownPrefix()))).toEqual([]);
     // Found while the session came up: the message comes first, as at a
     // message link; the Inbox list follows (its body painted, 1.5 s at most).
     await waitFor(() => expect(fetchEmails).toHaveBeenCalled(), { timeout: 3000 });
@@ -189,6 +191,33 @@ describe('a notification tap WebKit lost (no URL, no notificationclick)', () => 
     expect(fetchEmailContent).not.toHaveBeenCalled();
     listed = [];
     await waitFor(() => expect(fetchEmailContent).toHaveBeenCalledWith(expect.anything(), 'm-tapped'), { timeout: 3000 });
+  });
+
+  // iOS Simulator (WebKit, iOS 26.3), 2026-10-19: WebKit shows the old page
+  // first (it sees the notification gone and takes the ledger entry), then
+  // replaces it - with its reload at the Inbox when the tap's URL is lost -
+  // before the old page has opened the message.
+  it('background: the page that found the tap is replaced before it opens it; the new page opens it', async () => {
+    shown('s1', 'm-tapped');
+    listed = ['s1'];
+    let releaseFirst!: () => void;
+    fetchEmailContent.mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = () => resolve(null); }));
+    const old = render(<MailApp />);
+    await settle();
+    visibility = 'hidden';
+    document.dispatchEvent(new Event('visibilitychange'));
+    listed = [];
+    visibility = 'visible';
+    document.dispatchEvent(new Event('visibilitychange'));
+    await waitFor(() => expect(fetchEmailContent).toHaveBeenCalledTimes(1));
+    expect([...store.keys()].filter((k) => k.startsWith(shownPrefix()))).toEqual([]);
+    // Replaced mid-open: a new page (fresh module state) at the Inbox.
+    old.unmount();
+    __resetTapHandover();
+    render(<MailApp linkSegments={['folder', 'inbox']} />);
+    await waitFor(() => expect(fetchEmailContent).toHaveBeenCalledTimes(2));
+    expect(fetchEmailContent).toHaveBeenLastCalledWith(expect.anything(), 'm-tapped');
+    releaseFirst();
   });
 
   it('an older notification tapped while a newer one is still on screen opens the older message', async () => {

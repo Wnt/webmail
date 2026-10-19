@@ -11,7 +11,7 @@ const seconds: Check = (v) => typeof v === 'number' && Number.isInteger(v) && v 
 const ms: Check = (v) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 600_000;
 const oneOf = (...values: string[]): Check => (v) => typeof v === 'string' && values.includes(v);
 
-const HOW = oneOf('link', 'pending', 'vanished', 'inplace', 'ambiguous', 'none');
+const HOW = oneOf('link', 'pending', 'vanished', 'handover', 'inplace', 'ambiguous', 'none');
 
 const FACTS: Record<string, { src: 'sw' | 'page'; facts: Record<string, Check> }> = {
   push: {

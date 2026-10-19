@@ -79,10 +79,14 @@ interface ShownEntry {
 export interface TappedNotification {
   emailId: string;
   slot?: number;
+  /** When the tap was found: names its hand-over entry (settleTap). */
+  at: number;
+  /** Found by an earlier page of this app that WebKit replaced before it could open it. */
+  handover?: boolean;
 }
 
 export interface TappedNotificationCheck {
-  /** The one notification that disappeared, if exactly one did. */
+  /** The one notification that disappeared, if exactly one did (or a tap an earlier page found). */
   tapped: TappedNotification | null;
   /** Ledger entries before the check. */
   kept: number;
@@ -90,6 +94,77 @@ export interface TappedNotificationCheck {
   listed: number;
   /** Entries whose notification disappeared (and could have been a tap). */
   vanished: number;
+}
+
+// Fork (Wnt/webmail): the hand-over. WebKit brings the backgrounded app's
+// old page to the front first and replaces it a moment later (its reload,
+// or its navigation): the old page sees the notification gone, and is
+// unloaded before it can open the message (iOS Simulator, 2026-10-19:
+// visible at -188 ms, ledger read at -69 ms, the new page at 0). So a found
+// tap is written down before the ledger entries go, and it stays until a
+// page opened its message and kept it for TAP_FOUND_GRACE_MS (or it could
+// not be opened, or it is TAP_FOUND_MAX_AGE_MS old). A page that replaces
+// the finder takes it over.
+export const TAP_FOUND_MAX_AGE_MS = 2 * 60 * 1000;
+export const TAP_FOUND_GRACE_MS = 10_000;
+
+interface TapFound {
+  emailId: string;
+  slot?: number;
+  at: number;
+  openedAt?: number;
+}
+
+/** Taps this page has taken (by `at`): it never opens one twice itself. */
+const takenHere = new Set<number>();
+
+function foundKey(): string {
+  return `${window.location.origin}${BASE_PATH}/__push-state/tap-found`;
+}
+
+async function readFound(cache: Cache, now: number): Promise<TapFound | null> {
+  try {
+    const res = await cache.match(foundKey());
+    if (!res) return null;
+    const raw = (await res.json()) as Record<string, unknown> | null;
+    const at = Number(raw?.at);
+    const openedAt = raw?.openedAt === undefined ? undefined : Number(raw.openedAt);
+    const fresh = raw && typeof raw.emailId === 'string' && raw.emailId && Number.isFinite(at)
+      && at <= now + 60_000 && now - at <= TAP_FOUND_MAX_AGE_MS
+      && (openedAt === undefined || (Number.isFinite(openedAt) && now - openedAt <= TAP_FOUND_GRACE_MS));
+    if (!fresh) {
+      await cache.delete(foundKey());
+      return null;
+    }
+    const slot = Number.isInteger(raw.slot) && (raw.slot as number) >= 0 ? (raw.slot as number) : undefined;
+    return { emailId: raw.emailId as string, slot, at, ...(openedAt !== undefined ? { openedAt } : {}) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How the tap `tap` ended in this page: `opened` keeps its hand-over entry a
+ * little longer (a page replacing this one in that time opens it again),
+ * anything else drops it.
+ */
+export async function settleTap(tap: TappedNotification, opened: boolean, now: number = Date.now()): Promise<void> {
+  if (typeof window === 'undefined' || typeof caches === 'undefined') return;
+  try {
+    const cache = await caches.open(PUSH_STATE_CACHE);
+    const found = await readFound(cache, now);
+    if (!found || found.at !== tap.at) return;
+    if (!opened) {
+      await cache.delete(foundKey());
+      return;
+    }
+    await cache.put(foundKey(), new Response(JSON.stringify({ ...found, openedAt: now }), {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    setTimeout(() => { void settleTap(tap, false); }, TAP_FOUND_GRACE_MS);
+  } catch {
+    // It ages out.
+  }
 }
 
 function shownPrefix(): string {
@@ -137,9 +212,11 @@ async function readLedger(cache: Cache): Promise<{ request: Request; entry: Show
  * Compares the worker's ledger with what `registration` still lists. Every
  * entry whose notification is gone leaves the ledger (it is looked at once);
  * when exactly one of them could have been tapped - the worker saw it listed,
- * did not close it itself, and it is under a day old - that is the tap.
- * Several gone at once (Clear All) open nothing. A listing that fails changes
- * nothing.
+ * did not close it itself, and it is under a day old - that is the tap, and
+ * it is written down for the hand-over first. Several gone at once (Clear
+ * All) open nothing. Without a new one, a tap an earlier page found and did
+ * not keep open is taken over. A listing that fails changes nothing. The tap
+ * returned is this page's to open; settle it with settleTap.
  */
 export async function findTappedNotification(
   registration: Pick<ServiceWorkerRegistration, 'getNotifications'> | null | undefined,
@@ -150,13 +227,19 @@ export async function findTappedNotification(
     || typeof registration.getNotifications !== 'function') return none;
   try {
     const cache = await caches.open(PUSH_STATE_CACHE);
+    const found = await readFound(cache, now);
+    const handover = (): TappedNotification | null => {
+      if (!found || takenHere.has(found.at)) return null;
+      takenHere.add(found.at);
+      return { emailId: found.emailId, slot: found.slot, at: found.at, handover: true };
+    };
     const ledger = await readLedger(cache);
-    if (ledger.length === 0) return none;
+    if (ledger.length === 0) return { ...none, tapped: handover() };
     let notes: Notification[];
     try {
       notes = await registration.getNotifications();
     } catch {
-      return { ...none, kept: ledger.length };
+      return { ...none, kept: ledger.length, tapped: handover() };
     }
     const present = new Set<string>();
     let listed = 0;
@@ -166,10 +249,10 @@ export async function findTappedNotification(
       if (data && typeof data.shownId === 'string') present.add(data.shownId);
     }
     const candidates: ShownEntry[] = [];
-    let vanished = 0;
+    const gone: Request[] = [];
     for (const { request, entry } of ledger) {
       if (!entry) {
-        await cache.delete(request);
+        gone.push(request);
         continue;
       }
       if (present.has(entry.shownId)) {
@@ -181,18 +264,27 @@ export async function findTappedNotification(
         }
         continue;
       }
-      await cache.delete(request);
+      gone.push(request);
       if (entry.closed || !entry.listed) continue;
       if (!Number.isFinite(entry.at) || entry.at > now + 60_000 || now - entry.at > SHOWN_MAX_AGE_MS) continue;
-      vanished += 1;
       candidates.push(entry);
     }
-    const one = candidates.length === 1 ? candidates[0] : null;
+    let tapped: TappedNotification | null = null;
+    if (candidates.length === 1) {
+      const one = candidates[0];
+      tapped = { emailId: one.emailId, slot: one.slot, at: now };
+      // Written down before the ledger entries go: this page may be replaced any moment.
+      await cache.put(foundKey(), new Response(JSON.stringify({ emailId: one.emailId, slot: one.slot, at: now }), {
+        headers: { 'Content-Type': 'application/json' },
+      }));
+      takenHere.add(now);
+    }
+    for (const request of gone) await cache.delete(request);
     return {
-      tapped: one ? { emailId: one.emailId, slot: one.slot } : null,
+      tapped: tapped ?? handover(),
       kept: ledger.length,
       listed,
-      vanished,
+      vanished: candidates.length,
     };
   } catch {
     return none;
@@ -210,4 +302,9 @@ export async function forgetShownNotificationsFor(emailId: string): Promise<void
   } catch {
     // Best effort.
   }
+}
+
+/** Tests only. */
+export function __resetTapHandover(): void {
+  takenHere.clear();
 }
