@@ -2060,6 +2060,12 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
           target = null;
           how = 'link';
           if (foundTap) void settleTap(foundTap, true);
+        } else if (foundTap && when === 'start' && initialLink?.kind === 'message') {
+          // A page opened at another message (WebKit used that tap's URL):
+          // the link is the tap, an older found one is not.
+          void settleTap(foundTap, false);
+          target = null;
+          how = 'link';
         }
         if (when === 'start' && how === 'none' && startedAtMessageLinkRef.current) how = 'link';
         if (tapTraceApplies() && (when === 'start' || how !== 'none' || counts.kept > 0)) {

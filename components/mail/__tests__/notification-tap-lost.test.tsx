@@ -254,6 +254,17 @@ describe('a notification tap WebKit lost (no URL, no notificationclick)', () => 
     expect(fetchEmailContent).toHaveBeenCalledTimes(1);
   });
 
+  it('a page opened at another message link keeps to it (an older found tap is dropped)', async () => {
+    const foundKey = `${window.location.origin}/__push-state/tap-found`;
+    store.set(foundKey, JSON.stringify({ emailId: 'm-older', slot: 0, at: Date.now() - 30_000 }));
+    render(<MailApp linkSegments={['message', 'm-link']} />);
+    await waitFor(() => expect(fetchEmailContent).toHaveBeenCalledWith(expect.anything(), 'm-link'));
+    // Looked at once the Inbox is in (its body painted, 1.5 s at most).
+    await waitFor(() => expect(store.has(foundKey)).toBe(false), { timeout: 4000 });
+    await settle(100);
+    expect(fetchEmailContent).not.toHaveBeenCalledWith(expect.anything(), 'm-older');
+  });
+
   it('never guesses outside the Home Screen app (Chrome delivers its clicks)', async () => {
     asPhoneApp(CHROME, true);
     shown('s1', 'm1');
