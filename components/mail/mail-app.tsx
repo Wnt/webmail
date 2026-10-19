@@ -43,6 +43,7 @@ import { MailboxShareDialog } from "@/components/layout/mailbox-share-dialog";
 import { ShareNotificationToaster } from "@/components/layout/share-notification-toaster";
 import { CalendarEventNotificationToaster } from "@/components/layout/calendar-event-notification-toaster";
 import { useAuthStore, redirectToLogin, saveRedirectAfterLogin } from '@/stores/auth-store';
+import { locales } from '@/i18n/routing';
 import { useSettingsStore } from "@/stores/settings-store";
 import { useEffectiveMailLayout } from "@/hooks/use-effective-mail-layout";
 import { useContactStore } from "@/stores/contact-store";
@@ -191,6 +192,44 @@ type DeepLinkResult = 'ok' | 'not_found' | 'account' | 'moved_on' | 'no_client' 
 // sign-in once (the mail app can mount more than once in one document).
 let startTraced = false;
 let sessionTraced = false;
+
+// Fork (Wnt/webmail): a page start at a mail route restores its session as
+// soon as this module runs - while React is still hydrating the server's
+// markup - instead of from the mount effect after hydration. The session's
+// token request is already out (the head script, lib/early-auth.ts); its
+// answer and the linked message's fetch no longer wait for the whole tree to
+// hydrate. The stores' hooks read their initial state while hydrating
+// (useSyncExternalStore's server snapshot), so the markup still matches. The
+// mount effect takes this promise instead of starting a second restore.
+let earlyAuthCheck: Promise<void> | null = null;
+
+/** A mail route of this app: `/`, `/<locale>`, `/mail/...`, `/<locale>/mail/...` (not /pro, /settings, ...). */
+export function isMailRoutePath(pathname: string, basePath = ''): boolean {
+  const path = basePath && pathname.startsWith(basePath) ? pathname.slice(basePath.length) : pathname;
+  const segs = path.split('/').filter(Boolean);
+  if (segs.length && (locales as readonly string[]).includes(segs[0])) segs.shift();
+  return segs.length === 0 || segs[0] === 'mail';
+}
+
+function startAuthCheckEarly(): void {
+  if (typeof window === 'undefined' || earlyAuthCheck) return;
+  try {
+    if (!isMailRoutePath(window.location.pathname, (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, ''))) return;
+    const state = useAuthStore.getState();
+    if (state.isAuthenticated && state.client) return;
+    earlyAuthCheck = state.checkAuth();
+  } catch {
+    earlyAuthCheck = null; // the mount effect restores the session as before
+  }
+}
+startAuthCheckEarly();
+
+/** The restore this page start began early, once (the first mount takes it). */
+function takeEarlyAuthCheck(): Promise<void> | null {
+  const p = earlyAuthCheck;
+  earlyAuthCheck = null;
+  return p;
+}
 
 export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
   // Static Lite build: the route params are empty, read the link from the URL.
@@ -1256,12 +1295,13 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
   // between routes doesn't retrigger checkAuth's transient `{ client: null,
   // isLoading: true }` reset, which was flashing the spinner on every nav.
   useEffect(() => {
+    const early = takeEarlyAuthCheck();
     const state = useAuthStore.getState();
     if (state.isAuthenticated && state.client) {
       setInitialCheckDone(true);
       return;
     }
-    checkAuth().finally(() => {
+    (early ?? checkAuth()).finally(() => {
       setInitialCheckDone(true);
     });
   }, [checkAuth]);
