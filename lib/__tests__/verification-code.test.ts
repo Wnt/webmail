@@ -23,8 +23,17 @@ describe('findVerificationCode on real mail', () => {
     expect(findVerificationCode(mail.subject, mail.body)).toBe(mail.code);
   });
 
+  // Mail whose preview was cut ("...", or long enough to have been cut by the
+  // server without a mark) within 80 characters after its code: a code that
+  // close to a cut may be a fragment, so the list offers none and the reader,
+  // from the whole body, does.
+  const CUT_NEAR_CODE = new Set([
+    'Sendcloud', 'Mozilla', 'Bluesky', 'otelo', 'Registercheck', 'Amazon', 'Kleinanzeigen', 'Google', 'STACKIT',
+  ]);
+
   it.each(mails.map((m) => [m.sender, m] as const))('finds the code of %s in the list, or nothing', (sender, mail) => {
-    expect(findVerificationCode(mail.subject, mail.preview)).toBe(NOT_IN_PREVIEW.has(sender) ? null : mail.code);
+    const expected = NOT_IN_PREVIEW.has(sender) || CUT_NEAR_CODE.has(sender) ? null : mail.code;
+    expect(findVerificationCode(mail.subject, mail.preview, 'preview')).toBe(expected);
   });
 });
 
