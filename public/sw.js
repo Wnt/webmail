@@ -29,7 +29,7 @@ const MAILTO_CLIENTS = new Map();
 // the one it was built with (lib/sw-revision.ts, kept equal by a unit test)
 // and asks the browser for the newer worker when they differ: an iPhone can
 // keep running an old worker. Bump both whenever this file changes.
-const SW_REVISION = "2026-10-19.push4";
+const SW_REVISION = "2026-10-19.push5";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -411,22 +411,10 @@ async function handlePush(event, work) {
 
   const quiet = quietPush || await withinQuietWindow(accountId);
   work.trace.shown = "new";
-  // Fork patch (Wnt/webmail): the browser could not list what is up. WebKit
-  // never replaces by tag, so the notification goes up replacing nothing;
-  // elsewhere a same-tag show would replace blind, so a plain "New mail"
-  // under its own tag says it instead (the tap opens the message).
-  if (upAtStart === null && !(await usesApplePush())) {
-    await showReplacing("New mail", {
-      tag: PUSH_ACK_TAG,
-      body: "",
-      icon: `${BASE_PATH}/api/pwa-icon/192`,
-      badge: `${BASE_PATH}/api/pwa-icon/192`,
-      data: { ...data },
-      renotify: !quiet,
-      silent: quiet,
-    }, work, new Set());
-    return;
-  }
+  // Fork patch (Wnt/webmail): when the browser could not list what is up,
+  // this replaces nothing it could tell apart (replaceKeys of null). WebKit
+  // never replaces by tag; a browser that does keeps the account's single
+  // notification, as upstream.
   const replacing = replaceKeys(upAtStart, headlineEmailId, mine);
   await showMailNotification(accountId, title, {
     body,
@@ -585,9 +573,12 @@ function newestNotification(entries) {
  * Which of `entries` a notification for `emailId` (its push sent at `sentAt`)
  * replaces: one for the same message, and one whose message's push is known
  * to have gone out no later. One that cannot be ordered (either time
- * unknown) stays, whoever showed it. (A browser that replaces by tag does so
- * itself when one is shown; then the account keeps one notification, as
- * upstream, unless newerOtherMail held the stale one back.)
+ * unknown) stays, whoever showed it, on WebKit, which never replaces by tag.
+ * A browser that replaces by tag does so itself when one is shown, so there
+ * the account keeps its one notification, as upstream: a push whose message
+ * is known to be older than one up is held back (newerOtherMail); without
+ * times (a notification or push from before send times) the newest handled
+ * one shows. Accepted: holding every unordered push back would hide new mail.
  */
 function replaceKeys(entries, emailId, sentAt) {
   const keys = new Set();

@@ -656,13 +656,15 @@ describe('unknown order, failed selection listings, a literal "default" account 
     expect(new Set(ids(w))).toEqual(new Set(['e1', 'e2']));
   });
 
-  it('1: a selection listing that fails shows a plain "New mail" on a tag-replacing browser, replacing nothing', async () => {
+  it('1: a selection listing that fails on a tag-replacing browser keeps upstream\'s one notification per account', async () => {
+    // Review round 5 (late-push-bulwark-r5 issues 2-4): no separate fallback notification (it escaped the
+    // sign-out cleanup); the browser replaces by tag itself, as upstream.
     const w = loadWorker({ webkit: false, listFails: (n) => n >= 3 && n <= 4 });
     await w.push(payload({ emailIds: ['e2'], sentAt: SENT_AT + 10_000, previewTicket: undefined }));
     await w.push(payload({ emailIds: ['e1'], sentAt: SENT_AT + 20_000, previewTicket: undefined }));
-    expect(w.onScreen().map((n) => n.options.tag)).toEqual(['bulwark-mail:acc1', 'bulwark-push-ack']);
-    expect(w.onScreen()[1].title).toBe('New mail');
-    expect(w.onScreen()[1].options.navigate).toBe(`${ORIGIN}/mail/message/e1`);
+    expect(w.onScreen().map((n) => n.options.tag)).toEqual(['bulwark-mail:acc1']);
+    expect(ids(w)).toEqual(['e1']);
+    expect(w.all.some((n) => n.options.tag === 'bulwark-push-ack')).toBe(false);
   });
 
   it('2: delayed sign-out cleanup also works for an account literally named "default"', async () => {

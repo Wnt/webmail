@@ -7,7 +7,7 @@
 // diagnostics (lib/tap-trace.ts) and asks the browser for the new worker when
 // it is not this one.
 
-export const SW_REVISION = '2026-10-19.push4';
+export const SW_REVISION = '2026-10-19.push5';
 
 export type WorkerRevisionState = 'same' | 'old' | 'none';
 
