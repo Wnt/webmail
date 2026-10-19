@@ -1,6 +1,8 @@
 // Plugin/Theme ZIP upload validation, extraction, and manifest parsing
 
-import JSZip from 'jszip';
+// Fork (Wnt/webmail): loaded when a ZIP is opened, not with the app (jszip and
+// pako were about 90 KB of the start bundle through the theme and plugin stores).
+import type JSZip from 'jszip';
 import {
   type ThemeManifest,
   type PluginManifest,
@@ -198,7 +200,8 @@ export async function extractTheme(file: File): Promise<ThemeExtractionResult> {
   let zip: JSZip;
   try {
     const buffer = await file.arrayBuffer();
-    zip = await JSZip.loadAsync(buffer);
+    const { default: JSZipLib } = await import('jszip');
+    zip = await JSZipLib.loadAsync(buffer);
   } catch {
     return { valid: false, errors: ['Invalid ZIP file'], warnings: [], manifest: null, css: '', skin: null, preview: null };
   }
@@ -321,7 +324,8 @@ export async function extractPlugin(file: File): Promise<PluginExtractionResult>
   let zip: JSZip;
   try {
     const buffer = await file.arrayBuffer();
-    zip = await JSZip.loadAsync(buffer);
+    const { default: JSZipLib } = await import('jszip');
+    zip = await JSZipLib.loadAsync(buffer);
   } catch {
     return { valid: false, errors: ['Invalid ZIP file'], warnings: [], manifest: null, code: '', preview: null };
   }
