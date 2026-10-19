@@ -102,6 +102,8 @@ const payload = (extra: Record<string, unknown> = {}) => ({
   kind: 'email', accountLabel: 'me@example.test', accountId: 'acc1', emailIds: ['e1'],
   changed: { acc1: { EmailDelivery: 's1' } },
   email: { from: 'Examplepaja <info@examplepaja.test>', subject: 'Invented subject', preview: 'Invented preview' },
+  // The gateway's send time (fork: notifications are ordered by it).
+  ...(extra.renotify === false ? {} : { sentAt: Date.now() }),
   ...extra,
 });
 
@@ -211,7 +213,7 @@ describe('the tap diagnostics (worker side)', () => {
     expect(batch.v).toBe(1);
     expect(batch.events).toEqual([expect.objectContaining({
       ev: 'push', src: 'sw', sw: SW_REVISION, eng: 'webkit',
-      f: { target: true, preview: 'fail', shown: 'new', nav: true, listed: true, win: 0, vis: false, show: expect.any(Number) },
+      f: { target: true, preview: 'fail', shown: 'new', nav: true, listed: true, win: 0, vis: false, show: expect.any(Number), lag: expect.any(Number) },
     })]);
     // Sent: nothing waits for the app.
     expect(w.traces()).toEqual([]);
@@ -255,7 +257,9 @@ describe('the tap diagnostics (worker side)', () => {
     w.setPreview({ ok: true, body: { email: { id: 'e1', threadId: 't1', from: [{ name: 'Examplepaja', email: 'info@examplepaja.test' }], subject: 'Invented subject' }, unreadTotal: 1 } });
     await w.push(payload());
     await w.click(w.onScreen()[0]);
-    const text = JSON.stringify(w.traces()) + JSON.stringify(w.posted);
+    // Each record's own random id (hex) can contain "e1" by chance: it is not message data.
+    const noIds = (v: unknown): unknown => JSON.parse(JSON.stringify(v, (k, x) => (k === 'id' ? undefined : x)));
+    const text = JSON.stringify(noIds(w.traces())) + JSON.stringify(noIds(w.posted));
     for (const secret of ['e1', 't1', 'acc1', 'examplepaja', 'Invented', 'me@example.test']) {
       expect(text).not.toContain(secret);
     }

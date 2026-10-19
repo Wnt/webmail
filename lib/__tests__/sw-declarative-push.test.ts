@@ -614,3 +614,66 @@ describe('ordering for worker notifications, failed listings, other accounts (re
   });
 });
 
+// Codex Astra review round 4 (audit/reviews/late-push-bulwark-r4.md).
+describe('unknown order, failed selection listings, a literal "default" account (review round 4)', () => {
+  const ids = (w: ReturnType<typeof loadWorker>) => w.onScreen().map((n) => {
+    const d = n.options.data as { emailId?: string } | undefined;
+    return d?.emailId ?? /\/mail\/message\/([^#]+)/.exec(String(n.options.navigate))?.[1];
+  });
+
+  it('1: a worker notification without a send time is not replaced by a timestamped push (WebKit)', async () => {
+    const w = loadWorker();
+    const { sentAt: _s, ...old } = payload({ emailIds: ['e2'], previewTicket: undefined });
+    await w.push(old);
+    await w.push(payload({ emailIds: ['e1'], sentAt: SENT_AT, previewTicket: undefined }));
+    expect(new Set(ids(w))).toEqual(new Set(['e1', 'e2']));
+  });
+
+  it('1: a push without a send time does not replace a timestamped notification (WebKit)', async () => {
+    const w = loadWorker();
+    await w.push(payload({ emailIds: ['e2'], sentAt: SENT_AT + 10_000, previewTicket: undefined }));
+    const { sentAt: _s, ...old } = payload({ emailIds: ['e1'], previewTicket: undefined });
+    await w.push(old);
+    expect(new Set(ids(w))).toEqual(new Set(['e1', 'e2']));
+  });
+
+  it('1: the acknowledgement fallback keeps the push\'s send time, so a later older push leaves it', async () => {
+    const w = loadWorker();
+    // nothing to announce, but WebKit must show something: the fallback shows e2 itself
+    w.setPreview({ ok: true, status: 200, body: { email: null, unreadTotal: 0 } });
+    await w.push(payload({ emailIds: ['e2'], sentAt: SENT_AT + 10_000, previewTicket: undefined }));
+    expect((w.onScreen()[0].options.data as { sentAt?: number }).sentAt).toBe(SENT_AT + 10_000);
+    w.setPreview({ ok: false, status: 401 });
+    await w.push(payload({ emailIds: ['e1'], sentAt: SENT_AT, previewTicket: undefined }));
+    expect(ids(w)).toContain('e2');
+  });
+
+  it('1: a selection listing that fails replaces nothing on WebKit', async () => {
+    let w!: ReturnType<typeof loadWorker>;
+    w = loadWorker({ listFails: (n) => n >= 3 && n <= 4 });
+    await w.push(payload({ emailIds: ['e2'], sentAt: SENT_AT + 10_000, previewTicket: undefined })); // listings 1-2
+    await w.push(payload({ emailIds: ['e1'], sentAt: SENT_AT + 20_000, previewTicket: undefined })); // 3-4 fail
+    expect(new Set(ids(w))).toEqual(new Set(['e1', 'e2']));
+  });
+
+  it('1: a selection listing that fails shows a plain "New mail" on a tag-replacing browser, replacing nothing', async () => {
+    const w = loadWorker({ webkit: false, listFails: (n) => n >= 3 && n <= 4 });
+    await w.push(payload({ emailIds: ['e2'], sentAt: SENT_AT + 10_000, previewTicket: undefined }));
+    await w.push(payload({ emailIds: ['e1'], sentAt: SENT_AT + 20_000, previewTicket: undefined }));
+    expect(w.onScreen().map((n) => n.options.tag)).toEqual(['bulwark-mail:acc1', 'bulwark-push-ack']);
+    expect(w.onScreen()[1].title).toBe('New mail');
+    expect(w.onScreen()[1].options.navigate).toBe(`${ORIGIN}/mail/message/e1`);
+  });
+
+  it('2: delayed sign-out cleanup also works for an account literally named "default"', async () => {
+    const w = loadWorker({ noSubscription: true });
+    w.showByBrowser({ notification: {
+      title: 'Sender', body: 'Subject', tag: 'bulwark-mail:default', silent: false, navigate: `${ORIGIN}/mail/message/x#sent=${SENT_AT}`,
+    } });
+    w.marker('signed-out/default');
+    const port = { postMessage: vi.fn() };
+    await w.fire('message', { data: { type: 'push-signout', accountIds: ['default'] }, ports: [port] }, 100_000);
+    expect(w.onScreen()).toEqual([]);
+  });
+});
+

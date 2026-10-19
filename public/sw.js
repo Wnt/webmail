@@ -29,7 +29,7 @@ const MAILTO_CLIENTS = new Map();
 // the one it was built with (lib/sw-revision.ts, kept equal by a unit test)
 // and asks the browser for the newer worker when they differ: an iPhone can
 // keep running an old worker. Bump both whenever this file changes.
-const SW_REVISION = "2026-10-19.push3";
+const SW_REVISION = "2026-10-19.push4";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -223,8 +223,9 @@ async function handlePush(event, work) {
   if (quietPush && emailIds.length > 0) {
     const headline = emailIds[emailIds.length - 1];
     const announced = notified.includes(headline);
-    // The newest of them by when their push went out.
-    const top = newestNotification(upAtStart);
+    // The newest of them by when their push went out (none known when the
+    // browser could not list them: then announced below without replacing).
+    const top = newestNotification(upAtStart || []);
     if (top && top.data.headlineEmailId === headline) {
       const content = payload.email && typeof payload.email.summary === "string" && payload.email.summary.trim()
         ? buildPayloadEmailContent(payload.email)
@@ -410,6 +411,22 @@ async function handlePush(event, work) {
 
   const quiet = quietPush || await withinQuietWindow(accountId);
   work.trace.shown = "new";
+  // Fork patch (Wnt/webmail): the browser could not list what is up. WebKit
+  // never replaces by tag, so the notification goes up replacing nothing;
+  // elsewhere a same-tag show would replace blind, so a plain "New mail"
+  // under its own tag says it instead (the tap opens the message).
+  if (upAtStart === null && !(await usesApplePush())) {
+    await showReplacing("New mail", {
+      tag: PUSH_ACK_TAG,
+      body: "",
+      icon: `${BASE_PATH}/api/pwa-icon/192`,
+      badge: `${BASE_PATH}/api/pwa-icon/192`,
+      data: { ...data },
+      renotify: !quiet,
+      silent: quiet,
+    }, work, new Set());
+    return;
+  }
   const replacing = replaceKeys(upAtStart, headlineEmailId, mine);
   await showMailNotification(accountId, title, {
     body,
@@ -529,12 +546,17 @@ function buildPayloadEmailContent(email) {
 // itself (a declarative push: no data of this worker) and a key that finds
 // it again in a later listing.
 async function accountNotifications(tag, accountId) {
-  let shown = [];
-  try {
-    shown = await self.registration.getNotifications({ tag });
-  } catch (_) {
-    shown = [];
+  let shown = null;
+  for (let attempt = 0; attempt < 2 && shown === null; attempt++) {
+    try {
+      shown = await self.registration.getNotifications({ tag });
+    } catch (_) {
+      shown = null;
+      if (attempt === 0 && typeof setTimeout === "function") await delay(200);
+    }
   }
+  // The browser could not list them: callers must not replace anything blind.
+  if (shown === null) return null;
   return (shown || []).map((n, index) => {
     const data = notificationDataOf(n, accountId) || (n.data && typeof n.data === "object" ? n.data : {});
     const sentAt = Number(data.sentAt);
@@ -561,17 +583,17 @@ function newestNotification(entries) {
 
 /**
  * Which of `entries` a notification for `emailId` (its push sent at `sentAt`)
- * replaces: one for the same message, and one whose message's push went out
- * no later. When either time is unknown: one this worker showed (pushes are
- * handled one at a time per account, so it came before: a notification
- * without a time is from before send times existed); one the browser showed
- * by itself stays.
+ * replaces: one for the same message, and one whose message's push is known
+ * to have gone out no later. One that cannot be ordered (either time
+ * unknown) stays, whoever showed it. (A browser that replaces by tag does so
+ * itself when one is shown; then the account keeps one notification, as
+ * upstream, unless newerOtherMail held the stale one back.)
  */
 function replaceKeys(entries, emailId, sentAt) {
   const keys = new Set();
-  for (const e of entries) {
+  for (const e of entries || []) {
     const same = !!emailId && e.data && e.data.headlineEmailId === emailId;
-    const older = e.sentAt > 0 && sentAt > 0 ? e.sentAt <= sentAt : !e.byBrowser;
+    const older = e.sentAt > 0 && sentAt > 0 && e.sentAt <= sentAt;
     if (same || older) keys.add(e.key);
   }
   return keys;
@@ -579,7 +601,7 @@ function replaceKeys(entries, emailId, sentAt) {
 
 /** Another message's notification among `entries` whose push went out after `sentAt`, if any. */
 function newerOtherMail(entries, emailId, sentAt) {
-  if (!(sentAt > 0)) return null;
+  if (!(sentAt > 0) || !entries) return null;
   return entries.find((e) => e.data && e.data.kind === "email" && e.data.headlineEmailId
     && e.data.headlineEmailId !== emailId && e.sentAt > sentAt) || null;
 }
@@ -810,8 +832,8 @@ async function handlePushSignOut(event) {
   if (!clear && typeof setTimeout === "function") {
     const stillSignedOut = async (n) => {
       if (!persisted) return true;
-      const account = (n.tag || "").slice("bulwark-mail:".length);
-      return (await pushSignedOut(account === "default" ? "" : account)) !== false;
+      // The tag's own suffix: an account id, even a literal "default".
+      return (await pushSignedOut((n.tag || "").slice("bulwark-mail:".length))) !== false;
     };
     for (let attempt = 0; attempt < 3; attempt++) {
       await delay(MIN_CLOSE_AGE_MS);
@@ -1066,7 +1088,7 @@ async function acknowledgeUnshownPush(payload, work) {
     // The account's newest notification (by when its push went out) again,
     // replacing only what is no newer than it.
     const up = await accountNotifications(tag, accountId);
-    const top = newestNotification(up);
+    const top = newestNotification(up || []);
     if (top) {
       await showMailNotification(
         accountId, top.n.title, { ...quiet, tag, body: top.n.body || "", data: top.data }, work,
@@ -1079,8 +1101,9 @@ async function acknowledgeUnshownPush(payload, work) {
       : [];
     const content = buildPayloadEmailContent(payload && payload.email);
     const emailId = emailIds.length > 0 ? emailIds[emailIds.length - 1] : "";
+    const sentAt = pushSentAt(payload);
     const data = emailId
-      ? { kind: "email", emailId, accountId, headlineEmailId: emailId }
+      ? { kind: "email", emailId, accountId, headlineEmailId: emailId, ...(sentAt > 0 ? { sentAt } : {}) }
       : { kind: "mail-list", accountId };
     await showMailNotification(
       accountId,

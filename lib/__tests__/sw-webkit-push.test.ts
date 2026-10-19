@@ -104,6 +104,8 @@ const payload = (extra: Record<string, unknown> = {}) => ({
   accountId: 'acc1',
   emailIds: ['e1'],
   changed: { acc1: { EmailDelivery: 's1' } },
+  // The gateway's send time (fork: notifications are ordered by it); a quiet replacement names its first push's.
+  ...(extra.renotify === false ? {} : { sentAt: Date.now() }),
   ...extra,
 });
 const email = { from: 'Examplesensor <noreply@examplesensor.example>', subject: 'Weekly report', preview: 'Your sensors this week' };
