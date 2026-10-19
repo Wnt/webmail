@@ -408,6 +408,29 @@ describe('previous / next on the phone', () => {
     expect(onPrev).not.toHaveBeenCalled();
   });
 
+  it('one swipe opens one message: the engine re-snapping to the gutter as the next one comes in opens nothing more', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    setReducedMotion(false);
+    const onNext = vi.fn();
+    const onPrev = vi.fn();
+    const { container, rerender } = renderViewer({ onNavigateNext: onNext, onNavigatePrev: onPrev });
+    swipeTo(container, 'next');
+    const snapWhileSliding = parts(container).track!.style.scrollSnapType;
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(onNext).toHaveBeenCalledTimes(1);
+    rerender(
+      <EmailViewer email={htmlEmail} mailboxes={mailboxes} selectedMailbox="inbox" currentMailboxRole="inbox"
+        onQuickReply={vi.fn(async () => {})} onNavigateNext={onNext} onNavigatePrev={onPrev} />,
+    );
+    // The engine settles on the gutter it last snapped to (seen once on WebKit).
+    swipeTo(container, 'next');
+    act(() => { vi.advanceTimersByTime(400); });
+    expect(onNext).toHaveBeenCalledTimes(1);
+    expect(onPrev).not.toHaveBeenCalled();
+    // Snapping was off while the message slid away and the next one came in.
+    expect(snapWhileSliding).toBe('none');
+  });
+
   it('slides out before opening the next message, and the next one slides in (motion allowed)', () => {
     vi.useFakeTimers({ toFake: ['setTimeout'] });
     setReducedMotion(false);

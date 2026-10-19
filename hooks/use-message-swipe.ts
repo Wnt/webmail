@@ -62,6 +62,11 @@ const ENTER_FALLBACK_MS = 1500;
 const BLOCKED_NOTICE_PX = 16;
 /** Without `scrollend` (older engines): settled after this long without a scroll event. */
 const SETTLE_MS = 180;
+/**
+ * After the hook itself moves the track (back to rest, a new message in), a
+ * settle within this long is that move's, never a swipe to commit.
+ */
+const RESNAP_GUARD_MS = 300;
 /** A finger resting this long before it moves is a long-press (selection, menus), never a swipe. */
 const LONG_PRESS_MS = 450;
 /** Movement (px) that counts as "moved" before the long-press time. */
@@ -78,6 +83,11 @@ function prefersReducedMotion(): boolean {
 /** `scrollend`: fires in iOS 26 WebKit (checked in the simulator), Chrome 114+, Firefox 109+; older engines settle on a timer. */
 function hasScrollEnd(): boolean {
   return typeof window !== "undefined" && "onscrollend" in (window as object);
+}
+
+function nextFrame(fn: () => void): number {
+  if (typeof window.requestAnimationFrame === "function") return window.requestAnimationFrame(fn);
+  return window.setTimeout(fn, 16);
 }
 
 function isRtl(el: Element): boolean {
@@ -127,6 +137,8 @@ export function useMessageSwipe({
   const noticed = useRef(false);
   const frame = useRef(0);
   const settleTimer = useRef(0);
+  const snapFrame = useRef(0);
+  const guardUntil = useRef(0);
   const timers = useRef<number[]>([]);
 
   const later = useCallback((fn: () => void, ms: number) => {
@@ -160,18 +172,44 @@ export function useMessageSwipe({
     delete el.dataset.swipe;
   }, []);
 
-  /** Put the page back at rest, flush with the track, without animating. */
+  /**
+   * Put the page back at rest, flush with the track, without animating.
+   *
+   * With mandatory snapping the engine remembers the element it last snapped
+   * to - after a commit, the gutter - and re-snaps to it when the layout
+   * changes (the next message's gutters, its body loading). Re-snapping to a
+   * whole gutter would settle there and open yet another message (seen once
+   * in the iOS Simulator: one swipe, two messages on). So snapping is off
+   * while the hook moves the track and comes back two frames later, at rest,
+   * which makes the page the remembered target; and a settle right after
+   * such a move never commits (RESNAP_GUARD_MS).
+   */
   const center = useCallback(() => {
     const track = trackRef.current;
     const page = pageRef.current;
     if (!track || !page) return;
-    const left = restingScrollLeft({
+    const rest = () => restingScrollLeft({
       pageOffsetLeft: page.offsetLeft,
       scrollWidth: track.scrollWidth,
       clientWidth: track.clientWidth,
       rtl: isRtl(track),
     });
-    if (Math.abs(track.scrollLeft - left) > 0.5) track.scrollLeft = left;
+    const left = rest();
+    if (Math.abs(track.scrollLeft - left) <= 0.5 && !track.style.scrollSnapType) return;
+    guardUntil.current = performance.now() + RESNAP_GUARD_MS;
+    track.style.scrollSnapType = "none";
+    track.scrollLeft = left;
+    window.cancelAnimationFrame?.(snapFrame.current);
+    snapFrame.current = nextFrame(() => {
+      snapFrame.current = nextFrame(() => {
+        snapFrame.current = 0;
+        // Mid-commit the next enter() comes back here; it restores then.
+        if (phase.current !== "idle") return;
+        track.scrollLeft = rest();
+        track.style.scrollSnapType = "";
+        guardUntil.current = performance.now() + RESNAP_GUARD_MS;
+      });
+    });
   }, [trackRef, pageRef]);
 
   /** The gutters' geometry inside the track right now. */
@@ -222,8 +260,12 @@ export function useMessageSwipe({
     if (!nav) { center(); return; }
     const track = trackRef.current;
     const root = pageRef.current;
-    // No second swipe until the next message is in.
-    if (track) track.style.overflowX = "hidden";
+    // No second swipe until the next message is in, and no re-snap to the
+    // gutter meanwhile (see center()).
+    if (track) {
+      track.style.overflowX = "hidden";
+      track.style.scrollSnapType = "none";
+    }
     const reduced = prefersReducedMotion();
     const width = root?.clientWidth || window.innerWidth;
     const go = () => {
@@ -253,6 +295,11 @@ export function useMessageSwipe({
     scrolling.current = false;
     noticed.current = false;
     if (phase.current !== "idle") return;
+    // The hook's own move settling (or the engine re-snapping after it): not a swipe.
+    if (performance.now() < guardUntil.current) {
+      setHints(null, 0);
+      return;
+    }
     const gs = gutters();
     for (const g of gs) {
       if (live.current.modes[g.dir] === "go" && isRevealed(g.visible, g.width)) {
@@ -422,12 +469,16 @@ export function useMessageSwipe({
     setHints(null, 0);
     clearSurface(pageRef.current);
     const track = trackRef.current;
-    if (track) track.style.overflowX = "";
+    if (track) {
+      track.style.overflowX = "";
+      track.style.scrollSnapType = "";
+    }
   }, [enabled, pageRef, trackRef, setHints, clearSurface]);
 
   useEffect(() => () => {
     timers.current.forEach((t) => window.clearTimeout(t));
     timers.current = [];
+    window.cancelAnimationFrame?.(snapFrame.current);
   }, []);
 
   return { modes };
