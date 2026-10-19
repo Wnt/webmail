@@ -188,15 +188,18 @@ describe('service worker AI summary replacement', () => {
     expect(shown).toHaveLength(1);
   });
 
-  it('announces normally, with the summary, when the first push never arrived', async () => {
+  it('announces, with the summary and without a sound, when the first push never reached the worker', async () => {
+    // Fork (Wnt/webmail): the summary is a quiet push. Its message already
+    // alerted once (on an iPhone the first push is a declarative message
+    // iOS shows by itself) or should have; it is never a second alert.
     const { push, shown } = loadWorker({ ok: false, status: 401 });
     await push(payload({ email: withSummary, renotify: false }));
     expect(shown).toHaveLength(1);
     expect(shown[0].title).toBe('Alice <alice@example.com>');
     expect(shown[0].options).toMatchObject({
       body: 'Lunch?\nAlice asks if you are free for lunch at noon.',
-      renotify: true,
-      silent: false,
+      renotify: false,
+      silent: true,
     });
     // a redelivery only re-renders it silently
     await push(payload({ email: withSummary, renotify: false }));

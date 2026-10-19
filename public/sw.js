@@ -29,7 +29,7 @@ const MAILTO_CLIENTS = new Map();
 // the one it was built with (lib/sw-revision.ts, kept equal by a unit test)
 // and asks the browser for the newer worker when they differ: an iPhone can
 // keep running an old worker. Bump both whenever this file changes.
-const SW_REVISION = "2026-10-19.tap1";
+const SW_REVISION = "2026-10-19.push2";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -46,7 +46,7 @@ self.addEventListener("push", (event) => {
   // work that may outlive the handler (a delayed close, see showReplacing),
   // which keeps the event alive without holding up the account's next push.
   // `trace`: what happened, for the tap diagnostics (tracePush).
-  const work = { pending: [], displayed: false, trace: {} };
+  const work = { pending: [], displayed: false, trace: {}, receivedAt: Date.now() };
   event.waitUntil(handlePushInOrder(event, work).then(() => Promise.all(work.pending)));
 });
 
@@ -205,19 +205,41 @@ async function handlePush(event, work) {
   // replacement that carries an AI summary (`email.summary`, `renotify: false`).
   // When we already announced that message, swap the text of its notification
   // in place without alerting again. If the first push never arrived, fall
-  // through and announce it normally.
-  if (payload && payload.renotify === false && emailIds.length > 0
-    && notified.includes(emailIds[emailIds.length - 1])) {
-    const content = payload.email && typeof payload.email.summary === "string" && payload.email.summary.trim()
-      ? buildPayloadEmailContent(payload.email)
-      : null;
-    // The summary is for the newest of its ids (the gateway summarises the
-    // headline message); it only replaces a notification that shows that one.
-    if (content) {
-      work.trace.shown = "summary";
-      await replaceWithSummary("bulwark-mail:" + (accountId || "default"), content, accountId, emailIds[emailIds.length - 1], work);
+  // through and announce it, quietly.
+  //
+  // On an iPhone the new-mail push is a Declarative Web Push message that iOS
+  // shows by itself (no worker, no data: see the gateway's payload.ts), so
+  // this worker first meets the message here. It takes that notification over
+  // as if it had shown it: its own copy with the tap data (and the ledger
+  // entry) replaces it, the message is marked announced and kept for the tap.
+  const quietPush = !!(payload && payload.renotify === false);
+  if (quietPush && emailIds.length > 0) {
+    const headline = emailIds[emailIds.length - 1];
+    const tag = "bulwark-mail:" + (accountId || "default");
+    const announced = notified.includes(headline);
+    const newest = announced ? null : await newestMailNotification(tag, accountId);
+    const shownByBrowser = newest && newest.byBrowser && newest.data.headlineEmailId === headline ? newest.n : null;
+    if (announced || shownByBrowser) {
+      const content = payload.email && typeof payload.email.summary === "string" && payload.email.summary.trim()
+        ? buildPayloadEmailContent(payload.email)
+        : (shownByBrowser ? { title: shownByBrowser.title || "New mail", body: shownByBrowser.body || "" } : null);
+      // The summary is for the newest of its ids (the gateway summarises the
+      // headline message); it only replaces a notification that shows that one.
+      if (content) {
+        work.trace.shown = "summary";
+        await replaceWithSummary(tag, content, accountId, headline, work);
+      }
+      if (shownByBrowser) {
+        work.trace.over = work.displayed;
+        await writeNotifiedIds(accountId, notified.concat(emailIds));
+      }
+      // Kept for the tap unless it already is (the first push's lookup may
+      // have failed, or this worker never saw that push).
+      if (work.displayed && await pushSignedOut(accountId) !== true) {
+        await keepWithTicket(accountId, headline, payload, work);
+      }
+      return;
     }
-    return;
   }
 
   const freshIds = emailIds.filter((id) => !notified.includes(id));
@@ -350,7 +372,10 @@ async function handlePush(event, work) {
     }
   }
 
-  const quiet = await withinQuietWindow(accountId);
+  // A quiet replacement whose first push this worker never saw (and no
+  // notification for it is on screen: dismissed, or the push was lost) is
+  // announced without a sound: it already alerted once, or should have.
+  const quiet = quietPush || await withinQuietWindow(accountId);
   work.trace.shown = "new";
   await showMailNotification(accountId, title, {
     body,
@@ -380,6 +405,12 @@ async function handlePush(event, work) {
   if (preview && preview.full && typeof preview.full === "object" && preview.full.id === headlineEmailId
     && work.displayed && await pushSignedOut(accountId) !== true) {
     await rememberPrefetchedEmail(accountId, preview.full);
+    work.trace.kept = "preview";
+  } else if (headlineEmailId && work.displayed && await pushSignedOut(accountId) !== true) {
+    // Fork patch (Wnt/webmail): the lookup failed (an expired session: its
+    // access token lives an hour) or named no whole message. The push's own
+    // preview ticket reads that one message (keepWithTicket).
+    await keepWithTicket(accountId, headlineEmailId, payload, work);
   }
 }
 
@@ -416,7 +447,7 @@ async function replaceWithSummary(tag, content, accountId, headlineEmailId, work
     existing = [];
   }
   const current = existing && existing.length > 0 ? existing[existing.length - 1] : null;
-  const data = current && current.data;
+  const data = notificationDataOf(current, accountId);
   if (!data || !headlineEmailId || data.headlineEmailId !== headlineEmailId
     || (data.accountId || "") !== (accountId || "")) return;
   await showMailNotification(accountId, content.title, {
@@ -428,6 +459,117 @@ async function replaceWithSummary(tag, content, accountId, headlineEmailId, work
     renotify: false,
     silent: true,
   }, work);
+}
+
+// Fork patch (Wnt/webmail): the message a notification opens, from its data,
+// or, for one the browser showed by itself from a Declarative Web Push
+// message (iOS keeps no data for those), from its `navigate` URL, which the
+// gateway builds the way buildClickUrl does. Only our own origin's message
+// links count. Returns click data like the worker's own, or null.
+function notificationDataOf(n, accountId) {
+  if (!n) return null;
+  if (n.data && typeof n.data === "object" && typeof n.data.kind === "string") return n.data;
+  const emailId = emailIdFromNavigate(n.navigate);
+  return emailId ? { kind: "email", emailId, accountId: accountId || "", headlineEmailId: emailId } : null;
+}
+
+function emailIdFromNavigate(navigate) {
+  if (typeof navigate !== "string" || !navigate) return "";
+  try {
+    const url = new URL(navigate, self.location.origin);
+    if (url.origin !== self.location.origin) return "";
+    const prefix = `${BASE_PATH}/mail/message/`;
+    if (!url.pathname.startsWith(prefix)) return "";
+    const rest = url.pathname.slice(prefix.length);
+    if (!rest || rest.includes("/")) return "";
+    return decodeURIComponent(rest);
+  } catch (_) {
+    return "";
+  }
+}
+
+/**
+ * The newest mail notification of `tag` with the message it opens, and
+ * whether the browser showed it by itself (no data of this worker: a
+ * Declarative Web Push message). Null when none opens a message.
+ */
+async function newestMailNotification(tag, accountId) {
+  let shown = [];
+  try {
+    shown = await self.registration.getNotifications({ tag });
+  } catch (_) {
+    return null;
+  }
+  const n = shown && shown.length > 0 ? shown[shown.length - 1] : null;
+  const data = notificationDataOf(n, accountId);
+  if (!data || data.kind !== "email" || typeof data.headlineEmailId !== "string" || !data.headlineEmailId) return null;
+  return { n, data, byBrowser: !(n.data && typeof n.data === "object" && n.data.shownId) };
+}
+
+// Fork patch (Wnt/webmail): what the worker keeps of a pushed message for the
+// tap: exactly what the reading pane's Email/get asks for (lib/jmap/
+// full-email.ts; a unit test keeps the two equal).
+const KEPT_EMAIL_PROPERTIES = [
+  "id", "threadId", "mailboxIds", "keywords", "size",
+  "receivedAt", "sentAt", "from", "to", "cc", "bcc", "replyTo",
+  "subject", "preview", "textBody", "htmlBody", "bodyValues",
+  "hasAttachment", "attachments", "messageId", "inReplyTo",
+  "references", "headers", "bodyStructure", "blobId",
+];
+const KEPT_EMAIL_BODY_OPTIONS = {
+  fetchTextBodyValues: true,
+  fetchHTMLBodyValues: true,
+  fetchAllBodyValues: true,
+  maxBodyValueBytes: 256000,
+};
+
+/**
+ * Keeps `emailId` for the tap with the push's preview ticket (our gateway
+ * mints one per device: it reads that one message, for a few minutes, while
+ * this device's push subscription stands). Used when the session-backed
+ * preview lookup could not (its access token lives an hour) and when the
+ * browser showed the notification by itself. The gateway's push relay sits
+ * at /relay on this origin. Never delays a notification: called after one is
+ * shown. Records how it went in the tap diagnostics (`kept`).
+ */
+async function keepWithTicket(accountId, emailId, payload, work) {
+  const ticket = payload && typeof payload.previewTicket === "string" ? payload.previewTicket : "";
+  if (!ticket || !emailId || typeof fetch !== "function") return;
+  try {
+    const cache = await caches.open(PUSH_STATE_CACHE);
+    if (await cache.match(prefetchedKey(accountId, emailId))) return;
+  } catch (_) {
+    // Look it up below.
+  }
+  const controller = typeof AbortController === "function" && typeof setTimeout === "function"
+    ? new AbortController()
+    : null;
+  const timer = controller ? setTimeout(() => controller.abort(), PREVIEW_TIMEOUT_MS) : null;
+  const lookups = previewLookups(accountId);
+  if (controller) lookups.add(controller);
+  let email = null;
+  try {
+    const res = await fetch(`${self.location.origin}/relay/api/push/preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticket, properties: KEPT_EMAIL_PROPERTIES, ...KEPT_EMAIL_BODY_OPTIONS }),
+      credentials: "omit",
+      cache: "no-store",
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (res.ok) {
+      const body = await res.json();
+      email = body && body.email && typeof body.email === "object" && body.email.id === emailId ? body.email : null;
+    }
+  } catch (_) {
+    email = null;
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (controller) lookups.delete(controller);
+  }
+  if (work && work.trace) work.trace.kept = email ? "ticket" : "none";
+  if (!email || await pushSignedOut(accountId) === true) return;
+  await rememberPrefetchedEmail(accountId, email);
 }
 
 // Fork patch (Wnt/webmail), audit bulwark-1: markers the page writes on an
@@ -609,7 +751,10 @@ async function showReplacing(title, options, work) {
   const navigate = notificationNavigateUrl(options.data);
   if (navigate) options.navigate = navigate;
   await self.registration.showNotification(title, options);
-  if (work) work.displayed = true;
+  if (work) {
+    work.displayed = true;
+    if (!work.shownAt) work.shownAt = Date.now();
+  }
   const listed = await closeOthersWithTag(options.tag, shownId, work);
   if (work && work.trace) {
     work.trace.nav = !!navigate;
@@ -742,7 +887,8 @@ async function acknowledgeUnshownPush(payload, work) {
       current = null;
     }
     if (current) {
-      await showMailNotification(accountId, current.title, { ...quiet, tag, body: current.body || "", data: current.data }, work);
+      const data = notificationDataOf(current, accountId) || current.data;
+      await showMailNotification(accountId, current.title, { ...quiet, tag, body: current.body || "", data }, work);
       if (work.displayed) return;
     }
     const emailIds = payload && Array.isArray(payload.emailIds)
@@ -1369,6 +1515,16 @@ async function tracePush(payload, work) {
   } catch (_) {
     // Unknown: reported as none.
   }
+  // How late this push was handled: from the gateway's send (`sentAt`, the
+  // server's clock) to this event, and from the event to the notification.
+  const sentAt = payload && Number(payload.sentAt);
+  const receivedAt = work && Number(work.receivedAt);
+  const lag = Number.isFinite(sentAt) && sentAt > 0 && Number.isFinite(receivedAt)
+    ? Math.max(0, Math.min(10_000_000, Math.round((receivedAt - sentAt) / 1000)))
+    : undefined;
+  const show = work && work.shownAt && Number.isFinite(receivedAt)
+    ? Math.max(0, Math.min(600_000, Math.round(work.shownAt - receivedAt)))
+    : undefined;
   await traceTap("push", {
     target: emailIds.length > 0,
     preview: t.preview || "skip",
@@ -1377,6 +1533,10 @@ async function tracePush(payload, work) {
     listed: t.listed === true,
     win: Math.min(win, 99),
     vis,
+    ...(lag !== undefined ? { lag } : {}),
+    ...(show !== undefined ? { show } : {}),
+    ...(t.over !== undefined ? { over: t.over === true } : {}),
+    ...(t.kept ? { kept: t.kept } : {}),
   });
   await flushTapTrace();
 }

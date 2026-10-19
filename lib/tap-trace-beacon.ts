@@ -19,6 +19,12 @@ const FACTS: Record<string, { src: 'sw' | 'page'; facts: Record<string, Check> }
     facts: {
       target: bool, preview: oneOf('ok', 'fail', 'skip'), shown: oneOf('new', 'summary', 'ack', 'none'),
       nav: bool, listed: bool, win: count, vis: bool,
+      // How late: s from the gateway's send to the push event; ms from the event to the notification.
+      lag: seconds, show: ms,
+      // The worker took over a notification the browser showed by itself (a declarative push).
+      over: bool,
+      // How the message was kept for the tap: with the preview lookup, the push's preview ticket, or not.
+      kept: oneOf('preview', 'ticket', 'none'),
     },
   },
   click: { src: 'sw', facts: { target: bool, win: count, act: oneOf('inplace', 'focus', 'navigate', 'open', 'none', 'error'), age: seconds } },

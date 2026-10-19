@@ -210,7 +210,7 @@ describe('the tap diagnostics (worker side)', () => {
     expect(batch.v).toBe(1);
     expect(batch.events).toEqual([expect.objectContaining({
       ev: 'push', src: 'sw', sw: SW_REVISION, eng: 'webkit',
-      f: { target: true, preview: 'fail', shown: 'new', nav: true, listed: true, win: 0, vis: false },
+      f: { target: true, preview: 'fail', shown: 'new', nav: true, listed: true, win: 0, vis: false, show: expect.any(Number) },
     })]);
     // Sent: nothing waits for the app.
     expect(w.traces()).toEqual([]);

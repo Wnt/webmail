@@ -13,6 +13,16 @@
 >    carries an `email: { from, subject, preview }` summary (sent by webmail-gateway), the notification shows
 >    `from` as the title and the subject plus the preview (≤ 200 chars) as the body instead of a generic "New mail".
 >    Tests: `lib/__tests__/sw-push-payload-email.test.ts`.
+>    - On an iPhone the gateway sends the new-mail push as a Declarative Web Push message, which iOS shows by
+>      itself, at once, with no data (iOS launched a not-running Home Screen app for a classic push but ran its
+>      worker only when the next push came). The quiet summary push takes that notification over: the worker
+>      recognises it by its `navigate` message link and shows its own copy, with the tap data and the ledger
+>      entry. A quiet push never alerts again.
+>    - With the push's `previewTicket` (webmail-gateway, per device, one message, minutes) the worker keeps the
+>      message for the tap through the gateway's `POST /relay/api/push/preview` when the session-backed lookup
+>      fails (its access token lives an hour). The tap diagnostics record how late each push was handled (`lag`,
+>      `show`), a takeover (`over`) and how the message was kept (`kept`).
+>      Tests: `lib/__tests__/sw-declarative-push.test.ts`.
 > 2. `.github/workflows/fork-image.yml`: builds and pushes the fork's image to GHCR, baking in
 >    `NEXT_PUBLIC_PUSH_RELAY_URL=https://mail.madekivi.fi/relay` (new `Dockerfile` build arg).
 > 3. Push relay, no hosted fallback (`lib/push-relays.ts`, `lib/web-push.ts`, `lib/push-relay-current.ts`,

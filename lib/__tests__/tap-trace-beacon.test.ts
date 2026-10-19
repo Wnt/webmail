@@ -32,6 +32,19 @@ describe('parseTapRecord', () => {
     expect(parseTapRecord({ id: 'abcdef12', src: 'sw', ev: 'close', at: AT, f: { age: 12 } }, now)).not.toBeNull();
   });
 
+  it('takes how late a push was handled, a takeover and how the message was kept, in their shapes only', () => {
+    const push = (f: Record<string, unknown>) => parseTapRecord({ id: 'abcdef12', src: 'sw', ev: 'push', at: AT,
+      f: { target: true, preview: 'skip', shown: 'summary', nav: true, listed: true, win: 0, vis: false, ...f } }, now);
+    expect(push({ lag: 37, show: 412, over: true, kept: 'ticket' })?.f).toMatchObject({ lag: 37, show: 412, over: true, kept: 'ticket' });
+    expect(push({ kept: 'preview' })).not.toBeNull();
+    expect(push({ kept: 'none' })).not.toBeNull();
+    expect(push({ kept: 'e1' })).toBeNull();
+    expect(push({ lag: -1 })).toBeNull();
+    expect(push({ lag: 1.5 })).toBeNull();
+    expect(push({ show: 700_000 })).toBeNull();
+    expect(push({ over: 'yes' })).toBeNull();
+  });
+
   it('refuses free text anywhere', () => {
     expect(parseTapRecord(rec({ f: { how: 'vanished', when: 'start', kept: 1, listed: 0, vanished: 1, emailId: 'Mabc' } }), now)).toBeNull();
     expect(parseTapRecord(rec({ f: { how: 'info@examplepaja.test', when: 'start' } }), now)).toBeNull();
