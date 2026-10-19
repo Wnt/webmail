@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { vi } from 'vitest';
 import { htmlToPlainText, htmlToPlainTextBounded } from '@/lib/html-to-text';
 import {
-  CUT_MARK,
+  detectorWork,
   findVerificationCode,
   listVerificationCode,
   markCut,
@@ -27,20 +27,27 @@ function timeMs(f: () => unknown): number {
   return best;
 }
 
-/** The fastest of seven runs at 5,000 and at 20,000 characters, taken in turn so both see the same load. */
-function scaling(shape: (n: number) => () => unknown): { small: number; large: number } {
+/**
+ * Nine rounds at 5,000 and at 20,000 characters, taken in turn so both see
+ * the same load: the fastest large run, and whether any round was linear
+ * (4x the input in at most 8x the time, plus 10 ms of timer and scheduling
+ * noise). A quadratic shape fails every round; a busy host only some.
+ */
+function scaling(shape: (n: number) => () => unknown): { large: number; linear: boolean } {
   const [runSmall, runLarge] = [shape(5_000), shape(20_000)];
-  let small = Infinity;
   let large = Infinity;
-  for (let i = 0; i < 7; i++) {
+  let linear = false;
+  for (let i = 0; i < 9; i++) {
     let t0 = performance.now();
     runSmall();
-    small = Math.min(small, performance.now() - t0);
+    const s = performance.now() - t0;
     t0 = performance.now();
     runLarge();
-    large = Math.min(large, performance.now() - t0);
+    const l = performance.now() - t0;
+    large = Math.min(large, l);
+    if (l < 8 * s + 10) linear = true;
   }
-  return { small, large };
+  return { large, linear };
 }
 
 const part = (partId: string, type: string) => ({ partId, blobId: `blob-${partId}`, size: 1, type });
@@ -77,9 +84,9 @@ describe('hostile mail stays cheap (linear, capped)', () => {
   ];
 
   it.each(shapes)('%s: well under the bound, and 4x the input takes at most about 8x the time', (_, shape) => {
-    const { small, large } = scaling(shape);
+    const { large, linear } = scaling(shape);
     expect(large).toBeLessThan(250);
-    expect(large).toBeLessThan(8 * small + 10);
+    expect(linear).toBe(true);
   });
 
   it('a 40,000-character word, 20,000 characters of "code 1234 " and huge inputs finish quickly', () => {
@@ -151,12 +158,30 @@ describe('hostile mail stays cheap (linear, capped)', () => {
     expect(findVerificationCode('', markCut('Your code is 1234 5678', false))).toBe('12345678');
   });
 
-  it('keeps the cut through HTML extraction: a large removed <style> before the cut leaves a short text that is still cut', () => {
+  it('HTML whose source was cut is not read: a large <style> before the cut, or tree repair moving the cut code (review bulwark-n1 R4)', () => {
     const tail = '</style>Your code is 1234';
     const html = `<style>${'x'.repeat(200_000 - '<style>'.length - tail.length)}${tail}56`;
-    const text = verificationCodeBodyText(htmlMail(html));
-    expect(text.endsWith(CUT_MARK)).toBe(true);
-    expect(findVerificationCode('', text)).toBeNull();
+    expect(verificationCodeBodyText(htmlMail(html))).toBe('');
+    expect(findVerificationCode('', verificationCodeBodyText(htmlMail(html)))).toBeNull();
+    // Foster parenting: a <div> inside a <table> moves before the table, so
+    // the code cut at the end of the source lands near the start of the text.
+    const fosterTail = `<table><tr><td>${'Ordinary words. '.repeat(20)}</td></tr><div>Your code is 1234`;
+    const foster = `<style>${'x'.repeat(200_000 - 7 - 8 - fosterTail.length)}</style>${fosterTail}56</table>`;
+    expect(foster.indexOf('56</table>')).toBe(200_000);
+    expect(findVerificationCode('', verificationCodeBodyText(htmlMail(foster)))).toBeNull();
+    // A separate, uncut plain-text part is read instead.
+    const multipart = {
+      htmlBody: [part('h', 'text/html')],
+      textBody: [part('t', 'text/plain')],
+      bodyValues: {
+        h: { value: foster, isEncodingProblem: false, isTruncated: false },
+        t: { value: 'Your code is 123456', isEncodingProblem: false, isTruncated: false },
+      },
+    };
+    expect(findVerificationCode('', verificationCodeBodyText(multipart))).toBe('123456');
+    // The server's truncated HTML value is cut too.
+    const truncated = { ...htmlMail('<p>Your code is 123456</p>'), bodyValues: { 1: { value: '<p>Your code is 123456</p>', isEncodingProblem: false, isTruncated: true } } };
+    expect(verificationCodeBodyText(truncated)).toBe('');
     // A body value the server cut is cut too; a code well before the cut is still found.
     const plain = (value: string) => ({
       htmlBody: [part('1', 'text/plain')],
@@ -245,5 +270,35 @@ describe('hostile mail stays cheap (linear, capped)', () => {
     });
     expect(read).toEqual({ text: 'Visible', truncated: false, stopped: true });
     expect(verificationCodeBodyText(htmlMail(html)).trim()).toBe('Visible');
+  });
+
+  it('dense candidates and code words: the keyword lookups grow linearly (counted, not timed; review bulwark-n1 R6)', () => {
+    const steps = (n: number) => {
+      detectorWork.keywordSteps = 0;
+      findVerificationCode('', 'code 1234 '.repeat(n));
+      return detectorWork.keywordSteps;
+    };
+    const [s100, s400, s2000] = [steps(100), steps(400), steps(2_000)];
+    expect(s2000 / 2_000).toBeLessThan(60);
+    expect(s2000 / s400).toBeLessThan(5 * 1.05);
+    expect(s400 / s100).toBeLessThan(4 * 1.1);
+  });
+
+  it("a preview's ellipsis or an unmarked server cut never leaves a fragment (review bulwark-n1 R5)", () => {
+    const now = Date.parse('2026-10-19T12:00:00Z');
+    const row = (preview: string) => listVerificationCode({ subject: '', preview, receivedAt: '2026-10-19T11:59:00Z' }, now);
+    expect(row('Your code is 1234 56...')).toBeNull();
+    expect(row('Your code is 1234 ...')).toBeNull();
+    expect(row('Your code is 1 2 3 4 5...')).toBeNull();
+    expect(row('Your code is 1234 5678')).toBe('12345678');
+    // legacy-proxy's preview: the first 256 characters, no ellipsis, no flag.
+    const body = `${'x'.repeat(238)} Your code is 12345678`;
+    expect(row(body.slice(0, 256))).toBeNull();
+    const reader = {
+      htmlBody: [part('1', 'text/plain')],
+      textBody: [part('1', 'text/plain')],
+      bodyValues: { 1: { value: body, isEncodingProblem: false, isTruncated: false } },
+    };
+    expect(findVerificationCode('', verificationCodeBodyText(reader))).toBe('12345678');
   });
 });
