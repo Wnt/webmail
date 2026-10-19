@@ -88,3 +88,13 @@ it('decodes a non-UTF-8 attachment by its declared charset', async () => {
   await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull());
   expect((await previewDoc()).body.textContent).toContain('Hyvää päivää');
 });
+
+// Audit safari-links-1: the attachment preview shares the body sanitizer's
+// link policy - relative hrefs are gone from the document itself.
+it('HTML attachment preview drops relative link targets', async () => {
+  const { container, previewDoc } = renderPreview('<p><a href="/oauth/end_session">Pay</a><a href="https://outside.example/pay">Web</a></p>');
+  await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull());
+  const [relative, web] = Array.from((await previewDoc()).querySelectorAll('a'));
+  expect(relative.hasAttribute('href')).toBe(false);
+  expect(web.getAttribute('href')).toBe('https://outside.example/pay');
+});

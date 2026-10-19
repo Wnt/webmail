@@ -116,38 +116,36 @@ export interface IframeBodySanitizeResult {
  * external-content preference (#797). Enforcement lives here so no render path
  * can opt out of it by accident.
  *
+ * The link policy ({@link applyEmailLinkPolicy}) is applied here too, so the
+ * serialized body - and the body cache built from it - carries no link that
+ * only a click handler would have stopped.
+ *
  * @param html Body HTML (cid: references already rewritten to blob URLs).
  * @param blockExternal Whether the user's policy blocks external resources for
  *   this message ('block', or 'ask' before the user allowed, and sender not
  *   trusted).
+ * @param options.keepStyleTags False for a renderer that drops the sender's
+ *   `<style>` blocks (the conversation view's message cards); default true.
  */
 export function sanitizeEmailBodyForIframe(
   html: string,
   blockExternal: boolean,
+  { keepStyleTags = true }: { keepStyleTags?: boolean } = {},
 ): IframeBodySanitizeResult {
+  const base = keepStyleTags ? EMAIL_IFRAME_SANITIZE_CONFIG : EMAIL_SANITIZE_CONFIG;
   const config = blockExternal
     ? {
-        ...EMAIL_IFRAME_SANITIZE_CONFIG,
+        ...base,
         // <link rel=stylesheet> would pull a remote sheet the node walk can't see.
-        FORBID_TAGS: [...EMAIL_IFRAME_SANITIZE_CONFIG.FORBID_TAGS, 'link'],
+        FORBID_TAGS: [...base.FORBID_TAGS, 'link'],
       }
-    : EMAIL_IFRAME_SANITIZE_CONFIG;
+    : base;
 
   let blockedExternalContent = false;
   DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-    if (blockExternal) {
-      // Blocks every external-resource vector (img src incl. whitespace/newline
-      // tricks, srcset, <source>, <video poster>, media src, background attr,
-      // inline style url() incl. CSS escapes, <style> block CSS). The strict
-      // iframe CSP the caller derives from `blockExternal` is the network backstop.
-      if (blockExternalResourcesOnNode(node)) {
-        blockedExternalContent = true;
-      }
+    if (applyEmailBodyNodePolicy(node, blockExternal)) {
+      blockedExternalContent = true;
     }
-    // http(s) links open in a new tab; other schemes keep their default.
-    applyNewTabToAnchor(node);
-    // Re-apply the data:-URI allowlist DOMPurify skips on media tags.
-    restrictDataUriResourcesOnNode(node);
   });
 
   let clean: string;
@@ -427,50 +425,158 @@ export function isExternalResourceUrl(value: string | null | undefined): boolean
 
 
 /**
+ * Schemes a message-body link may hand to the OS or a protocol handler, in
+ * place (no new tab). Everything else that is not a web link, a `#fragment` or
+ * a minted `blob:` part link loses its href.
+ */
+const EXTERNAL_LINK_SCHEMES = new Set(['mailto', 'tel', 'sms', 'callto', 'xmpp', 'ftp', 'ftps']);
+
+/** What a message-body link may do, with the href to write back. */
+export type EmailLinkHref =
+  /** http(s), serialized absolute: opens in a new tab. */
+  | { kind: 'web'; href: string }
+  /** `#section`: scrolls within the body document. */
+  | { kind: 'fragment'; href: string }
+  /** mailto:, tel:, ... (scheme lower-cased): the OS or a protocol handler. */
+  | { kind: 'external'; href: string; scheme: string }
+  /** A cid: part's blob: URL (re-typed inert when minted, GHSA-xvjh-v9c6-qcvc). */
+  | { kind: 'blob'; href: string };
+
+/**
+ * The URL parser's own clean-up before it looks at a URL: leading and trailing
+ * C0 controls and spaces are trimmed, and ASCII tab, LF and CR are removed
+ * anywhere. Other control characters inside the URL stay, as they do for the
+ * browser: `"java\u0001script:"` has no scheme, it is a relative path.
+ */
+function browserNormalizedHref(href: string): string {
+  // eslint-disable-next-line no-control-regex
+  return href.replace(/^[\u0000- ]+|[\u0000- ]+$/g, '').replace(/[\t\n\r]/g, '');
+}
+
+function webLink(href: string): EmailLinkHref | null {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !url.hostname) return null;
+  return { kind: 'web', href: url.href };
+}
+
+/**
+ * The navigation policy for links in a message body, decided from the markup
+ * alone. It is applied while sanitizing (`applyEmailLinkPolicy`), because
+ * WebKit runs no event listener in the sandboxed body frame: a click handler
+ * cannot be the gate there (audit safari-links-1).
+ *
+ * Nothing is resolved against the document's base URL. A relative href - a
+ * path (`/oauth/end_session`, `../x`, `x`), a query (`?x`) or empty - would
+ * point the message frame at a route of our own origin, so it has no place
+ * here and returns null. So do `data:`, unresolved `cid:`, `javascript:` and
+ * every other scheme, and an http(s) URL without the two slashes: the parser
+ * reads `https:/x` and `https:x` relative to a base of the same scheme, so
+ * their meaning depends on where the body is shown. A network-path reference
+ * (`//host`, also with backslashes, which the parser reads as slashes for an
+ * http(s) base) is a web link to that host. Web links come back serialized by
+ * the URL parser, so the href written back is exactly what was checked.
+ */
+export function classifyEmailLinkHref(href: string | null | undefined): EmailLinkHref | null {
+  if (href == null) return null;
+  const normalized = browserNormalizedHref(href);
+  if (normalized.startsWith('#')) return { kind: 'fragment', href: normalized };
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(normalized)?.[1]?.toLowerCase();
+  if (!scheme) {
+    return /^[/\\]{2}/.test(normalized) ? webLink(`https:${normalized}`) : null;
+  }
+  if (scheme === 'http' || scheme === 'https') {
+    return /^[a-z]+:[/\\]{2}/i.test(normalized) ? webLink(normalized) : null;
+  }
+  const rest = normalized.slice(scheme.length);
+  if (EXTERNAL_LINK_SCHEMES.has(scheme)) return { kind: 'external', href: scheme + rest, scheme };
+  if (scheme === 'blob') return { kind: 'blob', href: scheme + rest };
+  return null;
+}
+
+/**
  * True for external web links (http/https or protocol-relative `//host`) that
  * should open in a new tab — unlike `mailto:`/`tel:`/`#fragments`, which navigate
- * in place or hand off to the OS handler. Strips C0 controls first so obfuscated
- * schemes (`"h\ttps://x"`) don't slip through.
+ * in place or hand off to the OS handler. Normalized the way the URL parser
+ * does, so obfuscated schemes (`"h\ttps://x"`) don't slip through.
  */
 export function isHttpLinkHref(href: string | null | undefined): boolean {
-  if (!href) return false;
-  // eslint-disable-next-line no-control-regex
-  const normalized = href.replace(/[\u0000-\u0020]+/g, '');
-  return /^(?:https?:\/\/|\/\/)/i.test(normalized);
+  return classifyEmailLinkHref(href)?.kind === 'web';
 }
 
 /**
- * Whether a clicked message-body link may be handed to window.open(). Web links
- * and links to external protocol handlers (tel:, sms:, ...) are fine. Anything
- * that resolves inside our own origin is not: blob: URLs (a cid: part re-typed
- * by the sender, GHSA-xvjh-v9c6-qcvc), data:, and bare relative paths, which
- * would open a webmail route of the sender's choosing in a new tab.
+ * The URL a clicked message-body link may be handed to window.open() with, or
+ * null. Web links and links to external protocol handlers (tel:, sms:, ...) are
+ * fine; mailto: is left to the browser. Anything that resolves inside our own
+ * origin is not: blob: URLs (a cid: part re-typed by the sender,
+ * GHSA-xvjh-v9c6-qcvc), data:, and relative paths, which would open a webmail
+ * route of the sender's choosing in a new tab. Web links come back serialized,
+ * so window.open() cannot resolve them against the app's own URL.
  */
+export function openableLinkHref(href: string | null | undefined): string | null {
+  const link = classifyEmailLinkHref(href);
+  if (link?.kind === 'web') return link.href;
+  if (link?.kind === 'external' && link.scheme !== 'mailto') return link.href;
+  return null;
+}
+
+/** Whether a clicked message-body link may be handed to window.open(); see {@link openableLinkHref}. */
 export function isOpenableLinkHref(href: string | null | undefined): boolean {
-  if (!href) return false;
-  if (isHttpLinkHref(href)) return true;
-  // eslint-disable-next-line no-control-regex
-  const normalized = href.replace(/[\u0000-\u0020]+/g, '');
-  return /^(?:ftps?|tel|sms|callto|xmpp):/i.test(normalized);
+  return openableLinkHref(href) !== null;
 }
 
 /**
- * Give one `<a>` the new-tab treatment uniformly across the iframe render paths
- * (the DOMPurify hook and the post-render DOM walk in email-viewer): http(s)
- * links get target=_blank + rel; other schemes have them stripped so they don't
- * spawn a blank tab. (The plaintext path relies on ADD_URI_SAFE_ATTR instead.)
+ * Apply the message-body link policy ({@link classifyEmailLinkHref}) to one
+ * `<a>` or `<area>`, in every body render path (the sanitizer hook and the
+ * post-render walks over the live iframe documents):
+ * - web links and blob: part links keep their (serialized) href and open in a
+ *   new tab with noopener noreferrer, whatever target and rel the sender wrote;
+ * - `#fragment`s and mailto:, tel:, ... keep their href with no target or rel;
+ * - every other href is removed with its target and rel, so the link is inert
+ *   text without any script having to cancel the click (WebKit runs none in
+ *   the sandboxed frame).
+ * Applying it again changes nothing. (The plaintext path relies on
+ * ADD_URI_SAFE_ATTR and its own URI allowlist instead.)
  */
-export function applyNewTabToAnchor(node: Element): void {
+export function applyEmailLinkPolicy(node: Element): void {
   // <area> in an image map is a link too; left alone it kept whatever
   // target/rel the sender wrote (rel=opener: reverse tabnabbing).
   if (node.tagName !== 'A' && node.tagName !== 'AREA') return;
-  if (isHttpLinkHref(node.getAttribute('href'))) {
+  const href = node.getAttribute('href');
+  const link = classifyEmailLinkHref(href);
+  if (!link) {
+    node.removeAttribute('href');
+  } else if (href !== link.href) {
+    node.setAttribute('href', link.href);
+  }
+  if (link?.kind === 'web' || link?.kind === 'blob') {
     node.setAttribute('target', '_blank');
     node.setAttribute('rel', 'noopener noreferrer');
   } else {
     node.removeAttribute('target');
     node.removeAttribute('rel');
   }
+}
+
+/**
+ * The per-element pass of every message-body sanitizer (DOMPurify
+ * afterSanitizeAttributes): external resources blocked if asked, the link
+ * policy, and the data:-URI allowlist DOMPurify skips on media tags.
+ * @returns true if an external resource was blocked on the node.
+ */
+function applyEmailBodyNodePolicy(node: Element, blockExternal: boolean): boolean {
+  // Blocks every external-resource vector (img src incl. whitespace/newline
+  // tricks, srcset, <source>, <video poster>, media src, background attr,
+  // inline style url() incl. CSS escapes, <style> block CSS). The strict
+  // iframe CSP the caller derives from `blockExternal` is the network backstop.
+  const blocked = blockExternal && blockExternalResourcesOnNode(node);
+  applyEmailLinkPolicy(node);
+  restrictDataUriResourcesOnNode(node);
+  return blocked;
 }
 
 /**

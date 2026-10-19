@@ -72,3 +72,43 @@ describe('conversation view header', () => {
     expect(screen.getByRole('button', { name: 'email_viewer.back_to_list' })).toBeInTheDocument();
   });
 });
+
+// Audit safari-links-1: the cards run the reading pane's sanitizer and link
+// policy - no relative href survives to navigate the card frame (or, with the
+// old blanket _blank, a new tab) to a route of our own origin.
+describe('conversation view link policy', () => {
+  it('drops relative hrefs and keeps web, mailto and fragment links', async () => {
+    const { ThreadConversationView } = await import('@/components/email/thread-conversation-view');
+    const html = '<style>p{color:red}</style><a href="/oauth/end_session" target="_blank">r</a>'
+      + '<a href="https://outside.example/x" target="_top">w</a><a href="mailto:reader@example.test">m</a>'
+      + '<a href="#s">f</a><map name="m"><area href="?view=x" coords="0,0,1,1"></map>';
+    const email = {
+      id: 'e3', threadId: 't3', mailboxIds: { a: true }, keywords: { $seen: true },
+      from: [{ name: 'Sender', email: 'sender@t.example' }], to: [{ email: 'me@example.org' }],
+      subject: 's', receivedAt: '2026-09-26T10:00:00Z', size: 1, preview: 'hi', hasAttachment: false,
+      htmlBody: [{ partId: '1', type: 'text/html' }], textBody: [], attachments: [],
+      bodyValues: { '1': { value: html } },
+    };
+    const { container } = render(
+      <ThreadConversationView
+        thread={{ threadId: 't3', emails: [email], latestEmail: email } as never}
+        emails={[email] as never}
+        onBack={() => {}}
+      />,
+    );
+    const srcdoc = container.querySelector('iframe')!.getAttribute('srcdoc') ?? '';
+    const body = new DOMParser().parseFromString(srcdoc, 'text/html').body;
+    const [relative, web, mail, fragment] = Array.from(body.querySelectorAll('a'));
+    expect(relative.hasAttribute('href')).toBe(false);
+    expect(relative.hasAttribute('target')).toBe(false);
+    expect(web.getAttribute('href')).toBe('https://outside.example/x');
+    expect(web.getAttribute('target')).toBe('_blank');
+    expect(web.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(mail.getAttribute('href')).toBe('mailto:reader@example.test');
+    expect(mail.hasAttribute('target')).toBe(false);
+    expect(fragment.getAttribute('href')).toBe('#s');
+    expect(body.querySelector('area')!.hasAttribute('href')).toBe(false);
+    // The cards still drop the sender's <style> blocks.
+    expect(body.innerHTML).not.toContain('color:red');
+  }, 30_000);
+});

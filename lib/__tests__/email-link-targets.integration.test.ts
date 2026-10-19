@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import DOMPurify from 'dompurify';
 import {
   EMAIL_IFRAME_SANITIZE_CONFIG,
-  applyNewTabToAnchor,
+  applyEmailLinkPolicy,
   plainTextToSafeHtml,
   sanitizePlainTextRenderedHtml,
   parseHtmlSafely,
@@ -18,7 +18,7 @@ import {
 
 /** Reproduce the EmailViewer iframe pipeline for an HTML body. */
 function renderIframeHtml(html: string): Document {
-  DOMPurify.addHook('afterSanitizeAttributes', applyNewTabToAnchor);
+  DOMPurify.addHook('afterSanitizeAttributes', applyEmailLinkPolicy);
   let clean: string;
   try {
     clean = DOMPurify.sanitize(html, EMAIL_IFRAME_SANITIZE_CONFIG);
@@ -27,7 +27,7 @@ function renderIframeHtml(html: string): Document {
   }
   const doc = parseHtmlSafely(clean);
   // Post-render walk, exactly as handleIframeLoad does on the live iframe doc.
-  doc.querySelectorAll('a, area').forEach(applyNewTabToAnchor);
+  doc.querySelectorAll('a, area').forEach(applyEmailLinkPolicy);
   return doc;
 }
 

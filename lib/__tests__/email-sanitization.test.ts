@@ -13,7 +13,7 @@ import {
   isExternalResourceUrl,
   isHttpLinkHref,
   isOpenableLinkHref,
-  applyNewTabToAnchor,
+  applyEmailLinkPolicy,
   sanitizeI18nHtml,
   sanitizePluginBodyHtml,
   decodeCssEscapes,
@@ -396,36 +396,36 @@ describe('email-sanitization', () => {
     });
   });
 
-  describe('applyNewTabToAnchor', () => {
+  describe('applyEmailLinkPolicy', () => {
     const anchor = (html: string): HTMLAnchorElement =>
       parseHtmlSafely(html).querySelector('a')!;
 
     it('adds target/rel to http(s) links', () => {
       const a = anchor('<a href="https://example.com">x</a>');
-      applyNewTabToAnchor(a);
+      applyEmailLinkPolicy(a);
       expect(a.getAttribute('target')).toBe('_blank');
       expect(a.getAttribute('rel')).toBe('noopener noreferrer');
     });
 
     it('strips target/rel from mailto links', () => {
       const a = anchor('<a href="mailto:a@b.com" target="_blank" rel="noopener noreferrer">x</a>');
-      applyNewTabToAnchor(a);
+      applyEmailLinkPolicy(a);
       expect(a.getAttribute('target')).toBeNull();
       expect(a.getAttribute('rel')).toBeNull();
     });
 
     it('strips target from tel: and in-page #anchors', () => {
       const tel = anchor('<a href="tel:+1555" target="_blank">x</a>');
-      applyNewTabToAnchor(tel);
+      applyEmailLinkPolicy(tel);
       expect(tel.getAttribute('target')).toBeNull();
       const frag = anchor('<a href="#section" target="_blank">x</a>');
-      applyNewTabToAnchor(frag);
+      applyEmailLinkPolicy(frag);
       expect(frag.getAttribute('target')).toBeNull();
     });
 
     it('ignores non-anchor elements', () => {
       const span = parseHtmlSafely('<span target="_blank">x</span>').querySelector('span')!;
-      applyNewTabToAnchor(span);
+      applyEmailLinkPolicy(span);
       expect(span.getAttribute('target')).toBe('_blank');
     });
   });

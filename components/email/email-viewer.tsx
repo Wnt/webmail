@@ -6,7 +6,7 @@ import { useStableCallbacks } from "@/hooks/use-stable-callbacks";
 import { Email, ContactCard, Mailbox } from "@/lib/jmap/types";
 import { emailExportFilename, attachmentDownloadFilename, attachmentsBundleFilename, DEFAULT_EMAIL_TEMPLATE, DEFAULT_ATTACHMENT_TEMPLATE } from "@/lib/download-filename";
 import { EML_IMPORT_ACCEPT, expandImportableEmails } from "@/lib/eml-import";
-import { applyNewTabToAnchor, emailIframeCsp, escapeHtml, isOpenableLinkHref, plainTextToSafeHtml, sanitizeEmailBodyForIframe, sanitizeEmailHtml, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
+import { applyEmailLinkPolicy, emailIframeCsp, escapeHtml, openableLinkHref, plainTextToSafeHtml, sanitizeEmailBodyForIframe, sanitizeEmailHtml, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
 import { getRenderableHtmlBody } from "@/lib/email-body-selection";
 import { cachedEmailContent, emailContentCacheKey, prepareEmailHtml, shouldBlockExternalFor } from "@/lib/email-content-cache";
 import { collectReferencedCids, isEmbeddedInBody } from "@/lib/attachment-visibility";
@@ -2713,9 +2713,9 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
           }
         });
 
-        // Second pass over the rendered iframe DOM (the hook above only sees
-        // DOMPurify's output); http(s) → new tab, other schemes left in place.
-        doc.querySelectorAll('a, area').forEach(applyNewTabToAnchor);
+        // Second pass over the rendered iframe DOM with the sanitizer's link
+        // policy (http(s) → new tab, relative and unsupported hrefs removed).
+        doc.querySelectorAll('a, area').forEach(applyEmailLinkPolicy);
 
         // Plugin intercept: let plugins cancel or rewrite external links inside
         // the email body before navigation happens. Bound on the iframe doc so
@@ -2737,16 +2737,19 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
           }
           // Only web links and external protocol handlers may be opened;
           // data:, unresolved cid: and relative paths would land inside our
-          // own origin.
-          if (!isOpenableLinkHref(href)) return;
+          // own origin. (The sanitizer already removed those hrefs, so this
+          // gate also holds where no listener runs: WebKit's sandboxed frame.)
+          const openable = openableLinkHref(href);
+          if (!openable) return;
           const ctx = {
-            href,
+            href: openable,
             target: targetEl.getAttribute('target') ?? undefined,
             emailId: email?.id,
           };
           const ok = await uiHooks.onBeforeExternalLink.intercept(ctx);
-          if (!ok || !isOpenableLinkHref(ctx.href)) return;
-          window.open(ctx.href, '_blank', 'noopener,noreferrer');
+          const url = ok ? openableLinkHref(ctx.href) : null;
+          if (!url) return;
+          window.open(url, '_blank', 'noopener,noreferrer');
         };
         doc.addEventListener('click', onLinkClick, true);
       }

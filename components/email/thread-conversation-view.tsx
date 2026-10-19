@@ -1,9 +1,8 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import DOMPurify from "dompurify";
 import { Email, ThreadGroup } from "@/lib/jmap/types";
-import { EMAIL_SANITIZE_CONFIG, blockExternalResourcesOnNode, collapseBlockedImageContainers, emailIframeCsp, plainTextToSafeHtml, restrictDataUriResourcesOnNode, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
+import { applyEmailLinkPolicy, emailIframeCsp, plainTextToSafeHtml, sanitizeEmailBodyForIframe, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
 import { getRenderableHtmlBody } from "@/lib/email-body-selection";
 import { findVerificationCode, verificationCodeBodyText } from "@/lib/verification-code";
 import { VerificationCodeChip } from "./verification-code-chip";
@@ -361,36 +360,11 @@ function EmailCard({
           );
         }
 
-        let blockedExternalContent = false;
-
-        // Use shared sanitization config as base (more secure)
-        const sanitizeConfig = { ...EMAIL_SANITIZE_CONFIG };
-
-        DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-          // Re-apply the data:-URI allowlist DOMPurify skips on media tags.
-          restrictDataUriResourcesOnNode(node);
-
-          // The desktop viewer's blocker: srcset, <source>, poster,
-          // background attributes and escaped url()s as well as img src.
-          if (!allowExternal && blockExternalResourcesOnNode(node)) {
-            blockedExternalContent = true;
-          }
-
-          if (node.tagName === 'A' || node.tagName === 'AREA') {
-            node.setAttribute('target', '_blank');
-            node.setAttribute('rel', 'noopener noreferrer');
-          }
-
-        });
-
-        const sanitized = DOMPurify.sanitize(htmlContent, sanitizeConfig);
-        DOMPurify.removeHook('afterSanitizeAttributes');
-
-        let finalHtml = sanitized;
-        if (blockedExternalContent) {
-          if (!hasBlockedContent) setHasBlockedContent(true);
-          finalHtml = collapseBlockedImageContainers(sanitized);
-        }
+        // The reading pane's sanitizer (the same external-content blocker
+        // and link policy), without the sender's <style> blocks in a card.
+        const { html: finalHtml, blockedExternalContent } =
+          sanitizeEmailBodyForIframe(htmlContent, !allowExternal, { keepStyleTags: false });
+        if (blockedExternalContent && !hasBlockedContent) setHasBlockedContent(true);
 
         return { html: finalHtml, isHtml: true };
       }
@@ -502,10 +476,7 @@ function EmailCard({
       resize();
       const ro = new ResizeObserver(resize);
       ro.observe(doc.body);
-      doc.querySelectorAll('a, area').forEach((a) => {
-        a.setAttribute('target', '_blank');
-        a.setAttribute('rel', 'noopener noreferrer');
-      });
+      doc.querySelectorAll('a, area').forEach(applyEmailLinkPolicy);
       // Fork (Wnt/webmail): this card's body is on screen with the next frame
       // (open timing, deferred mark-as-read - lib/open-timing.ts).
       bodyReady(email.id);
