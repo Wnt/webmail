@@ -26,7 +26,9 @@ const WEBKIT_MIN_LIFETIME_MS = 30_000;
 type Note = { title: string; options: Record<string, unknown>; closed: boolean; at: number; byBrowser?: boolean };
 type Reply = { ok: boolean; status: number; body?: unknown };
 
-function loadWorker({ webkit = true, onShow, markerReadsThrow = false, onList, beforePut, noSubscription = false }: {
+function loadWorker({ webkit = true, onShow, markerReadsThrow = false, onList, beforePut, noSubscription = false, listFails }: {
+  /** getNotifications() rejects on these 1-based listings. */
+  listFails?: (count: number) => boolean;
   webkit?: boolean;
   /** Runs after each getNotifications() listing (its 1-based count). */
   onList?: (count: number) => void;
@@ -64,6 +66,10 @@ function loadWorker({ webkit = true, onShow, markerReadsThrow = false, onList, b
         onShow?.();
       },
       getNotifications: async (filter?: { tag?: string }) => {
+        if (listFails?.(listings + 1)) {
+          listings++;
+          throw new Error('listing failed');
+        }
         const listed = onScreen()
         .filter((n) => !filter?.tag || n.options.tag === filter.tag)
         .map((n) => ({
@@ -76,7 +82,8 @@ function loadWorker({ webkit = true, onShow, markerReadsThrow = false, onList, b
             n.closed = true;
           },
         }));
-        onList?.(++listings);
+        listings++;
+        onList?.(listings);
         return listed;
       },
       pushManager: { getSubscription: async () => (noSubscription ? null : subscription) },
@@ -531,6 +538,79 @@ describe('ordering, sign-out and detached keeps (review round 2)', () => {
     await vi.advanceTimersByTimeAsync(40_000);
     await Promise.all([pushed, signout]);
     expect(w.kept()).toEqual([]);
+  });
+});
+
+// Codex Astra review round 3 (audit/reviews/late-push-bulwark-r3.md).
+describe('ordering for worker notifications, failed listings, other accounts (review round 3)', () => {
+  const ids = (w: ReturnType<typeof loadWorker>) => w.onScreen().map((n) => {
+    const d = n.options.data as { emailId?: string } | undefined;
+    return d?.emailId ?? /\/mail\/message\/([^#]+)/.exec(String(n.options.navigate))?.[1];
+  });
+  const iosNote = (w: ReturnType<typeof loadWorker>, id: string, sentAt: number, tag = 'bulwark-mail:acc1') => {
+    w.showByBrowser({ notification: {
+      title: `Sender ${id}`, body: `Subject ${id}`, tag, silent: false, navigate: `${ORIGIN}/mail/message/${id}#sent=${sentAt}`,
+    } });
+  };
+
+  for (const webkit of [true, false]) {
+    it(`1: a delayed push for older mail leaves the newer one the worker showed (${webkit ? 'WebKit' : 'tag-replacing browser'})`, async () => {
+      const w = loadWorker({ webkit });
+      await w.push(payload({ emailIds: ['e2'], sentAt: SENT_AT + 10_000, previewTicket: undefined }));
+      await w.push(payload({ emailIds: ['e1'], sentAt: SENT_AT, previewTicket: undefined }));
+      expect(ids(w)).toEqual(['e2']);
+    });
+  }
+
+  it('1: the empty acknowledgement path never closes a notification iOS shows meanwhile', async () => {
+    let w!: ReturnType<typeof loadWorker>;
+    let injectAfter = 0;
+    w = loadWorker({
+      onList: (count) => {
+        if (injectAfter && count === injectAfter) iosNote(w, 'e2', SENT_AT + 30_000);
+      },
+    });
+    // The session lookup says there is no unread mail: nothing to announce, but WebKit must show something.
+    w.setPreview({ ok: true, status: 200, body: { email: null, unreadTotal: 0 } });
+    injectAfter = 2; // right after the acknowledgement's own listing
+    await w.push(payload({ emailIds: [], previewTicket: undefined }));
+    expect(ids(w)).toContain('e2');
+  });
+
+  it('2: a first listing that fails makes the sign-out unsettled, and the notification is closed later', async () => {
+    const w = loadWorker({ noSubscription: true, listFails: (n) => n === 1 });
+    iosNote(w, 'e1', SENT_AT);
+    w.marker('signed-out/acc1');
+    const port = { postMessage: vi.fn() };
+    await w.fire('message', { data: { type: 'push-signout', accountIds: ['acc1'] }, ports: [port] }, 40_000);
+    expect(port.postMessage).toHaveBeenCalledWith({ done: false });
+    expect(w.onScreen()).toEqual([]);
+  });
+
+  it('2: a verifying listing that fails is not reported as settled', async () => {
+    const w = loadWorker({ listFails: (n) => n === 2 });
+    iosNote(w, 'e1', SENT_AT);
+    await vi.advanceTimersByTimeAsync(31_000);
+    w.marker('signed-out/acc1');
+    const port = { postMessage: vi.fn() };
+    await w.fire('message', { data: { type: 'push-signout', accountIds: ['acc1'] }, ports: [port] }, 40_000);
+    expect(port.postMessage).toHaveBeenCalledWith({ done: false });
+  });
+
+  it('4: signing one account out never closes another account\'s identical notification', async () => {
+    const w = loadWorker();
+    iosNote(w, 'same', SENT_AT, 'bulwark-mail:acc1');
+    iosNote(w, 'same', SENT_AT, 'bulwark-mail:acc2');
+    w.marker('signed-out/acc1');
+    const port = { postMessage: vi.fn() };
+    await w.fire('message', { data: { type: 'push-signout', accountIds: ['acc1'] }, ports: [port] }, 40_000);
+    expect(w.onScreen().map((n) => n.options.tag)).toEqual(['bulwark-mail:acc2']);
+  });
+
+  it('3: the worker revision moved on from the earlier rounds', async () => {
+    const { SW_REVISION } = await import('@/lib/sw-revision');
+    expect(SW_REVISION).not.toBe('2026-10-19.push2');
+    expect(SW_SOURCE).toContain(`const SW_REVISION = "${SW_REVISION}";`);
   });
 });
 

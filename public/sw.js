@@ -29,7 +29,7 @@ const MAILTO_CLIENTS = new Map();
 // the one it was built with (lib/sw-revision.ts, kept equal by a unit test)
 // and asks the browser for the newer worker when they differ: an iPhone can
 // keep running an old worker. Bump both whenever this file changes.
-const SW_REVISION = "2026-10-19.push2";
+const SW_REVISION = "2026-10-19.push3";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -397,6 +397,17 @@ async function handlePush(event, work) {
   // A quiet replacement whose first push this worker never saw (and no
   // notification for it is on screen: dismissed, or the push was lost) is
   // announced without a sound: it already alerted once, or should have.
+  // Fork patch (Wnt/webmail): a newer message's notification is already up
+  // (this push was delivered late): it stays the headline. Decided before
+  // showing, since a same-tag notification replaces it on most browsers. The
+  // message counts as announced; on WebKit the account's newest notification
+  // is shown again (acknowledgeUnshownPush).
+  if (newerOtherMail(upAtStart, headlineEmailId, mine)) {
+    const late = freshIds.length > 0 ? freshIds : (email ? [email.id] : []);
+    if (late.length > 0) await writeNotifiedIds(accountId, notified.concat(late));
+    return;
+  }
+
   const quiet = quietPush || await withinQuietWindow(accountId);
   work.trace.shown = "new";
   const replacing = replaceKeys(upAtStart, headlineEmailId, mine);
@@ -550,19 +561,27 @@ function newestNotification(entries) {
 
 /**
  * Which of `entries` a notification for `emailId` (its push sent at `sentAt`)
- * replaces: one for the same message; one this worker showed (pushes are
- * handled one at a time per account, so it came before); one the browser
- * showed whose push went out no later. One the browser showed that cannot be
- * ordered stays.
+ * replaces: one for the same message, and one whose message's push went out
+ * no later. When either time is unknown: one this worker showed (pushes are
+ * handled one at a time per account, so it came before: a notification
+ * without a time is from before send times existed); one the browser showed
+ * by itself stays.
  */
 function replaceKeys(entries, emailId, sentAt) {
   const keys = new Set();
   for (const e of entries) {
     const same = !!emailId && e.data && e.data.headlineEmailId === emailId;
-    const older = e.sentAt > 0 && sentAt > 0 && e.sentAt <= sentAt;
-    if (same || !e.byBrowser || older) keys.add(e.key);
+    const older = e.sentAt > 0 && sentAt > 0 ? e.sentAt <= sentAt : !e.byBrowser;
+    if (same || older) keys.add(e.key);
   }
   return keys;
+}
+
+/** Another message's notification among `entries` whose push went out after `sentAt`, if any. */
+function newerOtherMail(entries, emailId, sentAt) {
+  if (!(sentAt > 0)) return null;
+  return entries.find((e) => e.data && e.data.kind === "email" && e.data.headlineEmailId
+    && e.data.headlineEmailId !== emailId && e.sentAt > sentAt) || null;
 }
 
 // Fork patch (Wnt/webmail): the message a notification opens, from its data,
@@ -715,21 +734,32 @@ async function handlePushSignOut(event) {
   // Fork patch (Wnt/webmail): any message keep that started before this
   // sign-out is undone (keepIfStillSignedIn).
   for (const key of keys) SIGNOUT_GENERATIONS.set(key, (SIGNOUT_GENERATIONS.get(key) || 0) + 1);
-  // Fork patch (Wnt/webmail): what each close attempt found; WebKit refuses
-  // to close one younger than 30 s, so those are closed again later (below).
-  const closing = new Set();
-  const closeShown = async () => {
+  // Fork patch (Wnt/webmail): the affected accounts' mail notifications, or
+  // null when the browser could not list them (then nothing counts as
+  // settled). WebKit refuses to close one younger than 30 s, so what is
+  // still up is closed again later (below).
+  const listAffected = async () => {
     try {
-      for (const n of await self.registration.getNotifications()) {
+      return (await self.registration.getNotifications()).filter((n) => {
         const tag = n.tag || "";
-        if (tag.startsWith("bulwark-mail:") && affected(tag.slice("bulwark-mail:".length))) {
-          closing.add(n);
-          n.close();
-        }
-      }
+        return tag.startsWith("bulwark-mail:") && affected(tag.slice("bulwark-mail:".length));
+      });
     } catch (_) {
-      // Nothing to close.
+      return null;
     }
+  };
+  const closeAll = (list) => {
+    for (const n of list) {
+      try {
+        n.close();
+      } catch (_) {
+        // Already gone; the others still go.
+      }
+    }
+  };
+  const closeShown = async () => {
+    const list = await listAffected();
+    if (list) closeAll(list);
   };
   const release = () => {
     // From here on the persisted markers (written before this message) are
@@ -758,42 +788,42 @@ async function handlePushSignOut(event) {
   // closed notification of those accounts may later look tapped.
   await forgetPrefetchedEmails(everyAccount ? null : accountIds);
   await forgetShown((entry) => everyAccount || accountIds.includes(entry.accountId || "default"));
-  // Settled only when nothing of those accounts is still up: WebKit refuses
-  // to close a notification younger than 30 s, and then the page is told so
-  // (it drops the browser subscription) while this worker closes it later.
-  const stillUp = await notificationsStillUp(closing);
-  if (port) port.postMessage({ done: drained === true && stillUp.length === 0 });
+  // Settled only when a listing shows nothing of those accounts still up:
+  // WebKit refuses to close a notification younger than 30 s (and a listing
+  // can fail), and then the page is told so (it drops the browser
+  // subscription) while this worker closes them later.
+  const after = await listAffected();
+  const clear = after !== null && after.length === 0;
+  if (port) port.postMessage({ done: drained === true && clear });
   if (!drained) {
     // Still part of this message's lifetime (waitUntil above).
     await drain;
     await closeShown();
   }
   if (persisted) release();
-  // Fork patch (Wnt/webmail): close what is still up of those found, once it
-  // is old enough (a notification iOS showed by itself from a declarative
-  // push never passed this worker's sign-out check). Still this message's
-  // lifetime; only those found here, never a newer one; on every browser
-  // (the browser subscription may already be gone, so it is not asked).
-  if (typeof setTimeout === "function" && (await notificationsStillUp(closing)).length > 0) {
-    await delay(MIN_CLOSE_AGE_MS);
-    for (const n of await notificationsStillUp(closing)) {
-      try {
-        n.close();
-      } catch (_) {
-        // Already gone.
-      }
+  // Fork patch (Wnt/webmail): close what is still up, once it is old enough
+  // (a notification iOS showed by itself from a declarative push never passed
+  // this worker's sign-out check), on every browser (the browser subscription
+  // may already be gone, so it is not asked). Still this message's lifetime;
+  // a few bounded tries; only for accounts still signed out (a deliberate
+  // sign-in and re-enable meanwhile keeps its new notifications).
+  if (!clear && typeof setTimeout === "function") {
+    const stillSignedOut = async (n) => {
+      if (!persisted) return true;
+      const account = (n.tag || "").slice("bulwark-mail:".length);
+      return (await pushSignedOut(account === "default" ? "" : account)) !== false;
+    };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await delay(MIN_CLOSE_AGE_MS);
+      const list = await listAffected();
+      if (list === null) continue;
+      const signedOut = [];
+      for (const n of list) if (await stillSignedOut(n)) signedOut.push(n);
+      if (signedOut.length === 0) break;
+      closeAll(signedOut);
+      const left = await listAffected();
+      if (left && left.length === 0) break;
     }
-  }
-}
-
-/** Those of `closing` (notifications a sign-out closed) the browser still lists. */
-async function notificationsStillUp(closing) {
-  if (!closing || closing.size === 0) return [];
-  const keys = new Set([...closing].map(notificationKey));
-  try {
-    return (await self.registration.getNotifications()).filter((n) => keys.has(notificationKey(n)));
-  } catch (_) {
-    return [];
   }
 }
 
@@ -979,7 +1009,7 @@ async function closeOthersWithTag(tag, shownId, work, keys) {
 /** Tells one listed notification from another across getNotifications() calls. */
 function notificationKey(n) {
   if (n && n.data && typeof n.data === "object" && n.data.shownId) return `s:${n.data.shownId}`;
-  return `n:${(n && n.navigate) || ""}\u0000${(n && n.title) || ""}\u0000${(n && n.body) || ""}`;
+  return `n:${(n && n.tag) || ""}\u0000${(n && n.navigate) || ""}\u0000${(n && n.title) || ""}\u0000${(n && n.body) || ""}`;
 }
 
 let applePushPromise = null;
@@ -1057,6 +1087,9 @@ async function acknowledgeUnshownPush(payload, work) {
       content ? content.title : "New mail",
       { ...quiet, tag, body: content ? content.body : "", data },
       work,
+      // What was up when this was decided on (nothing recognisable: then
+      // nothing is replaced, not even one the browser shows meanwhile).
+      replaceKeys(up, emailId, pushSentAt(payload)),
     );
     if (!work.displayed) {
       await showReplacing("New mail", { ...quiet, tag: PUSH_ACK_TAG, body: "", data: { kind: "push-ack" } }, work);
