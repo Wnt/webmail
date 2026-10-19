@@ -14,6 +14,15 @@ import { createConfig } from '@/lib/__tests__/fixtures/config';
 //    contacts, calendars and the rest wait for its body on screen.
 // The page starts at a message link (read when lib/start-link loads, below).
 vi.mock('@/lib/stalwart/principal', () => ({ fetchPrincipalDisplayName: async () => null }));
+// The push worker's kept copy of the linked message: none, unless a test sets one (and how late it comes).
+const keptCopy = vi.hoisted(() => ({ email: null as Record<string, unknown> | null, delayMs: 0 }));
+vi.mock('@/lib/push-prefetch', async (orig) => ({
+  ...(await orig<typeof import('@/lib/push-prefetch')>()),
+  takePrefetchedEmail: async () => {
+    if (keptCopy.delayMs) await new Promise((r) => setTimeout(r, keptCopy.delayMs));
+    return keptCopy.email;
+  },
+}));
 
 import type { useAuthStore as AuthStore } from '@/stores/auth-store';
 import type { useAccountStore as AccountStore } from '@/stores/account-store';
@@ -53,6 +62,8 @@ let calls: Call[] = [];
 let serverSession = session();
 // When set, GET /.well-known/jmap answers only once this settles.
 let holdSessionGet: Promise<void> | null = null;
+// When set, the linked message's Email/get answers only once this settles.
+let holdLinkedGet: Promise<void> | null = null;
 
 function describeCall(input: unknown, init?: RequestInit): string {
   const url = String(input);
@@ -75,6 +86,7 @@ const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
     return json(serverSession);
   }
   if (url.endsWith('/jmap') && init?.method === 'POST') {
+    if (holdLinkedGet && what.includes('Email/get(linked)')) await holdLinkedGet;
     const body = JSON.parse(String(init.body)) as { methodCalls: [string, Record<string, unknown>, string][] };
     return json({
       sessionState: serverSession.state,
@@ -100,6 +112,9 @@ const reload = vi.fn();
 beforeEach(async () => {
   vi.resetModules();
   holdSessionGet = null;
+  holdLinkedGet = null;
+  keptCopy.email = null;
+  keptCopy.delayMs = 0;
   calls = [];
   serverSession = session();
   fetchMock.mockClear();
@@ -216,5 +231,25 @@ describe('page start at a message link', { timeout: 20_000 }, () => {
     await new Promise((r) => setTimeout(r, 30));
     await settle();
     expect(calls.map((c) => c.what).some((w) => w.includes('AddressBook/get') || w.includes('ContactCard/')), 'contacts load after the body').toBe(true);
+  });
+
+  it("the worker's copy that comes after the wait stands in for the Email/get the open has not taken yet", async () => {
+    writeCachedSession(account.id, SERVER, account.username, session());
+    keptCopy.email = {
+      id: 'm-linked', threadId: 't', mailboxIds: { inbox: true }, keywords: {}, size: 10, receivedAt: '2026-10-01T00:00:00Z',
+      subject: 'Kept copy', from: [{ name: 'Examplepaja', email: 'info@examplepaja.test' }],
+      textBody: [{ partId: '1', type: 'text/plain' }], htmlBody: [{ partId: '1', type: 'text/plain' }],
+      bodyValues: { 1: { value: 'Hello', isTruncated: false } }, attachments: [],
+    };
+    keptCopy.delayMs = 400; // slower than the start's 150 ms wait
+    let release!: () => void;
+    holdLinkedGet = new Promise<void>((r) => { release = r; });
+    await useAuthStore.getState().checkAuth();
+    await settle();
+    expect(calls.filter((c) => c.what.includes('Email/get(linked)')), 'the wait ran out: the message was asked for').toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 450)); // the copy arrives; the Email/get is still out
+    const email = await useAuthStore.getState().client!.getEmail('m-linked');
+    expect(email?.subject, 'the open takes the copy, not the answer it would wait for').toBe('Kept copy');
+    release();
   });
 });

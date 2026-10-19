@@ -2489,9 +2489,13 @@ export class JMAPClient implements IJMAPClient {
    * same properties (FULL_EMAIL_PROPERTIES) - the push worker's copy for a
    * tapped notification. Used once, within PRIMED_EMAIL_MAX_AGE_MS.
    */
-  primeEmail(email: Email, accountId?: string): void {
+  primeEmail(email: Email, accountId?: string, opts?: { onlyIfPending?: boolean }): void {
     if (!email?.id || !email.bodyValues) return;
-    this.primedEmails.set(`${accountId || this.accountId}\u0000${email.id}`, { email, at: Date.now(), maxAgeMs: PRIMED_EMAIL_MAX_AGE_MS });
+    const key = `${accountId || this.accountId}\u0000${email.id}`;
+    // onlyIfPending: stand in for a prefetch nobody has taken yet (a copy
+    // that came late), never add a copy a later open would take.
+    if (opts?.onlyIfPending && !this.primedEmails.get(key)?.pending) return;
+    this.primedEmails.set(key, { email, at: Date.now(), maxAgeMs: PRIMED_EMAIL_MAX_AGE_MS });
   }
 
   /**

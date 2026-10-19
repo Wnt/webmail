@@ -1070,6 +1070,14 @@ async function prefetchStartMessage(client: IJMAPClient, slot: number | undefine
   const lookup = early?.id === link.id && early.kept ? early.kept : takePrefetchedEmail(client.getAccountId(), link.id);
   const kept = await withinMs(lookup.catch(() => null), KEPT_COPY_WAIT_MS, null);
   client.prefetchEmail(link.id, kept);
+  // The worker's copy can come later than the wait (a cold browser's first
+  // Cache Storage open); it has been taken from the cache by then, so it
+  // stands in for the Email/get just sent while the open has not taken it.
+  if (!kept) {
+    void lookup.then((late) => {
+      if (late?.id === link.id && late.bodyValues) client.primeEmail?.(late, undefined, { onlyIfPending: true });
+    }, () => {});
+  }
 }
 
 function initializeFeatureStores(client: IJMAPClient): void {
