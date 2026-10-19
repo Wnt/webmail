@@ -19,21 +19,34 @@ interface VerificationCodeBarProps {
  * the top of the reading view - the code in large type and one big "Copy code"
  * button - so a tap on the mail's notification lands right on it.
  *
- * Nothing is copied on its own: no browser lets a page write the clipboard
- * without the user's tap (iOS WebKit refuses even right after a notification
- * tap), so the one tap on the button does it, and the result shown is the
- * browser's answer: "Copied" only once the write succeeded; otherwise the code
- * is selected for copying by hand. Everything in the bar is the app's own
+ * Nothing is copied on its own: iOS WebKit lets a page write the clipboard
+ * only inside the user's tap (it refuses even right after a notification
+ * tap), and copying behind the user's back would overwrite their clipboard
+ * elsewhere too. So the one tap on the button does it, and the result shown
+ * is the browser's answer: "Copied" only once the write succeeded; otherwise
+ * the code is selected for copying by hand (or, where the browser would not
+ * select it, a plain "could not copy"). Everything in the bar is the app's own
  * text plus the code the detector found (letters, digits, hyphens), never the
  * mail's words, so a mail cannot put instructions here.
  */
 export function VerificationCodeBar({ code, className }: VerificationCodeBarProps) {
   const t = useTranslations("email_viewer.verification_code");
   const [state, setState] = useState<CopyState>("idle");
+  // Whether the code could be selected for copying by hand after a failure.
+  const [selected, setSelected] = useState(false);
   const codeRef = useRef<HTMLSpanElement>(null);
   const busy = useRef(false);
+  // Aborted when the bar goes (another message): a copy still waiting for the
+  // browser then writes nothing more and changes nothing.
+  const lifetime = useRef<AbortController | null>(null);
   const statusId = useId();
   const labelId = useId();
+
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller;
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (state !== "copied") return;
@@ -45,19 +58,25 @@ export function VerificationCodeBar({ code, className }: VerificationCodeBarProp
     if (busy.current) return;
     busy.current = true;
     setState("copying");
+    const signal = lifetime.current?.signal;
     // Called right here in the tap, before anything is awaited.
-    void copyText(code).then((result) => {
+    void copyText(code, { signal }).then((result) => {
       busy.current = false;
+      if (signal?.aborted) return;
       if (result === "copied") {
         setState("copied");
-        return;
+      } else if (result === "superseded") {
+        setState("idle");
+      } else {
+        setSelected(selectElementText(codeRef.current));
+        setState("failed");
       }
-      selectElementText(codeRef.current);
-      setState("failed");
     });
   };
 
-  const status = state === "copied" ? t("copied") : state === "failed" ? t("copy_failed_select") : "";
+  const status = state === "copied"
+    ? t("copied")
+    : state === "failed" ? (selected ? t("copy_failed_select") : t("copy_failed")) : "";
   const ButtonIcon = state === "copied" ? Check : Copy;
 
   return (

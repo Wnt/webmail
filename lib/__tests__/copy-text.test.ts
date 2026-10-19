@@ -104,6 +104,49 @@ describe('copyText', () => {
   });
 });
 
+describe('an older copy still waiting for the browser', () => {
+  // Astra otp-code-bar r1 N1: message A's copy was pending, the user copied
+  // B's code, then A's write was refused and its fallback wrote A's code over
+  // B's. A newer copy (or the caller's abort) now stops the old fallback.
+  it('a newer copy started meanwhile: the old one writes nothing more and reports superseded', async () => {
+    let rejectA!: (e: unknown) => void;
+    const writes: string[] = [];
+    stubClipboard((text) => {
+      writes.push(text);
+      return text === '123456' ? new Promise<void>((_, rej) => { rejectA = rej; }) : Promise.resolve();
+    });
+    execCommand.mockReturnValue(true);
+    const a = copyText('123456');
+    const b = copyText('654321');
+    expect(await b).toBe('copied');
+    rejectA(new DOMException('not allowed', 'NotAllowedError'));
+    expect(await a).toBe('superseded');
+    expect(execCommand).not.toHaveBeenCalled();
+    expect(writes).toEqual(['123456', '654321']);
+  });
+
+  it('an old write that succeeds late reports superseded, not copied', async () => {
+    let resolveA!: () => void;
+    stubClipboard((text) => (text === '123456' ? new Promise<void>((r) => { resolveA = r; }) : Promise.resolve()));
+    const a = copyText('123456');
+    expect(await copyText('654321')).toBe('copied');
+    resolveA();
+    expect(await a).toBe('superseded');
+  });
+
+  it('aborted by its caller (the bar went away): no fallback', async () => {
+    let rejectA!: (e: unknown) => void;
+    stubClipboard(() => new Promise<void>((_, rej) => { rejectA = rej; }));
+    execCommand.mockReturnValue(true);
+    const controller = new AbortController();
+    const a = copyText('123456', { signal: controller.signal });
+    controller.abort();
+    rejectA(new Error('refused'));
+    expect(await a).toBe('superseded');
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+});
+
 describe('selectElementText', () => {
   it('selects the text of the element, for copying by hand', () => {
     const span = document.createElement('span');

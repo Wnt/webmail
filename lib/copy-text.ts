@@ -1,24 +1,33 @@
 // Fork (Wnt/webmail): copy a short text (a one-time code) to the clipboard,
 // and say honestly whether it worked.
 //
-// Browsers write the clipboard from a page only while it handles the user's
-// own tap or click (WebKit: Clipboard::writeText -> shouldProceedWithClipboardWrite,
-// ClipboardAccessPolicy::RequiresUserGesture by default; execCommand('copy') ->
-// EditorCommand.cpp allowCopyCutFromDOM -> UserGestureIndicator::processingUserGesture).
+// The app writes the clipboard only from the user's own tap or click, and
+// WebKit allows nothing else: Clipboard::writeText -> shouldProceedWithClipboardWrite
+// (ClipboardAccessPolicy::RequiresUserGesture by default) and execCommand('copy')
+// -> EditorCommand.cpp allowCopyCutFromDOM -> UserGestureIndicator::processingUserGesture.
 // On iOS 26.3 an `await` before the write already loses the tap (iOS Simulator,
 // 2026-10-19: a 1.5 s timer or a fetch first -> NotAllowedError), and a page
-// started from a notification tap has no tap at all, so nothing here runs on
-// its own: call copyText synchronously from the click handler, before any await.
+// started from a notification tap has no tap at all. So: call copyText
+// synchronously from the click handler, before any await.
 
-export type CopyResult = 'copied' | 'failed';
+/** 'superseded': a newer copy started, or the caller cancelled, before this one finished; nothing more was written. */
+export type CopyResult = 'copied' | 'failed' | 'superseded';
+
+// The newest copy; an older one still waiting for the browser never runs its
+// fallback (which would write its text over the newer one's).
+let generation = 0;
 
 /**
  * Writes `text` to the clipboard. Resolves 'copied' only when the browser
  * confirmed the write (the Clipboard API's promise resolved, or the
- * execCommand('copy') fallback reported success), 'failed' otherwise. Never
- * throws, never reads the clipboard.
+ * execCommand('copy') fallback reported success), 'failed' when it refused,
+ * 'superseded' when a newer copyText call started (anywhere in the page) or
+ * `signal` was aborted before the browser answered. Never throws, never reads
+ * the clipboard.
  */
-export async function copyText(text: string): Promise<CopyResult> {
+export async function copyText(text: string, opts?: { signal?: AbortSignal }): Promise<CopyResult> {
+  const mine = ++generation;
+  const current = () => mine === generation && !opts?.signal?.aborted;
   // Started synchronously: writeText checks the tap when it is called.
   let write: Promise<void> | null = null;
   try {
@@ -30,9 +39,11 @@ export async function copyText(text: string): Promise<CopyResult> {
   if (write) {
     try {
       await write;
-      return 'copied';
+      return current() ? 'copied' : 'superseded';
     } catch {
-      // Refused (no tap, permission denied, page not focused): try the old way.
+      // Refused (no tap, permission denied, page not focused): try the old way,
+      // unless this copy is no longer the one the user asked for last.
+      if (!current()) return 'superseded';
     }
   }
   return execCommandCopy(text) ? 'copied' : 'failed';
@@ -65,7 +76,7 @@ function execCommandCopy(text: string): boolean {
   }
 }
 
-/** Selects the text of `el`, so the user can copy it by hand. */
+/** Selects the text of `el`, so the user can copy it by hand; false when the browser would not. */
 export function selectElementText(el: HTMLElement | null): boolean {
   if (!el || typeof window === 'undefined') return false;
   const selection = window.getSelection();
@@ -75,7 +86,7 @@ export function selectElementText(el: HTMLElement | null): boolean {
     range.selectNodeContents(el);
     selection.removeAllRanges();
     selection.addRange(range);
-    return true;
+    return selection.toString() === (el.textContent ?? '');
   } catch {
     return false;
   }

@@ -108,6 +108,49 @@ describe('VerificationCodeBar', () => {
     expect(bar()).toHaveAttribute('data-copy-state', 'copied');
   });
 
+  it('where the browser will not select the code, the failure says only that it could not copy', async () => {
+    writeText.mockImplementation(() => Promise.reject(new DOMException('not allowed', 'NotAllowedError')));
+    const getSelection = vi.spyOn(window, 'getSelection');
+    render(<VerificationCodeBar code={CODE} />);
+    getSelection.mockReturnValue(null);
+    await act(async () => { fireEvent.click(button()); });
+    getSelection.mockRestore();
+    expect(bar()).toHaveAttribute('data-copy-state', 'failed');
+    expect(status()).toHaveTextContent('copy_failed');
+    expect(status()).not.toHaveTextContent('copy_failed_select');
+  });
+
+  it('the next message\'s bar: a copy the old bar left waiting never writes over the new one (Astra r1 N1)', async () => {
+    let rejectA!: (e: unknown) => void;
+    const writes: string[] = [];
+    writeText.mockImplementation((text: string) => {
+      writes.push(text);
+      return text === '123456' ? new Promise<void>((_, rej) => { rejectA = rej; }) : Promise.resolve();
+    });
+    execCommand.mockReturnValue(true);
+    const { rerender } = render(<VerificationCodeBar key="a" code="123456" />);
+    fireEvent.click(button());
+    // The viewer keys the bar by message: another message is another bar.
+    rerender(<VerificationCodeBar key="b" code="654321" />);
+    await act(async () => { fireEvent.click(button()); });
+    expect(bar()).toHaveAttribute('data-copy-state', 'copied');
+    await act(async () => { rejectA(new DOMException('not allowed', 'NotAllowedError')); });
+    expect(execCommand).not.toHaveBeenCalled();
+    expect(writes).toEqual(['123456', '654321']);
+    expect(bar()).toHaveAttribute('data-copy-state', 'copied');
+  });
+
+  it('gone while its copy waits: the late refusal writes nothing and changes nothing', async () => {
+    let rejectA!: (e: unknown) => void;
+    writeText.mockImplementation(() => new Promise<void>((_, rej) => { rejectA = rej; }));
+    execCommand.mockReturnValue(true);
+    const { unmount } = render(<VerificationCodeBar code={CODE} />);
+    fireEvent.click(button());
+    unmount();
+    await act(async () => { rejectA(new Error('refused')); });
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
   it('shows the code exactly as it is copied (no regrouping), left to right and untranslated', () => {
     render(<VerificationCodeBar code="6ZA-BRE" />);
     const value = screen.getByTestId('verification-code-value');

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Check, Key } from "@/components/icons";
 import { cn } from "@/lib/utils";
@@ -30,6 +30,15 @@ interface VerificationCodeChipProps {
 export function VerificationCodeChip({ code, className }: VerificationCodeChipProps) {
   const t = useTranslations("email_viewer.verification_code");
   const [copied, setCopied] = useState(false);
+  // One write at a time: a second click while the first waits writes nothing.
+  const busy = useRef(false);
+  // Aborted when the chip goes: a copy still waiting then changes nothing.
+  const lifetime = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller;
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (!copied) return;
@@ -40,7 +49,13 @@ export function VerificationCodeChip({ code, className }: VerificationCodeChipPr
   // copyText starts the write in the click itself (browsers allow it only
   // there) and says "copied" only when the browser confirmed it.
   const copy = async () => {
-    if ((await copyText(code)) === "copied") {
+    if (busy.current) return;
+    busy.current = true;
+    const signal = lifetime.current?.signal;
+    const result = await copyText(code, { signal });
+    busy.current = false;
+    if (signal?.aborted || result === "superseded") return;
+    if (result === "copied") {
       setCopied(true);
       toast.success(t("copied"));
     } else {
