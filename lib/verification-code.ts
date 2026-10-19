@@ -73,8 +73,11 @@ function isCodeWordPart(part: string, previous: string | undefined): boolean {
 
 interface Span { start: number; end: number }
 
-function findCodeWords(text: string): Span[] {
-  const spans: Span[] = [];
+/** The code words of `text`, as three lists (words, CJK words, "one-time
+ *  password" phrases). Within a list the spans are disjoint and in order, so
+ *  a candidate looks up only the ones near it (`nearbyKeywords`). */
+function findCodeWords(text: string): Span[][] {
+  const words: Span[] = [];
   let previousWord: string | undefined;
   for (const match of text.matchAll(WORD)) {
     const start = match.index!;
@@ -83,15 +86,29 @@ function findCodeWords(text: string): Span[] {
     const hit = parts.some((part, i) => isCodeWordPart(part, i > 0 ? parts[i - 1] : previousWord));
     const next = text.slice(end, end + 12);
     // "Code of Conduct", "code of practice"
-    if (hit && !/^\s+of\s/i.test(next) && !LABELS_SHORT_NUMBER.test(next)) spans.push({ start, end });
+    if (hit && !/^\s+of\s/i.test(next) && !LABELS_SHORT_NUMBER.test(next)) words.push({ start, end });
     previousWord = parts[parts.length - 1];
   }
+  const lists = [words];
   for (const re of [CJK_CODE_WORDS, ONE_TIME_PASSWORD]) {
-    for (const match of text.matchAll(re)) {
-      spans.push({ start: match.index!, end: match.index! + match[0].length });
-    }
+    lists.push([...text.matchAll(re)].map((match) => ({ start: match.index!, end: match.index! + match[0].length })));
   }
-  return spans;
+  return lists;
+}
+
+/** The keywords of one list that can matter for a candidate at start..end:
+ *  those ending at most MAX_AFTER before it or starting at most MAX_BEFORE
+ *  after it (or overlapping it). Found by binary search, so the scoring is
+ *  linear in the text, not candidates times keywords. */
+function* nearbyKeywords(list: Span[], start: number, end: number): Generator<Span> {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid]!.end < start - MAX_AFTER) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let i = lo; i < list.length && list[i]!.start <= end + MAX_BEFORE; i++) yield list[i]!;
 }
 
 // Tried in this order at each position, so "557 260" and "6ZA-BRE" are taken
@@ -115,14 +132,25 @@ const CANDIDATE = new RegExp(
 const GLUED_DIGITS = /(?<=\p{L})\d{4,10}(?!\d)|(?<!\d)\d{4,10}(?=\p{L})/gu;
 
 const ALNUM = /[\p{L}\p{N}]/u;
+// Glued digits are part of a word; a run longer than this either way is an
+// id or a hash, not a word (and the walk stays bounded).
+const MAX_GLUED_WALK = 64;
 
 /** Whether the digits at start..end have only letters around them, as in
  *  "ai177945Copy", and are not one group of an id like "4887a30a5a2si2098"
  *  or "PAXPR03MB8065". */
 function gluedToWords(text: string, start: number, end: number): boolean {
-  while (start > 0 && ALNUM.test(text[start - 1])) start--;
-  while (end < text.length && ALNUM.test(text[end])) end++;
-  return /^\p{L}*\d+\p{L}*$/u.test(text.slice(start, end));
+  let from = start;
+  let to = end;
+  while (from > 0 && ALNUM.test(text.charAt(from - 1))) {
+    if (start - from >= MAX_GLUED_WALK) return false;
+    from--;
+  }
+  while (to < text.length && ALNUM.test(text.charAt(to))) {
+    if (to - end >= MAX_GLUED_WALK) return false;
+    to++;
+  }
+  return /^\p{L}*\d+\p{L}*$/u.test(text.slice(from, to));
 }
 
 const YEAR = /^(?:19|20)\d\d$/;
@@ -151,14 +179,14 @@ const LETTER = /\p{L}/u;
 function contextWindow(text: string, from: number, to: number): string {
   let start = Math.max(0, from);
   let end = Math.min(text.length, to);
-  while (start > 0 && start < end && LETTER.test(text[start - 1]) && LETTER.test(text[start])) start++;
-  while (end < text.length && end > start && LETTER.test(text[end]) && LETTER.test(text[end - 1])) end--;
+  while (start > 0 && start < end && LETTER.test(text.charAt(start - 1)) && LETTER.test(text.charAt(start))) start++;
+  while (end < text.length && end > start && LETTER.test(text.charAt(end)) && LETTER.test(text.charAt(end - 1))) end--;
   return text.slice(start, end);
 }
 
 interface Candidate extends Span { code: string; score: number }
 
-function scoreCandidate(text: string, raw: string, start: number, keywords: Span[]): Candidate | null {
+function scoreCandidate(text: string, raw: string, start: number, keywords: Span[][]): Candidate | null {
   const end = start + raw.length;
   const letters = raw.replace(/[^A-Za-z]/g, '');
   const digits = raw.replace(/\D/g, '');
@@ -188,13 +216,15 @@ function scoreCandidate(text: string, raw: string, start: number, keywords: Span
 
   let best = Infinity;
   let bestAfter = Infinity;
-  for (const kw of keywords) {
-    if (kw.start < end && kw.end > start) return null; // the candidate is part of a keyword ("2FA-Code")
-    if (kw.end <= start && start - kw.end <= MAX_AFTER) {
-      bestAfter = Math.min(bestAfter, start - kw.end);
-      best = Math.min(best, start - kw.end);
+  for (const list of keywords) {
+    for (const kw of nearbyKeywords(list, start, end)) {
+      if (kw.start < end && kw.end > start) return null; // the candidate is part of a keyword ("2FA-Code")
+      if (kw.end <= start && start - kw.end <= MAX_AFTER) {
+        bestAfter = Math.min(bestAfter, start - kw.end);
+        best = Math.min(best, start - kw.end);
+      }
+      if (kw.start >= end && kw.start - end <= MAX_BEFORE) best = Math.min(best, (kw.start - end) * 1.5);
     }
-    if (kw.start >= end && kw.start - end <= MAX_BEFORE) best = Math.min(best, (kw.start - end) * 1.5);
   }
   if (best === Infinity) return null;
 
@@ -218,27 +248,49 @@ function scoreCandidate(text: string, raw: string, start: number, keywords: Span
   return { start, end, code, score };
 }
 
+const WORD_CHAR_OR_HYPHEN = /^[\p{L}\p{N}-]$/u;
+const SPACE = /\s/;
+
+/** Without a trailing "..." or "…" and the word right before it (by hand:
+ *  an unanchored regex would rescan a long word from every position). */
+function withoutCutWord(text: string): string {
+  let end = text.length;
+  while (end > 0 && SPACE.test(text.charAt(end - 1))) end--;
+  let start: number;
+  if (text.endsWith('...', end)) start = end - 3;
+  else if (text.endsWith('…', end)) start = end - 1;
+  else return text;
+  while (start > 0) {
+    const low = text.charCodeAt(start - 1);
+    const pair = low >= 0xdc00 && low <= 0xdfff && start >= 2 && text.charCodeAt(start - 2) >= 0xd800 && text.charCodeAt(start - 2) <= 0xdbff;
+    const size = pair ? 2 : 1;
+    if (!WORD_CHAR_OR_HYPHEN.test(text.slice(start - size, start))) break;
+    start -= size;
+  }
+  return text.slice(0, start);
+}
+
 function normalize(text: string): string {
-  return text
+  const flat = text
     // Invisible spacers senders put between characters
     .replace(/[\u00ad\u200b-\u200f\u2060\ufeff]|\u034f/g, '')
     // Links and addresses carry ids and tokens, never the code to type
     .replace(/https?:\/\/\S+|www\.\S+/gi, ' ')
-    .replace(/\S*@\S+/g, ' ')
+    // (each whitespace-delimited token once: what /\S*@\S+/ removed, without its rescans)
+    .replace(/\S+/g, (token) => (/@\S/.test(token) ? ' ' : token))
     // Keep line breaks (a code often stands on a line of its own) but not
     // the runs of blank lines and indentation between table cells.
     .replace(/[^\S\n]+/g, ' ')
-    .replace(/ ?\n[\s]*/g, '\n')
-    // A preview is cut off with "...", and the word it cut may be half a code.
-    .replace(/[\p{L}\p{N}-]*(?:\.\.\.|…)\s*$/u, '')
-    .trim();
+    .replace(/ ?\n[\s]*/g, '\n');
+  // A preview is cut off with "...", and the word it cut may be half a code.
+  return withoutCutWord(flat).trim();
 }
 
 function bestCandidate(rawText: string): Candidate | null {
   const text = normalize(rawText);
   if (!text) return null;
   const keywords = findCodeWords(text);
-  if (!keywords.length) return null;
+  if (!keywords.some((list) => list.length)) return null;
 
   let best: Candidate | null = null;
   for (const re of [CANDIDATE, GLUED_DIGITS]) {
@@ -251,14 +303,33 @@ function bestCandidate(rawText: string): Candidate | null {
   return best;
 }
 
+// A code sits near the top: longer input is cut (as a preview is, so the word
+// the cut went through is dropped), which also bounds the work on hostile mail.
+export const MAX_SUBJECT_CHARS = 1_000;
+export const MAX_PREVIEW_CHARS = 1_000;
+export const MAX_BODY_CHARS = 20_000;
+
+function capped(text: string | null | undefined, max: number): string {
+  const t = text ?? '';
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
 /**
  * The one-time code in a mail, or null. `text` is the preview for a list
- * row and the body for the reader. A code in the subject wins, since
- * senders that put it there ("Your code is 177945") also tend to repeat
- * it next to unrelated numbers in the body.
+ * row (`source` 'preview') and the body for the reader. A code in the
+ * subject wins, since senders that put it there ("Your code is 177945")
+ * also tend to repeat it next to unrelated numbers in the body.
  */
-export function findVerificationCode(subject: string | null | undefined, text: string | null | undefined): string | null {
-  return bestCandidate(subject ?? '')?.code ?? bestCandidate(text ?? '')?.code ?? null;
+export function findVerificationCode(
+  subject: string | null | undefined,
+  text: string | null | undefined,
+  source: 'preview' | 'body' = 'body',
+): string | null {
+  return (
+    bestCandidate(capped(subject, MAX_SUBJECT_CHARS))?.code ??
+    bestCandidate(capped(text, source === 'preview' ? MAX_PREVIEW_CHARS : MAX_BODY_CHARS))?.code ??
+    null
+  );
 }
 
 /** Only fresh codes are worth a chip in the list; they expire within minutes to a day. */
@@ -280,20 +351,61 @@ export function listVerificationCode(
   now = Date.now(),
 ): string | null {
   if (!isFreshForVerificationCode(email.receivedAt, now)) return null;
-  return findVerificationCode(email.subject, email.preview);
+  return findVerificationCode(email.subject, email.preview, 'preview');
 }
 
 // A code sits near the top; a newsletter of megabytes need not be read whole.
 const MAX_BODY_HTML = 200_000;
-const MAX_BODY_TEXT = 50_000;
+// One more than the detector reads, so it knows the text was cut.
+const MAX_BODY_TEXT = MAX_BODY_CHARS + 1;
+
+const RAW_ELEMENT_START = /<(style|script|title)\b/gi;
+
+/**
+ * `html` without its <style>, <script> and <title> elements (each up to its
+ * closing tag), in one pass: every opening tag is read up to the first `>`
+ * after it, and each search for a closing tag either moves the scan past it
+ * or is remembered as having found none, so unclosed elements by the
+ * thousand cost no more than the markup's length.
+ */
+function withoutRawElements(html: string): string {
+  let out = '';
+  let from = 0;
+  let gtFrom = -1;
+  let gt = -1;
+  const unclosed = new Set<string>();
+  RAW_ELEMENT_START.lastIndex = 0;
+  for (let m = RAW_ELEMENT_START.exec(html); m; m = RAW_ELEMENT_START.exec(html)) {
+    const at = m.index + m[0].length;
+    // The first '>' after the name: found once for every opening before it.
+    if (gtFrom < 0 || gt < at) {
+      gt = html.indexOf('>', at);
+      gtFrom = at;
+    }
+    if (gt < 0) break;
+    const name = (m[1] ?? '').toLowerCase();
+    if (unclosed.has(name)) continue;
+    const close = new RegExp(`<\\/${name}\\s*>`, 'gi');
+    close.lastIndex = gt + 1;
+    const c = close.exec(html);
+    if (!c) {
+      unclosed.add(name);
+      continue;
+    }
+    out += `${html.slice(from, m.index)} `;
+    from = c.index + c[0].length;
+    RAW_ELEMENT_START.lastIndex = from;
+  }
+  return out + html.slice(from);
+}
 
 /** The text of a loaded mail as the reader shows it, for finding its code. */
 export function verificationCodeBodyText(email: Pick<Email, 'htmlBody' | 'textBody' | 'bodyValues'>): string {
   const html = getRenderableHtmlBody(email);
   if (html) {
     // htmlToPlainText walks the body, and a <style> in it is text there.
-    const markup = html.replace(/<(style|script|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ');
-    return htmlToPlainText(markup.slice(0, MAX_BODY_HTML)).slice(0, MAX_BODY_TEXT);
+    const markup = withoutRawElements(html.slice(0, MAX_BODY_HTML));
+    return htmlToPlainText(markup).slice(0, MAX_BODY_TEXT);
   }
   const textPart = email.textBody?.[0]?.partId;
   return ((textPart && email.bodyValues?.[textPart]?.value) || '').slice(0, MAX_BODY_TEXT);
