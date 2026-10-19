@@ -2,13 +2,20 @@
 
 // Bulwark service worker.
 //
-// This SW does two jobs:
-//   1. Satisfy the PWA installability requirement (network-only fetch handler,
-//      no caching - so we never serve stale chunks after a deployment).
-//   2. Receive Web Push wake-up pings from the relay and turn them into
-//      enriched system notifications. Mirrors the React Native FCM headless
-//      task: relay sends only a state-change ping, the client fetches the
-//      newest unread email itself so the relay never sees mail content.
+// This SW receives Web Push wake-up pings from the relay and turns them into
+// enriched system notifications. Mirrors the React Native FCM headless
+// task: relay sends only a state-change ping, the client fetches the
+// newest unread email itself so the relay never sees mail content.
+//
+// Fork patch (Wnt/webmail): the empty fetch handler only where it is needed.
+// Upstream registers one for installability: Chromium's automatic install
+// prompt (beforeinstallprompt) still asks for one, and Chromium skips an empty
+// handler when loading, so it costs nothing there. WebKit has no install prompt
+// but routes every request of a controlled page through a worker that has a
+// fetch listener - the start's ~40 scripts, styles and fonts, then every API
+// call - each one a fetch event that falls through to the network. Without the
+// listener WebKit sends them straight to the network once the worker has run
+// (SWServerWorker::defaultRouterSource). Nothing is cached here either way.
 
 // When the app is mounted at a subpath (Next.js basePath, e.g. /webmail), the
 // SW is served at /webmail/sw.js and registered with scope /webmail/. Derive
@@ -29,7 +36,7 @@ const MAILTO_CLIENTS = new Map();
 // the one it was built with (lib/sw-revision.ts, kept equal by a unit test)
 // and asks the browser for the newer worker when they differ: an iPhone can
 // keep running an old worker. Bump both whenever this file changes.
-const SW_REVISION = "2026-10-19.push5";
+const SW_REVISION = "2026-10-20.nofetch1";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -39,7 +46,9 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-self.addEventListener("fetch", () => {});
+if (/\b(?:Chrome|Chromium)\//.test(self.navigator?.userAgent || "")) {
+  self.addEventListener("fetch", () => {});
+}
 
 self.addEventListener("push", (event) => {
   // Fork patch (Wnt/webmail): whether this push showed a notification, and

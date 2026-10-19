@@ -80,6 +80,38 @@ describe('open timing', () => {
   });
 });
 
+describe('page start stages (an open timed from the page start)', () => {
+  it('adds the document, paint, boot and hydration times of a page opened at a message link', async () => {
+    const entries: Record<string, unknown[]> = {
+      navigation: [{ responseStart: 120.4, responseEnd: 180.2, domContentLoadedEventEnd: 410.7, workerStart: 0 }],
+      paint: [{ name: 'first-contentful-paint', startTime: 233.3 }],
+    };
+    const marks: Record<string, unknown[]> = { 'mm:start:boot': [{ startTime: 300.2 }], 'mm:start:hydrated': [{ startTime: 650.9 }] };
+    const spyType = vi.spyOn(performance, 'getEntriesByType').mockImplementation((t: string) => (entries[t] ?? []) as PerformanceEntryList);
+    const spyName = vi.spyOn(performance, 'getEntriesByName').mockImplementation((n: string) => (marks[n] ?? []) as PerformanceEntryList);
+    try {
+      beginOpen('m1', 'link', { t0: 0 });
+      markOpen('m1', 'session', 700);
+      bodyReady('m1');
+      await flush();
+      const body = JSON.parse(sent[0].body);
+      expect(body.st).toMatchObject({ ttfb: 120, html: 180, fcp: 233, dcl: 411, boot: 300, hyd: 651, session: 700 });
+      expect(body.st.sw).toBeUndefined(); // no worker took part
+      expect(parseOpenBeacon(body)).not.toBeNull();
+    } finally {
+      spyType.mockRestore();
+      spyName.mockRestore();
+    }
+  });
+
+  it('a list open carries no page start stages', async () => {
+    beginOpen('m2', 'list', { t0: performance.now() });
+    bodyReady('m2');
+    await flush();
+    expect(Object.keys(JSON.parse(sent[0].body).st).sort()).toEqual(['painted']);
+  });
+});
+
 describe('beacon validation (server side)', () => {
   const ok = { v: 1, src: 'tap', dev: 'phone', pwa: true, eng: 'webkit', unread: null, st: { msg: 3, data: 120, painted: 410 } };
   it('accepts the documented shape and stores only its fields', () => {

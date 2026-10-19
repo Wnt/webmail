@@ -1,7 +1,7 @@
 // Fork (Wnt/webmail): what the open-speed beacon may carry (app/api/perf/open,
 // lib/open-timing.ts). Anything outside these fields and values is refused.
 
-const STAGES = new Set(['msg', 'ttfb', 'dcl', 'session', 'data', 'painted']);
+const STAGES = new Set(['msg', 'ttfb', 'html', 'fcp', 'dcl', 'boot', 'hyd', 'sw', 'session', 'data', 'painted']);
 const SOURCES = new Set(['list', 'tap', 'link']);
 const DEVICES = new Set(['phone', 'tablet', 'desktop']);
 const ENGINES = new Set(['webkit', 'blink', 'gecko', 'other']);

@@ -4,6 +4,7 @@ import { Geist, Geist_Mono, Hanken_Grotesk } from "next/font/google";
 import { headers } from "next/headers";
 import { getLocale, getTranslations } from "next-intl/server";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
+import { StartMarks } from "@/components/start-marks";
 import { FaviconBadge } from "@/components/favicon-badge";
 import { ThemeColorSync } from "@/components/theme-color-sync";
 import { configManager } from "@/lib/admin/config-manager";
@@ -17,6 +18,7 @@ import { withBasePath } from "@/lib/browser-navigation";
 import { locales, defaultLocale } from "@/i18n/routing";
 import { IS_LITE, LITE_MOUNT_GLOBAL } from "@/lib/lite";
 import { earlyTokenScript } from "@/lib/early-auth";
+import { launchImageLinks } from "@/lib/pwa-launch";
 import "../globals.css";
 
 // This layout renders <html> and sits ABOVE the [locale] segment, so
@@ -292,6 +294,10 @@ export default async function RootLayout({
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-title" content={appName} />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        {/* Fork patch (Wnt/webmail): iPhone launch screens (lib/pwa-launch.ts). */}
+        {!IS_LITE && launchImageLinks((process.env.NEXT_PUBLIC_BASE_PATH ?? "").replace(/\/+$/, "")).map((l) => (
+          <link key={l.href} rel="apple-touch-startup-image" href={l.href} media={l.media} />
+        ))}
         {parentOrigin && (
           <meta name="parent-origin" content={parentOrigin} />
         )}
@@ -319,6 +325,7 @@ export default async function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${hankenGrotesk.variable} antialiased`}
       >
+        <StartMarks />
         <ServiceWorkerRegistration />
         {!themeColorConfigured && <ThemeColorSync />}
         <FaviconBadge />

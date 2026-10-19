@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useState, useRef, useMemo, useCallback, use
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Sidebar } from "@/components/layout/sidebar";
+import { MailStartShell } from "@/components/mail/mail-start-shell";
 import { EmailList } from "@/components/email/email-list";
 import { MvComposeInline, MvComposeWindow } from "@/components/email/mv-compose-window";
 import { MessageListTabs } from "@/components/email/message-list-tabs";
@@ -4047,16 +4048,12 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the open message, not on every list refresh
   }, [mvConversationThreadId, mvConversationRef?.id, client]);
 
-  // Show loading state while checking auth
+  // Show loading state while checking auth. Fork patch (Wnt/webmail): the
+  // app's own layout with placeholders, which an iPhone paints at once (see
+  // MailStartShell), instead of a spinner it kept white until the end of the HTML.
   if (!initialCheckDone || authLoading || (!isAuthenticated || !client)) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-background">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-foreground mx-auto"></div>
-          <p className="mt-4 text-sm text-muted-foreground">{t("common.loading")}</p>
-        </div>
-      </div>
-    );
+    const opensMessage = linkSegments?.[0] === 'message' || linkSegments?.[0] === 'thread';
+    return <MailStartShell view={opensMessage ? 'message' : 'list'} label={t("common.loading")} />;
   }
 
   // Get current mailbox name for mobile header

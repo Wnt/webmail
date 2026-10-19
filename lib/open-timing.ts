@@ -14,8 +14,18 @@
 
 export type OpenSource = 'list' | 'tap' | 'link';
 
-/** Stages, in the order they normally happen. `data`: the message is in memory; `painted`: its body is on screen. */
-export type OpenStage = 'msg' | 'ttfb' | 'dcl' | 'session' | 'data' | 'painted';
+/**
+ * Stages, in the order they normally happen. `data`: the message is in memory; `painted`: its body is on screen.
+ * A page opened at a message link (`link`) also carries its start: `ttfb` / `html` the document's first and last
+ * byte, `fcp` the first frame the page drew (Paint Timing), `dcl` DOMContentLoaded, `boot` the app's own code
+ * started, `hyd` the server's markup hydrated, `session` signed in; `sw` when a service worker took part in
+ * loading the document (its workerStart, absent when none did).
+ */
+export type OpenStage = 'msg' | 'ttfb' | 'html' | 'fcp' | 'dcl' | 'boot' | 'hyd' | 'sw' | 'session' | 'data' | 'painted';
+
+/** User Timing marks of the page start (lib/start-marks.ts). */
+export const START_MARK_BOOT = 'mm:start:boot';
+export const START_MARK_HYDRATED = 'mm:start:hydrated';
 
 interface OpenRun {
   emailId: string;
@@ -140,8 +150,38 @@ function scheduleBeacon(run: OpenRun) {
   setTimeout(() => sendBeacon(run), 1000);
 }
 
+/** The page's own start stages (ms from its navigation start), for an open timed from the page start. */
+export function pageStartStages(): Partial<Record<OpenStage, number>> {
+  const out: Partial<Record<OpenStage, number>> = {};
+  if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') return out;
+  const at = (v: number | undefined) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.round(v) : undefined);
+  const put = (stage: OpenStage, v: number | undefined) => { const ms = at(v); if (ms !== undefined) out[stage] = ms; };
+  try {
+    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    if (nav) {
+      put('ttfb', nav.responseStart);
+      put('html', nav.responseEnd);
+      put('dcl', nav.domContentLoadedEventEnd);
+      put('sw', nav.workerStart);
+    }
+    put('fcp', performance.getEntriesByType('paint').find((e) => e.name === 'first-contentful-paint')?.startTime);
+    put('boot', performance.getEntriesByName(START_MARK_BOOT)[0]?.startTime);
+    put('hyd', performance.getEntriesByName(START_MARK_HYDRATED)[0]?.startTime);
+  } catch {
+    // Timing entries are a nicety.
+  }
+  return out;
+}
+
 function sendBeacon(run: OpenRun) {
   if (typeof navigator === 'undefined' || typeof window === 'undefined') return;
+  // A page opened at the message link: its start stages (only now: the first paint and
+  // DOMContentLoaded can come after the session).
+  if (run.source === 'link' && run.t0 === 0) {
+    for (const [stage, ms] of Object.entries(pageStartStages()) as [OpenStage, number][]) {
+      if (run.stages[stage] === undefined) run.stages[stage] = ms;
+    }
+  }
   const body = JSON.stringify({
     v: 1,
     src: run.source,
