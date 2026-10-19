@@ -82,9 +82,36 @@ function normalizeLineBreaks(value: string): string {
  * is the href. Used to derive the text/plain alternative of an HTML email.
  */
 export function htmlToPlainText(html: string, options: HtmlToPlainTextOptions = {}): string {
+  return htmlToPlainTextBounded(html, Infinity, options).text;
+}
+
+/**
+ * `htmlToPlainText` that stops walking once it has produced `maxLength`
+ * characters (the verification-code detector needs only the top of a body).
+ * `truncated` says it stopped before the end. The work is linear in the
+ * input: the trailing-newline count is kept as the output grows, never
+ * recounted from the output.
+ */
+export function htmlToPlainTextBounded(
+  html: string,
+  maxLength: number,
+  options: HtmlToPlainTextOptions = {},
+): { text: string; truncated: boolean } {
   const { paragraphSpacing = false, mailMarkup = false } = options;
   const document = parseHtmlSafely(html);
   const chunks: string[] = [];
+  // Newline characters trailing the accumulated output, and its length.
+  let trailing = 0;
+  let produced = 0;
+  let truncated = false;
+
+  const push = (chunk: string) => {
+    chunks.push(chunk);
+    produced += chunk.length;
+    let newlines = 0;
+    while (newlines < chunk.length && chunk[chunk.length - 1 - newlines] === '\n') newlines++;
+    trailing = newlines === chunk.length ? trailing + newlines : newlines;
+  };
 
   const appendText = (value: string) => {
     if (!value) return;
@@ -92,33 +119,27 @@ export function htmlToPlainText(html: string, options: HtmlToPlainTextOptions = 
     if (!normalized.trim()) return;
     const previous = chunks[chunks.length - 1];
     if (previous && !previous.endsWith('\n') && !previous.endsWith(' ')) {
-      chunks.push(' ');
+      push(' ');
     }
-    chunks.push(normalized);
-  };
-
-  // Number of newline characters already trailing the accumulated output.
-  const trailingNewlines = (): number => {
-    let count = 0;
-    for (let i = chunks.length - 1; i >= 0; i--) {
-      const chunk = chunks[i];
-      let j = chunk.length - 1;
-      let inner = 0;
-      while (j >= 0 && chunk[j] === '\n') {
-        inner++;
-        j--;
-      }
-      count += inner;
-      if (j >= 0) break; // chunk had non-newline content, stop counting
-    }
-    return count;
+    push(normalized);
   };
 
   // Ensures at least `min` trailing newlines, without emitting leading ones.
   const ensureNewlines = (min: number) => {
     if (chunks.length === 0) return;
-    for (let current = trailingNewlines(); current < min; current++) {
-      chunks.push('\n');
+    for (let current = trailing; current < min; current++) {
+      push('\n');
+    }
+  };
+
+  // Walks the children until enough text has been produced.
+  const walkChildren = (node: Node) => {
+    for (const child of Array.from(node.childNodes)) {
+      if (produced >= maxLength) {
+        truncated = true;
+        return;
+      }
+      walk(child);
     }
   };
 
@@ -137,7 +158,7 @@ export function htmlToPlainText(html: string, options: HtmlToPlainTextOptions = 
 
     if (tagName === 'br') {
       // Additive so consecutive <br> can form a blank line (capped by normalize).
-      if (chunks.length > 0) chunks.push('\n');
+      if (chunks.length > 0) push('\n');
       return;
     }
 
@@ -162,7 +183,7 @@ export function htmlToPlainText(html: string, options: HtmlToPlainTextOptions = 
       const quoted = htmlToPlainText(element.innerHTML, options);
       if (quoted) {
         ensureNewlines(separator);
-        chunks.push(quoted.split('\n').map((line) => (line ? `> ${line}` : '>')).join('\n'));
+        push(quoted.split('\n').map((line) => (line ? `> ${line}` : '>')).join('\n'));
         ensureNewlines(separator);
       }
       return;
@@ -177,8 +198,8 @@ export function htmlToPlainText(html: string, options: HtmlToPlainTextOptions = 
         marker = `${start + position}. `;
       }
       ensureNewlines(1);
-      chunks.push(marker);
-      Array.from(element.childNodes).forEach(walk);
+      push(marker);
+      walkChildren(element);
       ensureNewlines(1);
       return;
     }
@@ -187,13 +208,13 @@ export function htmlToPlainText(html: string, options: HtmlToPlainTextOptions = 
       ensureNewlines(separator);
     }
 
-    Array.from(element.childNodes).forEach(walk);
+    walkChildren(element);
 
     if (isBlock) {
       ensureNewlines(separator);
     }
   };
 
-  Array.from(document.body.childNodes).forEach(walk);
-  return normalizeLineBreaks(chunks.join(''));
+  walkChildren(document.body);
+  return { text: normalizeLineBreaks(chunks.join('')), truncated };
 }

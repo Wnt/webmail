@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getRenderableHtmlBody, getDraftTextBody } from '@/lib/email-body-selection';
+import { getRenderableHtmlBody, getRenderableHtmlBodyBounded, getDraftTextBody } from '@/lib/email-body-selection';
 
 type PartialEmail = Parameters<typeof getRenderableHtmlBody>[0];
 
@@ -145,5 +145,18 @@ describe('getDraftTextBody', () => {
 
   it('survives a part whose value the server did not return', () => {
     expect(getDraftTextBody(draft([{ partId: '1' }, { partId: '9' }], { '1': 'one' }))).toBe('one');
+  });
+});
+
+describe('getRenderableHtmlBodyBounded', () => {
+  it('cuts the HTML before the meaningful-HTML check, says it did, and otherwise picks as getRenderableHtmlBody does', () => {
+    const big = `<b>bold</b>${'x'.repeat(1_000)}`;
+    const email = makeEmail({ html: { partId: '1', type: 'text/html' }, text: { partId: '2', type: 'text/plain' }, values: { 1: big, 2: 'plain' } });
+    expect(getRenderableHtmlBody(email)).toBe(big);
+    expect(getRenderableHtmlBodyBounded(email, 100)).toEqual({ html: big.slice(0, 100), cut: true });
+    expect(getRenderableHtmlBodyBounded(email, 10_000)).toEqual({ html: big, cut: false });
+    // Plain text only: nothing to render as HTML, bounded or not.
+    const plain = makeEmail({ html: { partId: '1', type: 'text/plain' }, text: { partId: '1', type: 'text/plain' }, values: { 1: 'hello' } });
+    expect(getRenderableHtmlBodyBounded(plain, 100)).toBeNull();
   });
 });

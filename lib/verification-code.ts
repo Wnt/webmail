@@ -1,6 +1,6 @@
 import type { Email } from '@/lib/jmap/types';
-import { getRenderableHtmlBody } from '@/lib/email-body-selection';
-import { htmlToPlainText } from '@/lib/html-to-text';
+import { getRenderableHtmlBodyBounded } from '@/lib/email-body-selection';
+import { htmlToPlainTextBounded } from '@/lib/html-to-text';
 
 /**
  * Finds the one-time code in a sign-in or confirmation mail ("Your
@@ -270,8 +270,13 @@ function withoutCutWord(text: string): string {
   return text.slice(0, start);
 }
 
+// A preview is cut off with "...", and the word it cut may be half a code.
 function normalize(text: string): string {
-  const flat = text
+  return withoutCutWord(flatten(text)).trim();
+}
+
+function flatten(text: string): string {
+  return text
     // Invisible spacers senders put between characters
     .replace(/[\u00ad\u200b-\u200f\u2060\ufeff]|\u034f/g, '')
     // Links and addresses carry ids and tokens, never the code to type
@@ -282,12 +287,35 @@ function normalize(text: string): string {
     // the runs of blank lines and indentation between table cells.
     .replace(/[^\S\n]+/g, ' ')
     .replace(/ ?\n[\s]*/g, '\n');
-  // A preview is cut off with "...", and the word it cut may be half a code.
-  return withoutCutWord(flat).trim();
 }
 
-function bestCandidate(rawText: string): Candidate | null {
-  const text = normalize(rawText);
+// A text that was cut (at a cap here, or by whoever produced it) may have
+// been cut through a code, or through the text after it that decides whether
+// it is one. So no candidate ending within CUT_GUARD characters of the cut is
+// offered: 80 is above the longest candidate span (35, four hyphenated groups
+// of 8, "AAAAAAAA-BBBBBBBB-CCCCCCCC-DDDDDDDD"; spaced digits span at most 19,
+// "1 2 3 4 5 6 7 8 9 0") plus the most text a candidate is judged by after
+// it (64 for the glued-digit walk; 40 for promotion words, 8 for a next
+// group of digits). A code never comes back as a fragment of itself.
+const CUT_GUARD = 80;
+
+/**
+ * The text a cut input is read as, and the last end a candidate may have:
+ * CUT_GUARD before the cut point (measured where the cut was, not where the
+ * dropped half word began, so a code far from a long cut word still counts).
+ * The text then ends with " …", so nothing reads the cut as the end of a
+ * line.
+ */
+function readCut(rawText: string): { text: string; lastEnd: number } {
+  const flat = flatten(rawText);
+  const kept = withoutCutWord(flat);
+  const lead = kept.length - kept.trimStart().length;
+  const text = kept.trim();
+  return { text: text ? `${text} …` : '', lastEnd: flat.length - lead - CUT_GUARD };
+}
+
+function bestCandidate(rawText: string, cut = false): Candidate | null {
+  const { text, lastEnd } = cut ? readCut(rawText) : { text: normalize(rawText), lastEnd: Infinity };
   if (!text) return null;
   const keywords = findCodeWords(text);
   if (!keywords.some((list) => list.length)) return null;
@@ -295,6 +323,7 @@ function bestCandidate(rawText: string): Candidate | null {
   let best: Candidate | null = null;
   for (const re of [CANDIDATE, GLUED_DIGITS]) {
     for (const match of text.matchAll(re)) {
+      if (match.index! + match[0].length > lastEnd) continue;
       if (re === GLUED_DIGITS && !gluedToWords(text, match.index!, match.index! + match[0].length)) continue;
       const candidate = scoreCandidate(text, match[0], match.index!, keywords);
       if (candidate && (!best || candidate.score < best.score)) best = candidate;
@@ -303,15 +332,42 @@ function bestCandidate(rawText: string): Candidate | null {
   return best;
 }
 
-// A code sits near the top: longer input is cut (as a preview is, so the word
-// the cut went through is dropped), which also bounds the work on hostile mail.
+// A code sits near the top: longer input is cut, which also bounds the work
+// on hostile mail. A cut text loses the word the cut went through (as a
+// preview cut off with "..." does) and the CUT_GUARD tail.
 export const MAX_SUBJECT_CHARS = 1_000;
 export const MAX_PREVIEW_CHARS = 1_000;
 export const MAX_BODY_CHARS = 20_000;
 
-function capped(text: string | null | undefined, max: number): string {
-  const t = text ?? '';
-  return t.length > max ? `${t.slice(0, max)}…` : t;
+/**
+ * The end of a text that was cut before it reached the detector (a body
+ * reader's cap, a server's truncated body value): `findVerificationCode`
+ * treats such a text as cut. U+FFFF is a noncharacter, never part of mail.
+ */
+export const CUT_MARK = '\u2026\uffff';
+
+/** `text` marked as cut when `cut`. */
+export function markCut(text: string, cut: boolean): string {
+  return cut ? text + CUT_MARK : text;
+}
+
+function capped(text: string | null | undefined, max: number): { text: string; cut: boolean } {
+  let t = text ?? '';
+  let cut = false;
+  if (t.endsWith(CUT_MARK)) {
+    t = t.slice(0, -CUT_MARK.length);
+    cut = true;
+  }
+  if (t.length > max) {
+    t = t.slice(0, max);
+    cut = true;
+  }
+  return { text: cut ? `${t}…` : t, cut };
+}
+
+function cappedCandidate(text: string | null | undefined, max: number): Candidate | null {
+  const c = capped(text, max);
+  return bestCandidate(c.text, c.cut);
 }
 
 /**
@@ -326,8 +382,8 @@ export function findVerificationCode(
   source: 'preview' | 'body' = 'body',
 ): string | null {
   return (
-    bestCandidate(capped(subject, MAX_SUBJECT_CHARS))?.code ??
-    bestCandidate(capped(text, source === 'preview' ? MAX_PREVIEW_CHARS : MAX_BODY_CHARS))?.code ??
+    cappedCandidate(subject, MAX_SUBJECT_CHARS)?.code ??
+    cappedCandidate(text, source === 'preview' ? MAX_PREVIEW_CHARS : MAX_BODY_CHARS)?.code ??
     null
   );
 }
@@ -356,8 +412,6 @@ export function listVerificationCode(
 
 // A code sits near the top; a newsletter of megabytes need not be read whole.
 const MAX_BODY_HTML = 200_000;
-// One more than the detector reads, so it knows the text was cut.
-const MAX_BODY_TEXT = MAX_BODY_CHARS + 1;
 
 const RAW_ELEMENT_START = /<(style|script|title)\b/gi;
 
@@ -399,14 +453,29 @@ function withoutRawElements(html: string): string {
   return out + html.slice(from);
 }
 
-/** The text of a loaded mail as the reader shows it, for finding its code. */
+/**
+ * The text of a loaded mail as the reader shows it, for finding its code:
+ * at most MAX_BODY_HTML characters of its HTML are selected, parsed and
+ * converted (stopping once MAX_BODY_CHARS of text are out), or the top of
+ * its text part. A text cut on the way (here, or by the server) ends with
+ * CUT_MARK, so `findVerificationCode` knows it was cut even when the text
+ * left is short (a large <style> before the cut). Never throws: a body that
+ * cannot be read has no code.
+ */
 export function verificationCodeBodyText(email: Pick<Email, 'htmlBody' | 'textBody' | 'bodyValues'>): string {
-  const html = getRenderableHtmlBody(email);
-  if (html) {
-    // htmlToPlainText walks the body, and a <style> in it is text there.
-    const markup = withoutRawElements(html.slice(0, MAX_BODY_HTML));
-    return htmlToPlainText(markup).slice(0, MAX_BODY_TEXT);
+  try {
+    const selected = getRenderableHtmlBodyBounded(email, MAX_BODY_HTML);
+    if (selected) {
+      // htmlToPlainText walks the body, and a <style> in it is text there.
+      const markup = withoutRawElements(selected.html);
+      const { text, truncated } = htmlToPlainTextBounded(markup, MAX_BODY_CHARS);
+      return markCut(text.slice(0, MAX_BODY_CHARS), selected.cut || truncated || text.length > MAX_BODY_CHARS);
+    }
+    const textPart = email.textBody?.[0]?.partId;
+    const bodyValue = textPart ? email.bodyValues?.[textPart] : undefined;
+    const text = bodyValue?.value || '';
+    return markCut(text.slice(0, MAX_BODY_CHARS), text.length > MAX_BODY_CHARS || bodyValue?.isTruncated === true);
+  } catch {
+    return '';
   }
-  const textPart = email.textBody?.[0]?.partId;
-  return ((textPart && email.bodyValues?.[textPart]?.value) || '').slice(0, MAX_BODY_TEXT);
 }

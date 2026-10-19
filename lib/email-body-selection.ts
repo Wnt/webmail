@@ -11,17 +11,47 @@ import { hasMeaningfulHtmlBody } from '@/lib/signature-utils';
 export function getRenderableHtmlBody(
   email: Pick<Email, 'htmlBody' | 'textBody' | 'bodyValues'>
 ): string | null {
+  return selectHtmlBody(email, Infinity)?.html ?? null;
+}
+
+/** An HTML body read up to a limit, and whether anything of it was left out. */
+export interface BoundedHtmlBody {
+  html: string;
+  /** Cut by the limit here, or already by the server (a truncated body value). */
+  cut: boolean;
+}
+
+/**
+ * `getRenderableHtmlBody` for a reader that needs at most `maxChars` of the
+ * HTML (the verification-code detector): the HTML is cut first, so the
+ * meaningful-HTML check, and any DOM built from it, never sees more than
+ * that, however large the body is. The reading pane keeps the full body.
+ */
+export function getRenderableHtmlBodyBounded(
+  email: Pick<Email, 'htmlBody' | 'textBody' | 'bodyValues'>,
+  maxChars: number
+): BoundedHtmlBody | null {
+  return selectHtmlBody(email, maxChars);
+}
+
+function selectHtmlBody(
+  email: Pick<Email, 'htmlBody' | 'textBody' | 'bodyValues'>,
+  maxChars: number
+): BoundedHtmlBody | null {
   const htmlPart = email.htmlBody?.[0];
   if (!htmlPart?.partId || !email.bodyValues?.[htmlPart.partId]) return null;
 
-  const htmlContent = email.bodyValues[htmlPart.partId].value;
-  if (!htmlContent) return null;
+  const bodyValue = email.bodyValues[htmlPart.partId];
+  const fullContent = bodyValue.value;
+  if (!fullContent) return null;
 
   // Per RFC 8621, a single-part email exposes the same part in both htmlBody and
   // textBody. That shared part may actually be text/plain (plain-text-only mail);
   // rendering it as HTML collapses newlines and skips linkification, so route by
   // the part's media type rather than by which list it appears in.
   if (htmlPart.type && htmlPart.type.toLowerCase() !== 'text/html') return null;
+
+  const htmlContent = fullContent.length > maxChars ? fullContent.slice(0, maxChars) : fullContent;
 
   // Prefer textBody when the HTML is an auto-generated minimal wrapper (no rich
   // formatting). Server-generated HTML from text/plain emails often lacks <br>
@@ -31,7 +61,7 @@ export function getRenderableHtmlBody(
     !!textPartId && textPartId !== htmlPart.partId && !!email.bodyValues[textPartId];
   if (hasDistinctTextBody && !hasMeaningfulHtmlBody(htmlContent)) return null;
 
-  return htmlContent;
+  return { html: htmlContent, cut: htmlContent.length < fullContent.length || bodyValue.isTruncated === true };
 }
 
 /**
