@@ -435,7 +435,7 @@ const EXTERNAL_LINK_SCHEMES = new Set(['mailto', 'tel', 'sms', 'callto', 'xmpp',
 export type EmailLinkHref =
   /** http(s), serialized absolute: opens in a new tab. */
   | { kind: 'web'; href: string }
-  /** `#section`: scrolls within the body document. */
+  /** `#section`, written as `about:srcdoc#section`: scrolls within the body document. */
   | { kind: 'fragment'; href: string }
   /** mailto:, tel:, ... (scheme lower-cased): the OS or a protocol handler. */
   | { kind: 'external'; href: string; scheme: string }
@@ -452,6 +452,16 @@ function browserNormalizedHref(href: string): string {
   // eslint-disable-next-line no-control-regex
   return href.replace(/^[\u0000- ]+|[\u0000- ]+$/g, '').replace(/[\t\n\r]/g, '');
 }
+
+/**
+ * A message body is a srcdoc document: its URL is `about:srcdoc`, but a
+ * relative URL - a bare `#section` too - resolves against the base URL of the
+ * page around the frame. A native click on `href="#section"` therefore loads
+ * the app's own page into the message frame instead of scrolling (Astra,
+ * safari-links-1 r1). Written against the document's own URL, the fragment
+ * stays a same-document navigation.
+ */
+const SRCDOC_FRAGMENT_PREFIX = 'about:srcdoc#';
 
 function webLink(href: string): EmailLinkHref | null {
   let url: URL;
@@ -470,7 +480,9 @@ function webLink(href: string): EmailLinkHref | null {
  * WebKit runs no event listener in the sandboxed body frame: a click handler
  * cannot be the gate there (audit safari-links-1).
  *
- * Nothing is resolved against the document's base URL. A relative href - a
+ * Nothing is resolved against the document's base URL. A `#fragment` is
+ * written as `about:srcdoc#fragment`, the body document's own URL (see
+ * SRCDOC_FRAGMENT_PREFIX). Any other relative href - a
  * path (`/oauth/end_session`, `../x`, `x`), a query (`?x`) or empty - would
  * point the message frame at a route of our own origin, so it has no place
  * here and returns null. So do `data:`, unresolved `cid:`, `javascript:` and
@@ -484,8 +496,15 @@ function webLink(href: string): EmailLinkHref | null {
 export function classifyEmailLinkHref(href: string | null | undefined): EmailLinkHref | null {
   if (href == null) return null;
   const normalized = browserNormalizedHref(href);
-  if (normalized.startsWith('#')) return { kind: 'fragment', href: normalized };
+  if (normalized.startsWith('#')) return { kind: 'fragment', href: SRCDOC_FRAGMENT_PREFIX + normalized.slice(1) };
   const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(normalized)?.[1]?.toLowerCase();
+  // Our own fragment form, met again by the post-render pass. (DOMPurify's
+  // URI allowlist strips a sender's about: href before the hook runs.) The
+  // path is case-sensitive: about:SRCDOC is another document.
+  if (scheme === 'about') {
+    const own = scheme + normalized.slice(scheme.length);
+    return own.startsWith(SRCDOC_FRAGMENT_PREFIX) ? { kind: 'fragment', href: own } : null;
+  }
   if (!scheme) {
     return /^[/\\]{2}/.test(normalized) ? webLink(`https:${normalized}`) : null;
   }
@@ -524,6 +543,15 @@ export function openableLinkHref(href: string | null | undefined): string | null
   return null;
 }
 
+/**
+ * Whether a clicked message-body link is left to the browser: a fragment of
+ * the body document, or mailto: (the browser hands it to the mail handler).
+ */
+export function isInPlaceLinkHref(href: string | null | undefined): boolean {
+  const link = classifyEmailLinkHref(href);
+  return link?.kind === 'fragment' || (link?.kind === 'external' && link.scheme === 'mailto');
+}
+
 /** Whether a clicked message-body link may be handed to window.open(); see {@link openableLinkHref}. */
 export function isOpenableLinkHref(href: string | null | undefined): boolean {
   return openableLinkHref(href) !== null;
@@ -535,7 +563,9 @@ export function isOpenableLinkHref(href: string | null | undefined): boolean {
  * post-render walks over the live iframe documents):
  * - web links and blob: part links keep their (serialized) href and open in a
  *   new tab with noopener noreferrer, whatever target and rel the sender wrote;
- * - `#fragment`s and mailto:, tel:, ... keep their href with no target or rel;
+ * - `#fragment`s (written as `about:srcdoc#fragment`, so they scroll the body
+ *   instead of loading the app's page into its frame) and mailto:, tel:, ...
+ *   keep their href with no target or rel;
  * - every other href is removed with its target and rel, so the link is inert
  *   text without any script having to cancel the click (WebKit runs none in
  *   the sandboxed frame).

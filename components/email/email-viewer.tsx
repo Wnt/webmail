@@ -6,7 +6,7 @@ import { useStableCallbacks } from "@/hooks/use-stable-callbacks";
 import { Email, ContactCard, Mailbox } from "@/lib/jmap/types";
 import { emailExportFilename, attachmentDownloadFilename, attachmentsBundleFilename, DEFAULT_EMAIL_TEMPLATE, DEFAULT_ATTACHMENT_TEMPLATE } from "@/lib/download-filename";
 import { EML_IMPORT_ACCEPT, expandImportableEmails } from "@/lib/eml-import";
-import { applyEmailLinkPolicy, emailIframeCsp, escapeHtml, openableLinkHref, plainTextToSafeHtml, sanitizeEmailBodyForIframe, sanitizeEmailHtml, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
+import { applyEmailLinkPolicy, emailIframeCsp, escapeHtml, isInPlaceLinkHref, openableLinkHref, plainTextToSafeHtml, sanitizeEmailBodyForIframe, sanitizeEmailHtml, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
 import { getRenderableHtmlBody } from "@/lib/email-body-selection";
 import { cachedEmailContent, emailContentCacheKey, prepareEmailHtml, shouldBlockExternalFor } from "@/lib/email-content-cache";
 import { collectReferencedCids, isEmbeddedInBody } from "@/lib/attachment-visibility";
@@ -2724,7 +2724,8 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
           const targetEl = (ev.target as Element | null)?.closest?.('a[href], area[href]') as HTMLAnchorElement | HTMLAreaElement | null;
           if (!targetEl) return;
           const href = targetEl.getAttribute('href') || '';
-          if (!href || href.startsWith('#') || href.startsWith('mailto:')) return;
+          // Fragments of the body (about:srcdoc#…) and mailto: stay native.
+          if (!href || isInPlaceLinkHref(href)) return;
           ev.preventDefault();
           ev.stopPropagation();
           // A link at a cid: part now carries the blob: URL we minted for it.

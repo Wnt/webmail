@@ -39,3 +39,18 @@ describe('EmlPreview remote content', () => {
     expect(srcdoc()).toContain('src="https://t.example/pixel.gif"');
   });
 });
+
+// Audit safari-links-1: the .eml preview shares the body link policy - no
+// relative href, and a fragment written against the srcdoc document.
+describe('EmlPreview links', () => {
+  it.each(['ask', 'allow'] as const)('drops relative hrefs and keeps fragments local (policy %s)', (policy) => {
+    useSettingsStore.setState({ externalContentPolicy: policy });
+    const { container } = render(
+      <EmlPreview message={{ subject: 's', html: '<a href="/oauth/end_session">r</a><a href="#part">f</a><p id="part">p</p>', attachments: [] }} />,
+    );
+    const doc = new DOMParser().parseFromString(container.querySelector('iframe')!.getAttribute('srcdoc')!, 'text/html');
+    const [relative, fragment] = Array.from(doc.querySelectorAll('a'));
+    expect(relative.hasAttribute('href')).toBe(false);
+    expect(fragment.getAttribute('href')).toBe('about:srcdoc#part');
+  });
+});

@@ -55,3 +55,6 @@ next-env.d.ts
 # Python bytecode (fork: .github/scripts tests)
 __pycache__/
 *.pyc
+
+# Fork (Wnt/webmail): playwright.browser.config.ts output
+/test-results/

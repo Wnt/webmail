@@ -50,7 +50,9 @@ describe('email-body link policy without iframe event handlers', () => {
     it.each(['mailto:reader@example.test', 'tel:+15550100', '#section'])(
       'removes sender top target and opener from %s', (href) => {
         const link = body(markup(`href="${href}" target="_top" rel="opener"`)).querySelector(tag)!;
-        expect(link.getAttribute('href')).toBe(href);
+        // Fix review r1: a fragment is written against the srcdoc document's own
+        // URL; a bare `#section` would resolve against the app page around it.
+        expect(link.getAttribute('href')).toBe(href.startsWith('#') ? `about:srcdoc${href}` : href);
         expect(link.hasAttribute('target')).toBe(false);
         expect(link.hasAttribute('rel')).toBe(false);
       },

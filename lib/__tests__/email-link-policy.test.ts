@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyEmailLinkPolicy,
   classifyEmailLinkHref,
+  isInPlaceLinkHref,
   openableLinkHref,
   parseHtmlSafely,
   sanitizeEmailBodyForIframe,
@@ -55,8 +56,31 @@ describe('classifyEmailLinkHref', () => {
     }
   });
 
+  it('writes a fragment against the srcdoc document and accepts only that about: form', () => {
+    expect(classifyEmailLinkHref('#section')).toEqual({ kind: 'fragment', href: 'about:srcdoc#section' });
+    expect(classifyEmailLinkHref(' \n#')).toEqual({ kind: 'fragment', href: 'about:srcdoc#' });
+    expect(classifyEmailLinkHref('about:srcdoc#section')).toEqual({ kind: 'fragment', href: 'about:srcdoc#section' });
+    expect(classifyEmailLinkHref('ABOUT:srcdoc#section')).toEqual({ kind: 'fragment', href: 'about:srcdoc#section' });
+    for (const href of ['about:srcdoc', 'about:SRCDOC#section', 'about:srcdoc?x#section', 'about:blank#section', 'about:srcdocx#s']) {
+      expect(classifyEmailLinkHref(href)).toBeNull();
+    }
+    // The browser reads the written form as the frame's own URL plus a fragment.
+    expect(new URL('about:srcdoc#section', BASE).href).toBe('about:srcdoc#section');
+    expect(new URL('#section', BASE).href).toBe(`${BASE}#section`);
+    expect(openableLinkHref('about:srcdoc#section')).toBeNull();
+  });
+
+  it('leaves fragments and mailto: to the browser in the click handler, nothing else', () => {
+    for (const href of ['about:srcdoc#section', '#section', 'mailto:reader@example.test', 'MAILTO:reader@example.test']) {
+      expect(isInPlaceLinkHref(href)).toBe(true);
+    }
+    for (const href of ['https://outside.example/', 'tel:1', 'blob:https://mail.example.test/1', '/x', 'about:blank', '', null]) {
+      expect(isInPlaceLinkHref(href)).toBe(false);
+    }
+  });
+
   it('keeps fragments, external protocols and blob: part links, scheme lower-cased', () => {
-    expect(classifyEmailLinkHref('#section')).toEqual({ kind: 'fragment', href: '#section' });
+    expect(classifyEmailLinkHref('#section')?.kind).toBe('fragment');
     expect(classifyEmailLinkHref('  MAILTO:reader@example.test')).toEqual({ kind: 'external', href: 'mailto:reader@example.test', scheme: 'mailto' });
     expect(classifyEmailLinkHref('Tel:+15550100')).toEqual({ kind: 'external', href: 'tel:+15550100', scheme: 'tel' });
     for (const scheme of ['sms', 'callto', 'xmpp', 'ftp', 'ftps']) {
@@ -67,6 +91,36 @@ describe('classifyEmailLinkHref', () => {
     expect(openableLinkHref('mailto:reader@example.test')).toBeNull();
     expect(openableLinkHref('blob:https://mail.example.test/0f3d')).toBeNull();
   });
+});
+
+describe('fragment links in every body renderer', () => {
+  // The reading pane and the HTML/.eml previews keep <style>; the conversation
+  // cards do not. Both external-content settings. A and AREA.
+  const renderers = [
+    ['reading pane / previews', {}],
+    ['conversation cards', { keepStyleTags: false }],
+  ] as const;
+  for (const [name, options] of renderers) {
+    for (const blockExternal of [true, false]) {
+      it(`${name}, external content ${blockExternal ? 'blocked' : 'allowed'}`, () => {
+        const doc = parseHtmlSafely(sanitizeEmailBodyForIframe(
+          '<a href="#part-2" target="_top">a</a><map name="m"><area href=" #part-2" target="_blank" coords="0,0,1,1"></map>'
+          + '<img usemap="#m" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">'
+          + '<a href="about:srcdoc#part-2">sender-written</a><p id="part-2">two</p>',
+          blockExternal, options,
+        ).html);
+        for (const el of [doc.querySelector('a')!, doc.querySelector('area')!]) {
+          expect(el.getAttribute('href')).toBe('about:srcdoc#part-2');
+          expect(el.hasAttribute('target')).toBe(false);
+          expect(el.hasAttribute('rel')).toBe(false);
+        }
+        // An image map's own name reference is not a link and stays as written.
+        expect(doc.querySelector('img')!.getAttribute('usemap')).toBe('#m');
+        // DOMPurify's URI allowlist drops a sender's own about: href before the policy runs.
+        expect(doc.querySelectorAll('a')[1].hasAttribute('href')).toBe(false);
+      });
+    }
+  }
 });
 
 describe('applyEmailLinkPolicy in the body sanitizer', () => {

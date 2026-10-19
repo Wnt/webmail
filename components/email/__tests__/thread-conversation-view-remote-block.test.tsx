@@ -77,11 +77,11 @@ describe('conversation view header', () => {
 // policy - no relative href survives to navigate the card frame (or, with the
 // old blanket _blank, a new tab) to a route of our own origin.
 describe('conversation view link policy', () => {
-  it('drops relative hrefs and keeps web, mailto and fragment links', async () => {
+  it('drops relative hrefs, keeps web and mailto links, and writes fragments against the card', async () => {
     const { ThreadConversationView } = await import('@/components/email/thread-conversation-view');
     const html = '<style>p{color:red}</style><a href="/oauth/end_session" target="_blank">r</a>'
       + '<a href="https://outside.example/x" target="_top">w</a><a href="mailto:reader@example.test">m</a>'
-      + '<a href="#s">f</a><map name="m"><area href="?view=x" coords="0,0,1,1"></map>';
+      + '<a href="#s">f</a><map name="m"><area href="?view=x" coords="0,0,1,1"><area href="#s" coords="1,1,2,2"></map>';
     const email = {
       id: 'e3', threadId: 't3', mailboxIds: { a: true }, keywords: { $seen: true },
       from: [{ name: 'Sender', email: 'sender@t.example' }], to: [{ email: 'me@example.org' }],
@@ -106,8 +106,11 @@ describe('conversation view link policy', () => {
     expect(web.getAttribute('rel')).toBe('noopener noreferrer');
     expect(mail.getAttribute('href')).toBe('mailto:reader@example.test');
     expect(mail.hasAttribute('target')).toBe(false);
-    expect(fragment.getAttribute('href')).toBe('#s');
-    expect(body.querySelector('area')!.hasAttribute('href')).toBe(false);
+    // Against the card document's own URL: a bare #s would load the app's page into the card.
+    expect(fragment.getAttribute('href')).toBe('about:srcdoc#s');
+    expect(fragment.hasAttribute('target')).toBe(false);
+    expect(body.querySelector('area[href="about:srcdoc#s"]')).not.toBeNull();
+    expect(body.querySelector('area:not([href])')).not.toBeNull();
     // The cards still drop the sender's <style> blocks.
     expect(body.innerHTML).not.toContain('color:red');
   }, 30_000);
