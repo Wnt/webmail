@@ -5,6 +5,7 @@
 import type { Email } from '@/lib/jmap/types';
 import type { EmailReadView } from '@/lib/plugin-types';
 import { generateEmailSource } from '@/lib/email-source';
+import { stripHtmlTags } from '@/lib/strip-html-tags';
 
 // Resolve a message's plain-text body from its JMAP body parts. Plugins that
 // translate or scan content need the real body, not just the short `preview`
@@ -23,9 +24,8 @@ function plainTextFromEmail(email: Email): string {
 
   const html = collect(email.htmlBody);
   if (html) {
-    return html
-      .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
+    // Fork: one linear pass over the raw body (lib/strip-html-tags.ts).
+    return stripHtmlTags(html, ' ')
       .replace(/&nbsp;/gi, ' ')
       .replace(/&amp;/gi, '&')
       .replace(/&lt;/gi, '<')

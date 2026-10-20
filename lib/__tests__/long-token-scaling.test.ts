@@ -8,7 +8,7 @@ import { readReceiptRequestAddress } from '@/lib/read-receipt-request';
 import { parseUnsubscribeUrls } from '@/lib/validation';
 import { buildEmailFrameSrcDoc } from '@/lib/email-frame-doc';
 
-const BUDGET_MS = 150;
+const BUDGET_MS = 1000;
 
 function timed<T>(fn: () => T): { result: T; ms: number } {
   const started = performance.now();

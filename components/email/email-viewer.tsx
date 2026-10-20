@@ -15,6 +15,7 @@ import { collapsePlainTextQuotes, setupQuoteCollapse } from "@/lib/quote-collaps
 import { applyEmailDarkMode, emailColorScheme, emailHasNativeDarkMode as htmlHasNativeDarkMode } from "@/lib/email-dark-mode";
 import { buildEmailFrameSrcDoc } from "@/lib/email-frame-doc";
 import { readReceiptRequestAddress } from "@/lib/read-receipt-request";
+import { isHtmlBodyEffectivelyEmpty } from "@/lib/strip-html-tags";
 import { fitEmailBodyWidth } from "@/lib/email-fit-width";
 import { withBasePath } from "@/lib/browser-navigation";
 import { buildContactsPath, buildMailPath } from "@/lib/deep-links";
@@ -300,21 +301,6 @@ function getAttachmentContentBytes(attachment: {
   }
 
   return null;
-}
-
-/**
- * Check if an HTML body string is effectively empty (just boilerplate/whitespace).
- * Outlook often generates HTML bodies with Word CSS + &nbsp; but no real text.
- */
-function isHtmlBodyEffectivelyEmpty(html: string): boolean {
-  const textContent = html
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&#160;/g, ' ')
-    .replace(/\s+/g, '')
-    .trim();
-  return textContent.length === 0;
 }
 
 interface EffectiveAttachment {
