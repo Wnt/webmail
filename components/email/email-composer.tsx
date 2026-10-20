@@ -3583,7 +3583,7 @@ export function EmailComposer({
                   && isFilePreviewable(att.name, att.type);
                 const label = (
                   <>
-                    <span className="max-w-[150px] md:max-w-[200px] truncate">{stripBidiControls(att.name) || att.name}</span>
+                    <span className="max-w-[150px] md:max-w-[200px] truncate">{stripBidiControls(att.name) || 'attachment'}</span>
                     <span className="text-xs text-muted-foreground whitespace-nowrap">
                       ({formatFileSize(att.size)})
                     </span>
@@ -3624,7 +3624,7 @@ export function EmailComposer({
                       <button
                         type="button"
                         onClick={() => setPreviewAttachment(att)}
-                        title={stripBidiControls(att.name) || att.name}
+                        title={stripBidiControls(att.name) || 'attachment'}
                         className="flex items-center gap-2 min-w-0 hover:underline"
                       >
                         {label}
@@ -3635,8 +3635,8 @@ export function EmailComposer({
                     <button
                       onClick={() => removeAttachment(index)}
                       className="ms-1 hover:text-red-500 min-w-[20px] min-h-[20px] flex items-center justify-center"
-                      title={att.uploading ? t('upload_cancel') : tCommon('remove_item', { name: att.name })}
-                      aria-label={att.uploading ? t('upload_cancel') : tCommon('remove_item', { name: att.name })}
+                      title={att.uploading ? t('upload_cancel') : tCommon('remove_item', { name: stripBidiControls(att.name) || 'attachment' })}
+                      aria-label={att.uploading ? t('upload_cancel') : tCommon('remove_item', { name: stripBidiControls(att.name) || 'attachment' })}
                     >
                       <X className="w-3 h-3" />
                     </button>

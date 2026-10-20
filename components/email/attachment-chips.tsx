@@ -79,11 +79,11 @@ export function AttachmentChips({ attachments, onOpen, max = 2, leading, classNa
             // The row itself opens the message; a chip must not do both.
             onClick={(e) => { e.stopPropagation(); onOpen(a); }}
             onDoubleClick={(e) => e.stopPropagation()}
-            title={stripBidiControls(a.name ?? "")}
+            title={stripBidiControls(a.name ?? "") || "attachment"}
             className={cn(CHIP_BOX_CLASS, "max-w-[12rem] bg-background/60 text-foreground/80 hover:bg-muted hover:text-foreground")}
           >
             <Icon className={cn(CHIP_ICON_CLASS, iconClass)} />
-            <span className="truncate">{shortName(stripBidiControls(a.name ?? ""))}</span>
+            <span className="truncate">{shortName(stripBidiControls(a.name ?? "") || "attachment")}</span>
           </button>
         );
       })}

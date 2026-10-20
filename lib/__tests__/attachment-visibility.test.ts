@@ -72,3 +72,19 @@ describe('isEmbeddedInBody', () => {
     expect(isEmbeddedInBody({ cid: 'logoImage', type: 'application/octet-stream' }, none)).toBe(false);
   });
 });
+
+// Fork (Wnt/webmail), review upstream-backport-bulwark r3 R3-3: the reader never
+// fetches a winmail.dat or an embedded message for a cid: reference
+// (lib/inline-cid-parts.ts), so such a part keeps its chip even when the body
+// references its Content-ID.
+describe('isEmbeddedInBody and wrapped message parts', () => {
+  const body = new Set(['w1', 'm1', 'g1']);
+  it('keeps the chip of a referenced winmail.dat or message/rfc822 part', () => {
+    expect(isEmbeddedInBody({ cid: '<w1>', type: 'application/octet-stream', name: 'winmail.dat' }, body)).toBe(false);
+    expect(isEmbeddedInBody({ cid: 'w1', type: 'application/ms-tnef' }, body)).toBe(false);
+    expect(isEmbeddedInBody({ cid: 'm1', type: 'message/rfc822', disposition: 'inline' }, body)).toBe(false);
+  });
+  it('still hides a referenced generic part', () => {
+    expect(isEmbeddedInBody({ cid: 'g1', type: 'application/octet-stream' }, body)).toBe(true);
+  });
+});

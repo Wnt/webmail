@@ -13,6 +13,8 @@
  * composer's forward path already handles it.
  */
 
+import { isWrappedMessagePart } from '@/lib/inline-cid-parts';
+
 /**
  * The exact pattern the viewers rewrite to blob URLs, so "referenced" here
  * means "rendered" and a chip is only ever hidden for a part the body shows.
@@ -40,6 +42,7 @@ export interface AttachmentPartLike {
   cid?: string | null;
   type?: string | null;
   disposition?: string | null;
+  name?: string | null;
 }
 
 /**
@@ -59,6 +62,9 @@ export function isEmbeddedInBody(
   referencedCids: ReadonlySet<string>,
 ): boolean {
   if (!att.cid) return false;
+  // Fork: never fetched inline (lib/inline-cid-parts.ts), so its chip is its
+  // only way to open or save it (review upstream-backport-bulwark r3 R3-3).
+  if (isWrappedMessagePart(att)) return false;
   const type = (att.type || '').toLowerCase();
   const isImage = type.startsWith('image/');
   if (att.disposition === 'inline' && isImage) return true;

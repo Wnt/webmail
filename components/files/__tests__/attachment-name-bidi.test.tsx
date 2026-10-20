@@ -8,6 +8,7 @@ vi.mock('next-intl', () => ({
 import { FilePreviewModal } from '../file-preview-modal';
 import { EmlPreview } from '../eml-preview';
 import { JMAPClient } from '@/lib/jmap/client';
+import { saveBlobUrl } from '@/lib/save-blob-url';
 
 // Fork (Wnt/webmail), with upstream 29b33eb4 (review upstream-backport-bulwark
 // r2 R2-1): a sender's attachment name shows and downloads without directional
@@ -34,6 +35,16 @@ describe('attachment names without directional formatting characters', () => {
     const button = screen.getByText('reportfdp.exe');
     button.click();
     expect(clicked).toEqual(['reportfdp.exe']);
+  });
+
+  it('a body link to a cid: part, and names of nothing but controls', () => {
+    const clicked: string[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { clicked.push(this.download); });
+    saveBlobUrl('blob:test', SPOOF);
+    saveBlobUrl('blob:test', '\u202E\u202D');
+    expect(clicked).toEqual(['reportfdp.exe', 'download']);
+    render(<FilePreviewModal name={'\u202E'} onClose={() => {}} onDownload={() => {}} getFileContent={() => new Promise(() => {})} />);
+    expect(screen.getByRole('dialog').getAttribute('aria-label')).toBe('attachment');
   });
 
   it("the client's download link", async () => {

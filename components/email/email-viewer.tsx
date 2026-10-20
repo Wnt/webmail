@@ -17,6 +17,7 @@ import { buildEmailFrameSrcDoc } from "@/lib/email-frame-doc";
 import { readReceiptRequestAddress } from "@/lib/read-receipt-request";
 import { isHtmlBodyEffectivelyEmpty } from "@/lib/strip-html-tags";
 import { isInlineCidPart } from "@/lib/inline-cid-parts";
+import { saveBlobUrl } from "@/lib/save-blob-url";
 import { fitEmailBodyWidth } from "@/lib/email-fit-width";
 import { withBasePath } from "@/lib/browser-navigation";
 import { buildContactsPath, buildMailPath } from "@/lib/deep-links";
@@ -2452,12 +2453,8 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
       window.open(href, '_blank', 'noopener,noreferrer');
       return;
     }
-    const anchor = document.createElement('a');
-    anchor.href = href;
-    anchor.download = part?.name || 'download';
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
+    // Saved without directional controls (lib/save-blob-url.ts; review r3 R3-1).
+    saveBlobUrl(href, part?.name);
   }, []);
 
   // Phone: swipe sideways between messages instead of previous / next buttons.

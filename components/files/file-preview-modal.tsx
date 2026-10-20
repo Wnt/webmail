@@ -120,7 +120,7 @@ function processInline(text: string): React.ReactNode {
 export function FilePreviewModal({ name, onClose, onDownload, getFileContent }: FilePreviewModalProps) {
   // Shown without directional formatting characters (upstream 29b33eb4): a
   // sender's `report\u202Efdp.exe` must not read as `reportexe.pdf` here either.
-  const shownName = stripBidiControls(name) || name;
+  const shownName = stripBidiControls(name) || 'attachment';
   const t = useTranslations("files");
   const [content, setContent] = useState<string | null>(null);
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
