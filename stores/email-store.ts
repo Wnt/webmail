@@ -572,10 +572,14 @@ function coalesceRefresh(client: IJMAPClient, key: string, run: () => Promise<vo
   }
   const entry: InFlightRefresh = { promise: Promise.resolve(), rerun: false };
   const registry = byKey;
+  // Fork (Wnt/webmail): a run queued in one account epoch never starts in the
+  // next: it would fetch with the old account's client and land in the stores
+  // the new account is filling (each run checks the epoch it starts in).
+  const epoch = currentStoreEpoch();
   entry.promise = (async () => {
     try {
       await run();
-      while (entry.rerun) {
+      while (entry.rerun && currentStoreEpoch() === epoch) {
         entry.rerun = false;
         await run();
       }
@@ -634,23 +638,58 @@ type StoreSet = (partial: Partial<EmailStore> | ((state: EmailStore) => Partial<
  * first page while more waited on the server.
  */
 /**
- * Fork (Wnt/webmail): read states the server confirmed for a message that was
- * not in the loaded list when it was marked (see markAsRead), by id. A list
- * page fetched before that write landed can still show it unread; the first
- * list that holds the message after the write takes the confirmed state
- * (the subscription at the end of this file), for READ_OUTSIDE_LIST_HOLD_MS.
+ * Fork (Wnt/webmail): every list fetch (fetchEmails, refreshCurrentMailbox)
+ * takes a number when it starts. When the server confirms a read state for a
+ * message the loaded list did not hold (settleReadOutsideList), the number
+ * reached then is recorded: a list landing from a fetch numbered at or below
+ * it may have been read before the write, so it is caught up with the server
+ * from its own state (an Email/changes delta, as a push would), never patched
+ * from a local copy.
  */
-const READ_OUTSIDE_LIST_HOLD_MS = 20_000;
-// `owner`: the login the message belongs to; `epoch`: the stores' account
-// epoch at the write (ids are only unique within an account).
-const confirmedReadOutsideList = new Map<string, { read: boolean; until: number; owner: string | null; epoch: number }>();
+let listFetchSeq = 0;
+let readCatchUp: { seq: number; epoch: number; client: IJMAPClient } | null = null;
+// A state no server reports: the delta below always asks for the changes since the list's own state.
+const AFTER_OWN_WRITE = '\u0000after-own-write';
+
+function nextListFetchSeq(): number {
+  return ++listFetchSeq;
+}
+
+/** A list from fetch `fetchSeq` has landed: catch it up if it may predate a read write. */
+function catchUpAfterRead(get: StoreGet, fetchSeq: number): void {
+  const c = readCatchUp;
+  if (!c || fetchSeq > c.seq) return;
+  const current = () => c.epoch === currentStoreEpoch() && useAuthStore.getState().client === c.client;
+  if (!current()) {
+    readCatchUp = null;
+    return;
+  }
+  void get().applyEmailDelta(c.client, AFTER_OWN_WRITE).then(
+    (applied) => {
+      // Not a plain folder list, or more changed than a delta resolves: re-query
+      // it (a fetch numbered after the write, so it is not caught up again).
+      if (!applied && current()) void get().refreshCurrentMailbox(c.client);
+    },
+    () => {},
+  );
+}
+
+/** The same message: its id within the same login and JMAP account (bare ids collide across accounts). */
+function sameMessage(a: Email, b: Email): boolean {
+  return a.id === b.id
+    && (a.sourceClientAccountId ?? null) === (b.sourceClientAccountId ?? null)
+    && (a.sourceAccountId ?? null) === (b.sourceAccountId ?? null);
+}
 
 /**
- * Fork (Wnt/webmail): after the server confirmed a read state for the open
- * message while the loaded list did not hold it: the open copy and any row
- * that has landed since take it, and the counters come from the server again
- * (a folder list fetched alongside the write may predate it, so a local -1
- * could count it twice or not at all).
+ * Fork (Wnt/webmail): the server confirmed a read state for the open message
+ * while the loaded list did not hold it (markAsRead), in the same account
+ * epoch. The open copy, and a row or conversation copy of that very message
+ * that has landed since, take it. The counters come from the server again
+ * rather than a local -1: a folder list fetched alongside the write may or may
+ * not count the message. A list that lands from a fetch started before the
+ * confirmation is caught up with the server (catchUpAfterRead), as is the list
+ * on screen now.
  */
 function settleReadOutsideList(
   get: StoreGet,
@@ -658,49 +697,53 @@ function settleReadOutsideList(
   client: IJMAPClient,
   email: Email,
   read: boolean,
-  processingKey: string,
+  epoch: number,
 ): void {
-  const emailId = email.id;
   const withSeen = (e: Email): Email => ({ ...e, keywords: { ...e.keywords, $seen: read } });
   set((state) => {
-    const processingReadStatus = new Set(state.processingReadStatus);
-    processingReadStatus.delete(processingKey);
-    const idx = state.emails.findIndex((e) => e.id === emailId);
     let threadEmailsCache = state.threadEmailsCache;
     for (const [tid, cached] of state.threadEmailsCache) {
-      const at = cached.findIndex((e) => e.id === emailId);
-      if (at === -1) continue;
-      threadEmailsCache = new Map(state.threadEmailsCache);
-      threadEmailsCache.set(tid, cached.map((e, i) => (i === at ? withSeen(e) : e)));
-      break;
+      if (!cached.some((e) => sameMessage(e, email) && (e.keywords?.$seen ?? false) !== read)) continue;
+      if (threadEmailsCache === state.threadEmailsCache) threadEmailsCache = new Map(state.threadEmailsCache);
+      threadEmailsCache.set(tid, cached.map((e) => (sameMessage(e, email) ? withSeen(e) : e)));
     }
+    const stale = state.emails.some((e) => sameMessage(e, email) && (e.keywords?.$seen ?? false) !== read);
     return {
-      processingReadStatus,
-      selectedEmail: state.selectedEmail?.id === emailId ? withSeen(state.selectedEmail) : state.selectedEmail,
-      emails: idx === -1 || (state.emails[idx].keywords?.$seen ?? false) === read
-        ? state.emails
-        : state.emails.map((e, i) => (i === idx ? withSeen(e) : e)),
+      selectedEmail: state.selectedEmail && sameMessage(state.selectedEmail, email) ? withSeen(state.selectedEmail) : state.selectedEmail,
+      emails: stale ? state.emails.map((e) => (sameMessage(e, email) ? withSeen(e) : e)) : state.emails,
       threadEmailsCache,
     };
   });
-  const activeId = useAuthStore.getState().activeAccountId;
-  confirmedReadOutsideList.set(emailId, {
-    read,
-    until: Date.now() + READ_OUTSIDE_LIST_HOLD_MS,
-    owner: email.sourceClientAccountId ?? activeId,
-    epoch: currentStoreEpoch(),
-  });
 
-  // The counters (folders, the Inbox badge, tags) of the active login's
-  // folders: fetched again if they are loaded or on their way (a run in
-  // flight queues one more); not yet asked for, the start's own fetch comes
-  // after the write.
-  if (email.sourceClientAccountId && email.sourceClientAccountId !== activeId) return;
+  // Only while the login that wrote is still the one on screen: the list's
+  // catch-up and the active login's folders go through its client.
+  const auth = useAuthStore.getState();
+  const activeClient = auth.client === client ? client : null;
+  if (activeClient) {
+    readCatchUp = { seq: listFetchSeq, epoch, client: activeClient };
+    if (get().emailListSync) catchUpAfterRead(get, listFetchSeq);
+  }
+
+  // The counters (folders, the Inbox badge, unified badges, tags) of the
+  // login the message belongs to: fetched again if they are loaded or on
+  // their way (a run in flight queues one more, in the same epoch only); not
+  // yet asked for, the start's own fetch comes after the write.
   const s = get();
-  const inFlight = inFlightRefreshes.get(client);
-  if (s.mailboxes.length > 0 || inFlight?.has('mailboxes')) void s.fetchMailboxes(client);
-  const tagged = Object.keys(email.keywords ?? {}).some((k) => k.startsWith('$label:'));
-  if (tagged && (Object.keys(s.tagCounts).length > 0 || inFlight?.has('tagCounts'))) void s.fetchTagCounts(client);
+  const owner = email.sourceClientAccountId;
+  if (!owner || owner === auth.activeAccountId) {
+    if (!activeClient) return;
+    const inFlight = inFlightRefreshes.get(activeClient);
+    if (s.mailboxes.length > 0 || inFlight?.has('mailboxes')) void s.fetchMailboxes(activeClient);
+    const tagged = Object.keys(email.keywords ?? {}).some((k) => k.startsWith('$label:'));
+    if (tagged && (Object.keys(s.tagCounts).length > 0 || inFlight?.has('tagCounts'))) void s.fetchTagCounts(activeClient);
+    return;
+  }
+  // Another connected login's message (an aggregate view): its own cached folders.
+  const ownerClient = auth.getClientForAccount(owner);
+  if (ownerClient && s.accountMailboxes[owner]) void s.fetchAccountMailboxes(ownerClient, owner);
+  if (ownerClient && email.sourceAccountId && email.sourceAccountId !== owner && s.accountMailboxes[email.sourceAccountId]) {
+    void s.fetchAccountMailboxes(ownerClient, email.sourceAccountId);
+  }
 }
 
 function refillAfterKeywordChange(get: StoreGet, client: IJMAPClient, changed: Iterable<string>): void {
@@ -2007,9 +2050,13 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       //    under the owner key.
       // Distinguish by whether a directly-logged-in client exists for the id.
       const hasOwnLogin = !!useAuthStore.getState().getClientForAccount(accountId);
+      // Fork (Wnt/webmail): an answer that comes back after an account switch
+      // or a sign-out does not land in the next account's stores.
+      const epoch = currentStoreEpoch();
       const mailboxes = hasOwnLogin
         ? await client.getMailboxes()
         : await client.getMailboxes(accountId);
+      if (currentStoreEpoch() !== epoch) return;
       // Re-check the cache after the await to avoid stomping a more recent
       // fetch that finished while this one was in flight.
       set((state) => ({
@@ -2256,6 +2303,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
 
   fetchEmails: async (client, mailboxId, opts) => {
     const isCurrentView = captureEmailListView();
+    const fetchSeq = nextListFetchSeq();
     // A background refresh (e.g. after an account switch restored a cached list)
     // repopulates the list without showing the loading overlay, so switching to
     // an already-visited account doesn't flash a spinner over the visible mail.
@@ -2313,6 +2361,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
           isLoading: false,
           unifiedErrors: result.errors,
         });
+        catchUpAfterRead(get, fetchSeq);
         return;
       }
 
@@ -2355,6 +2404,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
           isLoading: false,
           unifiedErrors: result.errors,
         });
+        catchUpAfterRead(get, fetchSeq);
         void get().fetchThreadEmailCounts(client);
         return;
       }
@@ -2445,6 +2495,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       });
       shownFolderList = { key: listKey, mailboxId: targetMailboxId, pageSize: emailsPerPage };
       rememberFolderList(listKey, get(), emailsPerPage);
+      catchUpAfterRead(get, fetchSeq);
       // Fetch full thread counts in the background (non-blocking)
       void get().fetchThreadEmailCounts(client);
     } catch (error) {
@@ -2908,14 +2959,12 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   },
 
   markAsRead: async (client, emailId, read) => {
+    // Fork (Wnt/webmail): the account epoch the write belongs to. An answer
+    // that comes back after an account switch or a sign-out changes nothing:
+    // the stores hold another account's mail by then.
+    const epoch = currentStoreEpoch();
+    let processingKey: string | null = null;
     try {
-      // Check if this email is already being processed
-      const processingKey = `${emailId}-${read}`;
-      const currentProcessing = get().processingReadStatus;
-      if (currentProcessing.has(processingKey)) {
-        return; // Already being processed
-      }
-
       // Get the email to check its current state and mailboxes
       const listEmail = get().emails.find(e => e.id === emailId);
       // Fork (Wnt/webmail): the message on screen may not be in the loaded
@@ -2935,27 +2984,42 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         return; // Already in desired state
       }
 
-      // Add to processing set
-      set((state) => ({
-        processingReadStatus: new Set([...state.processingReadStatus, processingKey])
-      }));
-
       // In unified view route to the email's own account client; otherwise use
       // the active/viewing client and the shared-folder accountId. (#281)
       const { client: actionClient, accountId } = resolveEmailActionContext(email, client);
 
+      // Check if this email is already being processed: the same message
+      // (login, JMAP account, id) in the same account epoch.
+      const key = `${epoch}|${useAuthStore.getState().activeAccountId ?? ''}|${accountId ?? actionClient.getAccountId?.() ?? ''}|${emailKeyFor(email)}|${read}`;
+      if (get().processingReadStatus.has(key)) {
+        return; // Already being processed
+      }
+      processingKey = key;
+
+      // Add to processing set
+      set((state) => ({
+        processingReadStatus: new Set([...state.processingReadStatus, key])
+      }));
+
       await actionClient.markAsRead(emailId, read, accountId);
 
+      set((state) => {
+        const processingReadStatus = new Set(state.processingReadStatus);
+        processingReadStatus.delete(key);
+        return { processingReadStatus };
+      });
+      processingKey = null;
+      if (currentStoreEpoch() !== epoch) return;
+
       if (!listEmail) {
-        settleReadOutsideList(get, set, client, email, read, processingKey);
+        settleReadOutsideList(get, set, client, email, read, epoch);
         return;
       }
 
       // Update local state including mailbox counters
       set((state) => {
-        // Remove from processing set
-        const newProcessingSet = new Set(state.processingReadStatus);
-        newProcessingSet.delete(processingKey);
+        // (Already out of the processing set, above.)
+        const newProcessingSet = state.processingReadStatus;
 
         // Only update counters if the state is actually changing
         const emailInState = state.emails.find(e => e.id === emailId);
@@ -3025,13 +3089,14 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       refillAfterKeywordChange(get, client, ['$seen']);
     } catch (error) {
       // Remove from processing set on error
+      const failedKey = processingKey;
       set((state) => {
         const newProcessingSet = new Set(state.processingReadStatus);
-        newProcessingSet.delete(`${emailId}-${read}`);
-        return {
-          processingReadStatus: newProcessingSet,
-          error: error instanceof Error ? error.message : "Failed to update email"
-        };
+        if (failedKey) newProcessingSet.delete(failedKey);
+        // Another account's failure is not shown in this one.
+        return currentStoreEpoch() === epoch
+          ? { processingReadStatus: newProcessingSet, error: error instanceof Error ? error.message : "Failed to update email" }
+          : { processingReadStatus: newProcessingSet };
       });
       throw error;
     }
@@ -4637,6 +4702,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   refreshCurrentMailbox: (client) => coalesceRefresh(client, 'currentMailbox', async () => {
     const { selectedMailbox, selectedKeyword } = get();
     const isCurrentView = captureEmailListView();
+    const fetchSeq = nextListFetchSeq();
 
     // Labels span folders and can be selected without a mailbox.
     if (!selectedMailbox && !selectedKeyword) return;
@@ -4971,6 +5037,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       } else if (retainedInViewIds) {
         set({ retainedInViewIds });
       }
+      catchUpAfterRead(get, fetchSeq);
     } catch (error) {
       console.error('Failed to refresh current mailbox:', error);
       // Don't set error state for background refreshes to avoid disrupting the UI
@@ -6157,29 +6224,6 @@ useEmailStore.subscribe((state, prev) => {
     });
   if (sameCross && sameUnified) return;
   useEmailStore.setState(projected);
-});
-
-// Fork (Wnt/webmail): a message marked while the loaded list did not hold it
-// (confirmedReadOutsideList): the first list that holds it afterwards shows
-// the state the server confirmed, even when that page was fetched before the
-// write landed. Later lists are the server's again.
-useEmailStore.subscribe((state, prev) => {
-  if (confirmedReadOutsideList.size === 0 || state.emails === prev.emails) return;
-  const now = Date.now();
-  const epoch = currentStoreEpoch();
-  const login = useAuthStore.getState().activeAccountId;
-  let emails: Email[] | null = null;
-  for (const [id, confirmed] of confirmedReadOutsideList) {
-    if (confirmed.until < now || confirmed.epoch !== epoch) { confirmedReadOutsideList.delete(id); continue; }
-    const idx = state.emails.findIndex((e) => e.id === id && (e.sourceClientAccountId ?? login) === confirmed.owner);
-    if (idx === -1) continue;
-    confirmedReadOutsideList.delete(id);
-    const row = (emails ?? state.emails)[idx];
-    if ((row.keywords?.$seen ?? false) === confirmed.read) continue;
-    emails ??= [...state.emails];
-    emails[idx] = { ...row, keywords: { ...row.keywords, $seen: confirmed.read } };
-  }
-  if (emails) useEmailStore.setState({ emails });
 });
 
 // Opening a message holds its list row (see listHold), however it was opened:
