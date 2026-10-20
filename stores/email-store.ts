@@ -698,16 +698,20 @@ function settleReadOutsideList(
   set: StoreSet,
   client: IJMAPClient,
   email: Email,
-  writtenAccount: string | null,
+  written: { client: IJMAPClient; account: string; login: string },
   read: boolean,
   epoch: number,
 ): void {
   const withSeen = (e: Email): Email => ({ ...e, keywords: { ...e.keywords, $seen: read } });
-  // The very message written: its id and stamps, and the JMAP account the
-  // write went to (an unstamped copy is reached in the folder on screen, so a
-  // same-id message of another shared folder opened meanwhile is not it).
-  const isWritten = (e: Email) => sameMessage(e, email)
-    && (resolveEmailActionContext(e, client).accountId ?? null) === writtenAccount;
+  // The very message written: its id and stamps, and the client and actual
+  // JMAP account the write went through (an unstamped copy is reached through
+  // the folder and login on screen, so a same-id message of another shared
+  // folder or another login opened meanwhile is not it).
+  const isWritten = (e: Email) => {
+    if (!sameMessage(e, email)) return false;
+    const ctx = resolveEmailActionContext(e, client);
+    return ctx.client === written.client && (ctx.accountId ?? ctx.client.getAccountId?.() ?? '') === written.account;
+  };
   set((state) => {
     let threadEmailsCache = state.threadEmailsCache;
     for (const [tid, cached] of state.threadEmailsCache) {
@@ -737,7 +741,7 @@ function settleReadOutsideList(
   // their way (a run in flight queues one more, in the same epoch only); not
   // yet asked for, the start's own fetch comes after the write.
   const s = get();
-  const owner = email.sourceClientAccountId;
+  const owner = written.login;
   if (!owner || owner === auth.activeAccountId) {
     if (!activeClient) return;
     const inFlight = inFlightRefreshes.get(activeClient);
@@ -797,6 +801,8 @@ async function applyEmailDeltaNow(client: IJMAPClient, newState: string, get: St
   if (sync.state === newState) return true;
 
   const accountArg = mailbox?.isShared ? mailbox.accountId : undefined;
+  // Fork (Wnt/webmail): only the account the list was loaded from can catch it up.
+  if ((accountArg ?? effectiveClient.getAccountId?.()) !== sync.accountId) return true;
   const delta = await effectiveClient.getEmailChanges(sync.state, accountArg, EMAIL_DELTA_MAX_CHANGES);
   if (obsolete()) return true;
   if (!delta || delta.hasMoreChanges) return false;
@@ -850,14 +856,25 @@ async function applyEmailDeltaNow(client: IJMAPClient, newState: string, get: St
   // unread, a star) keeps them; the server's answer above may predate that
   // write, and the change it raises is caught up by the next push.
   const current = get().emails;
-  const keywordsAtStart = new Map(s.emails.map((e) => [e.id, JSON.stringify(e.keywords ?? {})]));
+  const keywordsAtStart = new Map(s.emails.map((e) => [e.id, e.keywords ?? {}]));
   const next = current
     .filter((e) => !removed.has(e.id))
     .map((e) => {
       const fresh = replacementById.get(e.id);
       if (!fresh) return e;
-      const changedHere = keywordsAtStart.has(e.id) && keywordsAtStart.get(e.id) !== JSON.stringify(e.keywords ?? {});
-      return changedHere ? { ...fresh, keywords: e.keywords } : fresh;
+      const before = keywordsAtStart.get(e.id);
+      if (!before) return fresh;
+      // Only the keywords that changed here meanwhile keep their local value.
+      const local = e.keywords ?? {};
+      const keywords: Record<string, boolean> = { ...(fresh.keywords ?? {}) };
+      let changedHere = false;
+      for (const k of new Set([...Object.keys(before), ...Object.keys(local)])) {
+        if (!!before[k] === !!local[k]) continue;
+        changedHere = true;
+        if (k in local) keywords[k] = local[k];
+        else delete keywords[k];
+      }
+      return changedHere ? { ...fresh, keywords } : fresh;
     });
   const changedThreadIds = new Set<string>();
   for (const e of current) {
@@ -3029,9 +3046,15 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       // the active/viewing client and the shared-folder accountId. (#281)
       const { client: actionClient, accountId } = resolveEmailActionContext(email, client);
 
+      // Fork (Wnt/webmail): who the write is for - the login whose client
+      // sends it and the actual JMAP account (a primary account by the
+      // client's own id: unstamped copies of different logins look alike).
+      const writtenAccount = accountId ?? actionClient.getAccountId?.() ?? '';
+      const ownerLogin = email.sourceClientAccountId ?? get().viewingAccountId ?? useAuthStore.getState().activeAccountId ?? '';
+
       // Check if this email is already being processed: the same message
       // (login, JMAP account, id) in the same account epoch.
-      const key = `${epoch}|${useAuthStore.getState().activeAccountId ?? ''}|${accountId ?? actionClient.getAccountId?.() ?? ''}|${emailKeyFor(email)}|${read}`;
+      const key = `${epoch}|${ownerLogin}|${writtenAccount}|${emailKeyFor(email)}|${read}`;
       if (get().processingReadStatus.has(key)) {
         return; // Already being processed
       }
@@ -3053,7 +3076,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       if (currentStoreEpoch() !== epoch) return;
 
       if (!listEmail) {
-        settleReadOutsideList(get, set, client, email, accountId ?? null, read, epoch);
+        settleReadOutsideList(get, set, client, email, { client: actionClient, account: writtenAccount, login: ownerLogin }, read, epoch);
         return;
       }
 
@@ -4580,7 +4603,11 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   applyEmailDelta: (client, newState) => {
     // Serialise deltas: two pushes in quick succession must apply in order,
     // each against the sync state the previous one advanced to.
-    const run = emailDeltaQueue.then(() => applyEmailDeltaNow(client, newState, get, set), () => applyEmailDeltaNow(client, newState, get, set));
+    // Fork (Wnt/webmail): a delta asked for in one account epoch that only
+    // gets its turn in the next is dropped: its client is the old account's.
+    const askedIn = currentStoreEpoch();
+    const now = () => (currentStoreEpoch() === askedIn ? applyEmailDeltaNow(client, newState, get, set) : Promise.resolve(true));
+    const run = emailDeltaQueue.then(now, now);
     emailDeltaQueue = run.then(() => undefined, () => undefined);
     return run;
   },

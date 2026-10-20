@@ -482,3 +482,81 @@ describe('after the write: account epochs, identity, newer writes, every list', 
     expect(useEmailStore.getState().mailboxes[0]?.unreadEmails).toBe(4);
   });
 });
+
+// Astra r3 (audit/reviews/notif-mark-read-r3.md, final scoped round).
+describe('after the write: queued deltas, viewed logins, per-keyword merge', () => {
+  it('a catch-up queued behind another delta and run after an account switch does nothing', async () => {
+    seed({
+      selectedEmail: mail('m-tapped'), emails: [mail('m-other')], mailboxes: [inbox(2)],
+      emailListSync: { state: 's-before', accountId: 'acc', mailboxId: 'inbox' },
+    });
+    // A push delta is out; the read's catch-up queues behind it.
+    const first = deferred<ReturnType<typeof noChanges>>();
+    client.getEmailChanges.mockReturnValueOnce(first.promise);
+    const pushDelta = useEmailStore.getState().applyEmailDelta(client, 's-push');
+    await useEmailStore.getState().markAsRead(client, 'm-tapped', true);
+    bumpStoreEpoch();
+    useAuthStore.setState({ activeAccountId: 'login-b', client: makeClient() as never } as never);
+    const sync = { state: 's-before', accountId: 'acc', mailboxId: 'inbox' };
+    seed({ emails: [mail('m-other', {}, { subject: 'B private message' })], mailboxes: [inbox(5)], emailListSync: sync });
+    client.getEmailChanges.mockResolvedValue({ ...noChanges('s-before'), newState: 's-after', updated: ['m-other'] });
+    client.getSomeEmails.mockResolvedValue([mail('m-other', { $seen: true }, { subject: 'A private message' })]);
+    first.resolve(noChanges('s-before'));
+    await pushDelta;
+    await settle();
+    await settle();
+    expect(client.getEmailChanges).toHaveBeenCalledTimes(1);
+    expect(useEmailStore.getState().emails[0].subject).toBe('B private message');
+    expect(useEmailStore.getState().emailListSync).toBe(sync);
+  });
+
+  it('an unstamped message of another login viewed while the write was out is not marked', async () => {
+    const write = deferred<void>();
+    client.markAsRead.mockReturnValueOnce(write.promise);
+    const other = makeClient();
+    useAuthStore.setState({ getClientForAccount: (id: string) => (id === 'login-b' ? other : client) as never } as never);
+    seed({ selectedEmail: mail('m'), mailboxes: [inbox(1)] });
+    const marking = useEmailStore.getState().markAsRead(client, 'm', true);
+    // The user views login-b's Inbox and opens its own unstamped "m".
+    useEmailStore.setState({ viewingAccountId: 'login-b', emails: [mail('m')], selectedEmail: mail('m') } as never);
+    write.resolve();
+    await marking;
+    expect(seenRow('m')).toBeUndefined();
+    expect(useEmailStore.getState().selectedEmail?.keywords?.$seen).toBeUndefined();
+  });
+
+  it('starred while the catch-up is out: the star stays and the server\'s read state is taken', async () => {
+    seed({ selectedEmail: mail('m-tapped'), mailboxes: [inbox(3)] });
+    const write = deferred<void>();
+    client.markAsRead.mockReturnValueOnce(write.promise);
+    const marking = useEmailStore.getState().markAsRead(client, 'm-tapped', true);
+    write.resolve();
+    await marking;
+    // Its catch-up's answer is held.
+    client.getEmailChanges.mockResolvedValue({ ...noChanges('s-before'), newState: 's-after', updated: ['m-tapped'] });
+    const snapshot = deferred<Email[]>();
+    client.getSomeEmails.mockReturnValueOnce(snapshot.promise);
+    // The list as it landed from before the write, and its catch-up delta.
+    useEmailStore.setState({ emails: [mail('m-tapped')], emailListSync: { state: 's-before', accountId: 'acc', mailboxId: 'inbox' } } as never);
+    void useEmailStore.getState().applyEmailDelta(client, 's-push');
+    await vi.waitFor(() => expect(client.getSomeEmails).toHaveBeenCalled());
+    // Starred here meanwhile.
+    useEmailStore.setState((st) => ({ emails: st.emails.map((e) => ({ ...e, keywords: { ...e.keywords, $flagged: true } })) }) as never);
+    snapshot.resolve([mail('m-tapped', { $seen: true })]);
+    await settle();
+    await settle();
+    const row = useEmailStore.getState().emails[0];
+    expect(row.keywords?.$seen).toBe(true);
+    expect(row.keywords?.$flagged).toBe(true);
+  });
+
+  it('a message of the login being viewed: that login\'s folders are fetched again, not the active one\'s', async () => {
+    const other = makeClient();
+    useAuthStore.setState({ getClientForAccount: (id: string) => (id === 'login-b' ? other : client) as never } as never);
+    seed({ viewingAccountId: 'login-b', selectedEmail: mail('m-b'), accountMailboxes: { 'login-b': [inbox(1)] }, mailboxes: [inbox(5)] });
+    await useEmailStore.getState().markAsRead(client, 'm-b', true);
+    expect(other.markAsRead).toHaveBeenCalledWith('m-b', true, undefined);
+    expect(fetchAccountMailboxes).toHaveBeenCalledWith(other, 'login-b');
+    expect(fetchMailboxes).not.toHaveBeenCalled();
+  });
+});
