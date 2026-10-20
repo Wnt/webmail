@@ -135,7 +135,8 @@ export function MailStartShell({ view, label }: { view: "message" | "list"; labe
       {/* Ends WebKit's/Chrome's hold on the first frame once the shell below is parsed (React hoists it to <head>). */}
       <link rel="expect" href="#mm-start-shell-end" {...{ blocking: "render" }} />
       <p role="status" className="sr-only">{label}</p>
-      <div className="h-full" inert aria-hidden="true">
+      {/* A slow pulse says it is loading (the spinner did); not with reduced motion. */}
+      <div className="h-full motion-safe:animate-pulse" inert aria-hidden="true">
         <div className="h-full md:hidden">{view === "message" ? <PhoneMessage /> : <PhoneList />}</div>
         <div className="hidden h-full md:block"><Wide /></div>
       </div>

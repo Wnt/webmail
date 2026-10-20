@@ -4100,7 +4100,10 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
   // app's own layout with placeholders, which an iPhone paints at once (see
   // MailStartShell), instead of a spinner it kept white until the end of the HTML.
   if (!initialCheckDone || authLoading || (!isAuthenticated || !client)) {
-    const opensMessage = linkSegments?.[0] === 'message' || linkSegments?.[0] === 'thread';
+    // The route's own segments, as on the server: the static Lite export has
+    // none (its hook reads the link in the browser), so its first render
+    // must match the exported list shell.
+    const opensMessage = routeSegments?.[0] === 'message' || routeSegments?.[0] === 'thread';
     return <MailStartShell view={opensMessage ? 'message' : 'list'} label={t("common.loading")} />;
   }
 

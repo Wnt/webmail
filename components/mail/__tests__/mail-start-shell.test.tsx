@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { MailStartShell } from '../mail-start-shell';
-import { launchImageLinks, parseLaunchSpec, LAUNCH_SCREENS } from '@/lib/pwa-launch';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { launchImageLinks, LAUNCH_SCREENS } from '@/lib/pwa-launch';
 
 // Fork patch (Wnt/webmail): the server's markup for a page start must be
 // something WebKit paints at once (LocalFrameView::qualifiesAsVisuallyNonEmpty:
@@ -19,8 +21,17 @@ describe('MailStartShell', () => {
     expect(html.match(/role="status"/g)).toHaveLength(1);
     expect(html).toContain('Loading...');
     // nothing to tap or read before the app runs: the outline is inert and hidden
-    expect(html).toMatch(/<div class="h-full" inert="" aria-hidden="true">/);
+    expect(html).toMatch(/<div class="h-full motion-safe:animate-pulse" inert="" aria-hidden="true">/);
     expect(html).not.toMatch(/<(button|a|input)\b/);
+  });
+});
+
+describe('MailApp start', () => {
+  it('renders the start shell, not a spinner, while it restores the session', () => {
+    const src = readFileSync(path.join(process.cwd(), 'components/mail/mail-app.tsx'), 'utf8');
+    const branch = src.slice(src.indexOf('if (!initialCheckDone || authLoading || (!isAuthenticated || !client)) {'));
+    expect(branch.slice(0, 900)).toMatch(/return <MailStartShell view=\{opensMessage \? 'message' : 'list'\}/);
+    expect(branch.slice(0, 900)).not.toMatch(/animate-spin/);
   });
 });
 
@@ -29,13 +40,16 @@ describe('launch images', () => {
     const links = launchImageLinks();
     expect(links).toHaveLength(LAUNCH_SCREENS.length * 2);
     const iphone11Pro = links.filter((l) => l.media.includes('(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3)'));
-    expect(iphone11Pro.map((l) => l.href).sort()).toEqual(['/api/pwa-launch/375x812@3-dark.png', '/api/pwa-launch/375x812@3-light.png']);
+    expect(iphone11Pro.map((l) => l.href).sort()).toEqual(['/branding/launch/375x812@3-dark.png', '/branding/launch/375x812@3-light.png']);
     expect(links.every((l) => l.media.includes('(orientation: portrait)'))).toBe(true);
   });
-  it('renders only the listed screens', () => {
-    expect(parseLaunchSpec('402x874@3-dark.png')).toEqual({ w: 402, h: 874, dpr: 3, scheme: 'dark' });
-    for (const bad of ['402x874@2-dark.png', '999x999@3-light.png', '402x874@3-blue.png', '../402x874@3-dark.png', '402x874@3-dark.png?x']) {
-      expect(parseLaunchSpec(bad)).toBeNull();
+  it('every linked image is a shipped file of the screen\'s pixel size', () => {
+    for (const { href } of launchImageLinks()) {
+      const file = path.join(process.cwd(), 'public', href);
+      expect(existsSync(file), href).toBe(true);
+      const png = readFileSync(file);
+      const [w, h, dpr] = /\/(\d+)x(\d+)@(\d)-/.exec(href)!.slice(1).map(Number);
+      expect([png.readUInt32BE(16), png.readUInt32BE(20)], href).toEqual([w * dpr, h * dpr]);
     }
   });
 });

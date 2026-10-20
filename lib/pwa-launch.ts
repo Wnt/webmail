@@ -4,9 +4,12 @@
 // <link rel="apple-touch-startup-image"> whose media query matches the device
 // exactly (CSS size, pixel ratio, orientation); without one it shows black,
 // then a white page until the page's first frame (checked in the iOS 26.3
-// simulator). The images (app/api/pwa-launch/[spec]) are the app's own
-// background with its icon in the middle, light and dark. iPhones only, portrait
-// (the manifest's orientation).
+// simulator; iOS takes the image when the app is added to the Home Screen, so
+// an app added before keeps its old launch screen until it is added again).
+// The images are static files (public/branding/launch, rendered by
+// scripts/launch-images/build.mjs): the app's own page background with its
+// icon in the middle, light and dark. iPhones only, portrait (the manifest's
+// orientation).
 
 /** [CSS width, CSS height, device pixel ratio] of each iPhone screen. */
 export const LAUNCH_SCREENS: readonly (readonly [number, number, number])[] = [
@@ -26,20 +29,11 @@ export const LAUNCH_SCREENS: readonly (readonly [number, number, number])[] = [
 
 export type LaunchScheme = 'light' | 'dark';
 
-/** The app's own page background (app/globals.css --color-background). */
+/** The app's own page background (app/globals.css --color-background); scripts/launch-images/build.mjs uses the same. */
 export const LAUNCH_BACKGROUND: Record<LaunchScheme, string> = { light: '#ffffff', dark: '#0a0a0a' };
 
 export function launchSpec(w: number, h: number, dpr: number, scheme: LaunchScheme): string {
   return `${w}x${h}@${dpr}-${scheme}.png`;
-}
-
-/** The screen and scheme of a spec, if it is one of LAUNCH_SCREENS. */
-export function parseLaunchSpec(spec: string): { w: number; h: number; dpr: number; scheme: LaunchScheme } | null {
-  const m = /^(\d{3})x(\d{3})@([23])-(light|dark)\.png$/.exec(spec);
-  if (!m) return null;
-  const [w, h, dpr] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  if (!LAUNCH_SCREENS.some(([a, b, c]) => a === w && b === h && c === dpr)) return null;
-  return { w, h, dpr, scheme: m[4] as LaunchScheme };
 }
 
 /** The <link rel="apple-touch-startup-image"> list: light and dark for every screen. */
@@ -48,7 +42,7 @@ export function launchImageLinks(basePath = ''): { href: string; media: string }
   for (const scheme of ['light', 'dark'] as const) {
     for (const [w, h, dpr] of LAUNCH_SCREENS) {
       out.push({
-        href: `${basePath}/api/pwa-launch/${launchSpec(w, h, dpr, scheme)}`,
+        href: `${basePath}/branding/launch/${launchSpec(w, h, dpr, scheme)}`,
         media: `screen and (device-width: ${w}px) and (device-height: ${h}px) and (-webkit-device-pixel-ratio: ${dpr})`
           + ` and (orientation: portrait) and (prefers-color-scheme: ${scheme})`,
       });
