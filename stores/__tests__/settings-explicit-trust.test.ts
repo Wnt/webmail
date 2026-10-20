@@ -58,3 +58,20 @@ describe('importSettings', () => {
     expect(useSettingsStore.getState().isSenderTrusted(NEW)).toBe(true);
   });
 });
+
+describe('a browser that stored its settings before the rule', () => {
+  it('rehydrates a version 7 record with its old trust unconfirmed', async () => {
+    localStorage.setItem('settings-storage', JSON.stringify({
+      state: { trustedSenders: [OLD], trustedSendersAddressBook: true, externalContentPolicy: 'ask' },
+      version: 7,
+    }));
+    await useSettingsStore.persist.rehydrate();
+    const s = useSettingsStore.getState();
+    expect(s.trustedSenders).toEqual([]);
+    expect(s.isSenderTrusted(OLD)).toBe(false);
+    expect(s.trustedSendersAddressBook).toBeNull();
+    expect(s.unconfirmedTrustedSenders).toEqual([OLD]);
+    expect(s.unconfirmedTrustedSendersAddressBook).toBe(true);
+    expect(JSON.parse(localStorage.getItem('settings-storage') || '{}').version).toBe(8);
+  });
+});
