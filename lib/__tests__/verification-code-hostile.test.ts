@@ -150,7 +150,10 @@ describe('hostile mail stays cheap (linear, capped)', () => {
       expect(findVerificationCode('', `${at(MAX_PREVIEW_CHARS, lead)}5678`, 'preview')).toBeNull();
       expect(findVerificationCode('', `${at(MAX_BODY_CHARS, lead)}5678`)).toBeNull();
     }
-    expect(findVerificationCode('', 'Your code is 1234 5678', 'preview')).toBe('12345678');
+    // Uncut, the whole code; a preview may always be cut at its end, so it gives one only with room after it.
+    expect(findVerificationCode('', 'Your code is 1234 5678')).toBe('12345678');
+    expect(findVerificationCode('', 'Your code is 1234 5678', 'preview')).toBeNull();
+    expect(findVerificationCode('', 'Your code is 1234 5678. It expires in 10 minutes, so use it soon.', 'preview')).toBe('12345678');
     // The guard counts from where the cut was: a code far before a long cut word still counts.
     expect(findVerificationCode('', markCut(`Your code is 482913 ${'x'.repeat(5_000)}`, true))).toBe('482913');
     expect(findVerificationCode('', `Your code is 482913 ${'x'.repeat(30_000)}`)).toBe('482913');
@@ -256,10 +259,16 @@ describe('hostile mail stays cheap (linear, capped)', () => {
       expect(findVerificationCode('', 'Your code is 1234 ...', source)).toBeNull();
       expect(findVerificationCode('', 'Your code is 1234 5678…', source)).toBeNull();
     }
-    // No over-correction: a short preview is complete; a long one still gives a code far from its end.
-    expect(findVerificationCode('', 'Your code is 482913. It expires in 10 minutes.', 'preview')).toBe('482913');
+    // Any preview may end where its server stopped reading (legacy-proxy reads 8,192 bytes, and whitespace
+    // can collapse them to "Your code is 1234"; review bulwark-n1 r3): a preview gives a code only with 40
+    // visible characters after it, however short it is.
+    const collapsed = `${' '.repeat(8192 - 'Your code is 1234'.length)}Your code is 123456`.slice(0, 8192).trim();
+    expect(collapsed).toBe('Your code is 1234');
+    expect(listVerificationCode({ subject: '', preview: collapsed, receivedAt: '2026-10-19T11:59:00Z' }, now)).toBeNull();
+    expect(findVerificationCode('', 'Your code is 482913. It expires in 10 minutes.', 'preview')).toBeNull();
+    expect(findVerificationCode('', 'Your code is 482913. It expires in 10 minutes, so use it soon.', 'preview')).toBe('482913');
     expect(findVerificationCode('', `Your code is 482913. ${pad(230)}`, 'preview')).toBe('482913');
-    expect(findVerificationCode('', `${pad(170)} Your code is 482913`, 'preview')).toBe('482913'); // 190 characters: complete
+    expect(findVerificationCode('', `${pad(170)} Your code is 482913`, 'preview')).toBeNull();
   });
 
   it('the converter reads every element unless told otherwise; the reader leaves hidden and quoted ones out', () => {
@@ -290,7 +299,8 @@ describe('hostile mail stays cheap (linear, capped)', () => {
     expect(row('Your code is 1234 56...')).toBeNull();
     expect(row('Your code is 1234 ...')).toBeNull();
     expect(row('Your code is 1 2 3 4 5...')).toBeNull();
-    expect(row('Your code is 1234 5678')).toBe('12345678');
+    expect(row('Your code is 1234 5678')).toBeNull();
+    expect(row('Your code is 1234 5678. It expires in 10 minutes, so use it soon.')).toBe('12345678');
     // legacy-proxy's preview: the first 256 characters, no ellipsis, no flag.
     const body = `${'x'.repeat(238)} Your code is 12345678`;
     expect(row(body.slice(0, 256))).toBeNull();
@@ -300,5 +310,20 @@ describe('hostile mail stays cheap (linear, capped)', () => {
       bodyValues: { 1: { value: body, isEncodingProblem: false, isTruncated: false } },
     };
     expect(findVerificationCode('', verificationCodeBodyText(reader))).toBe('12345678');
+  });
+
+  it('a link reads its visible text only when the code reader asks; ordinary conversion is unchanged (review bulwark-n1 r3 R7)', () => {
+    const link = '<a href="https://examplepaja.test/login"><span hidden>Your code is 123456</span>Continue</a>';
+    expect(htmlToPlainText(link)).toBe('Your code is 123456Continue <https://examplepaja.test/login>');
+    const read = htmlToPlainTextBounded(link, Infinity, { exclude: (el) => (el.hasAttribute('hidden') ? 'element' : null) });
+    expect(read.text).toBe('Continue');
+    expect(findVerificationCode('', verificationCodeBodyText(htmlMail(link)))).toBeNull();
+    expect(findVerificationCode('', verificationCodeBodyText(htmlMail(`${link}<p>Your verification code is 654321.</p>`)))).toBe('654321');
+  });
+
+  it('a quote after the text cap does not make the cut text whole (the reader keeps the two cut causes apart)', () => {
+    const html = `<p>${'Lorem ipsum '.repeat(1_700).slice(0, MAX_BODY_CHARS - 'Your code is 1234'.length)}Your code is 123456</p><div>On Monday, Alice Example wrote:</div><div>Earlier</div>`;
+    expect(findVerificationCode('', verificationCodeBodyText(htmlMail(html)))).toBeNull();
+    expect(findVerificationCode('', verificationCodeBodyText(htmlMail('<p>Your code is 123456</p><div>On Monday, Alice Example wrote:</div>')))).toBe('123456');
   });
 });

@@ -178,7 +178,10 @@ export function htmlToPlainTextBounded(
       return;
     }
 
-    if (tagName === 'a') {
+    // A link reads as "text <href>". With `exclude` (the code reader), it is
+    // read like any other element instead, so its hidden or quoted parts are
+    // left out, a quote start in it ends the text, and the budget holds.
+    if (tagName === 'a' && !exclude) {
       const text = element.textContent?.replace(/\s+/g, ' ').trim() || '';
       const href = element.getAttribute('href')?.trim() || '';
       const normalizedHref = href.replace(/^mailto:/i, '');
