@@ -24,8 +24,15 @@ import type { Email } from '@/lib/jmap/types';
 
 /** Full messages kept for the swipe (the open one, its neighbours, the one before). */
 export const NEIGHBOUR_CACHE_SIZE = 4;
-/** How long a prepared neighbour stands in for the open's Email/get. */
-export const NEIGHBOUR_PRIME_MAX_AGE_MS = 5 * 60_000;
+/**
+ * How long the client keeps a neighbour's fetch for the open's getEmail. The
+ * copy itself lives in the swipe's own memory (NEIGHBOUR_CACHE_SIZE); the
+ * client only holds it until it is used or this passes, so unopened
+ * neighbours do not pile up there.
+ */
+export const NEIGHBOUR_FETCH_MAX_AGE_MS = 20_000;
+/** A neighbour handed to the client right before the swipe opens it (taken at once). */
+export const NEIGHBOUR_PRIME_MAX_AGE_MS = 10_000;
 /** A shown body larger than this (UTF-16 code units of its value) is previewed light, not rendered. */
 export const NEIGHBOUR_FULL_MAX_CHARS = 200_000;
 /** An HTML body with more elements than this is previewed light, not rendered. */

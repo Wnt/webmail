@@ -2483,6 +2483,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     onBlocked: onSwipeBlocked,
     resetKey: email?.id ?? null,
     preload: swipePreload,
+    loading: isLoading,
   });
   // The panes keep what they show while a swipe hands over to the page: the
   // one the track rests on is the message the page is taking.

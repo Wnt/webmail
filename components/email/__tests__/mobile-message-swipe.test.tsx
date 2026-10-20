@@ -476,6 +476,21 @@ describe('previous / next on the phone', () => {
     expect(parts(container).prev?.querySelector('[data-swipe-peek-subject]')?.textContent).toBe('Planning notes');
   });
 
+  it('an open that fails (no new message) puts the track back on the page at once', () => {
+    const onNext = vi.fn();
+    const neighbours = { prev: null, next: { row: htmlRow, email: null } };
+    const props = { email: plainEmail, mailboxes, selectedMailbox: 'inbox', currentMailboxRole: 'inbox',
+      onQuickReply: vi.fn(async () => {}), onNavigateNext: onNext, swipeNeighbours: neighbours };
+    const { container, rerender } = render(<EmailViewer {...props} />);
+    swipeTo(container, 'next');
+    expect(onNext).toHaveBeenCalledTimes(1);
+    expect(parts(container).track!.style.overflowX).toBe('hidden');
+    rerender(<EmailViewer {...props} isLoading />);
+    expect(parts(container).track!.style.overflowX).toBe('hidden');
+    rerender(<EmailViewer {...props} isLoading={false} />);
+    expect(parts(container).track!.style.overflowX).toBe('');
+  });
+
   it('the panes show the neighbours themselves: subject, sender and the rendered body', () => {
     const { container } = renderViewer({
       email: plainEmail, onNavigateNext: vi.fn(), onNavigatePrev: vi.fn(),

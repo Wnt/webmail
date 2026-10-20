@@ -59,10 +59,16 @@ export interface UseMessageSwipeOptions {
   resetKey?: string | null;
   /** What each side's pane shows right now (for the open-speed beacon). */
   preload?: { prev: SwipePreload; next: SwipePreload };
+  /** The page is loading the message it was asked to show (the open's fetch). */
+  loading?: boolean;
 }
 
-/** Give up waiting for the next message and go back to the page as it is. */
-const COMMIT_FALLBACK_MS = 2500;
+/**
+ * Give up waiting for the next message and go back to the page as it is. The
+ * pane shows the message being opened meanwhile; an open that ends without a
+ * new message (a failed fetch) goes back at once.
+ */
+const COMMIT_FALLBACK_MS = 6000;
 /** The longest the track waits on the pane for the page's body to be on screen. */
 const BODY_WAIT_MS = 1200;
 /** A blocked swipe this far into a gutter says why it does not navigate. */
@@ -118,6 +124,7 @@ export function useMessageSwipe({
   onBlocked,
   resetKey,
   preload,
+  loading = false,
 }: UseMessageSwipeOptions): { modes: GutterModes; committing: boolean } {
   // A pinch-zoomed page pans with the finger; the track must not take that pan.
   const [zoomed, setZoomed] = useState(false);
@@ -144,7 +151,7 @@ export function useMessageSwipe({
 
   /** idle; committing = settled on a pane, the page is taking the neighbour. */
   const phase = useRef<"idle" | "committing">("idle");
-  const pending = useRef<{ fromKey: string | null | undefined; timer: number; cancelWait?: () => void } | null>(null);
+  const pending = useRef<{ fromKey: string | null | undefined; timer: number; cancelWait?: () => void; sawLoading?: boolean } | null>(null);
   const handOver = useRef<string | null>(null);
   const scrolling = useRef(false);
   const noticed = useRef(false);
@@ -275,6 +282,14 @@ export function useMessageSwipe({
     p.cancelWait?.();
     p.cancelWait = afterBodyPainted(resetKey, finish, BODY_WAIT_MS);
   }, [resetKey, paneRef, finish]);
+
+  // The open ended without another message (it failed): back to the page now.
+  useEffect(() => {
+    const p = pending.current;
+    if (!p) return;
+    if (loading) { p.sawLoading = true; return; }
+    if (p.sawLoading && resetKeyRef.current === p.fromKey) finish();
+  }, [loading, finish]);
 
   const onScrollEnd = useCallback(() => {
     window.clearTimeout(settleTimer.current);

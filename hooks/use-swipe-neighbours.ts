@@ -8,6 +8,7 @@ import type { SwipePreload } from "@/lib/open-timing";
 import { fetchAhead } from "@/lib/open-prefetch";
 import {
   NEIGHBOUR_CACHE_SIZE,
+  NEIGHBOUR_FETCH_MAX_AGE_MS,
   NEIGHBOUR_PRIME_MAX_AGE_MS,
   neighbourFetchable,
   peekKind,
@@ -121,7 +122,7 @@ export function useSwipeNeighbours({ client, enabled, current, prevRow, nextRow 
       if (saveDataRequested()) return;
       const row = queue[i];
       if (lookup(row)) { step(i + 1); return; }
-      const pending = fetchAhead(client, row, NEIGHBOUR_PRIME_MAX_AGE_MS);
+      const pending = fetchAhead(client, row, NEIGHBOUR_FETCH_MAX_AGE_MS);
       if (!pending) return;
       void pending.then((email) => {
         if (cancelled) return;
