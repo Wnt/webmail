@@ -359,6 +359,19 @@ const THREAD_FETCH_REUSE_MS = 5_000;
 // Fork (Wnt/webmail): how long a primed message (primeEmail) stands in for an
 // Email/get - only for the open that primed it.
 const PRIMED_EMAIL_MAX_AGE_MS = 60_000;
+/**
+ * Fork (Wnt/webmail): the session's mail account - its primary one, else its
+ * first - and only an account the session itself lists (an own property of
+ * `accounts`, not an inherited name); '' when there is none.
+ */
+function mailAccountOf(session: { accounts?: Record<string, unknown> | null; primaryAccounts?: Record<string, string> | null }): string {
+  const accounts = session.accounts && typeof session.accounts === 'object' ? session.accounts : {};
+  const listed = (id: unknown): id is string => typeof id === 'string' && !!id && Object.prototype.hasOwnProperty.call(accounts, id);
+  const primary = session.primaryAccounts?.["urn:ietf:params:jmap:mail"];
+  if (listed(primary)) return primary;
+  return Object.keys(accounts).find(listed) ?? '';
+}
+
 /** Fork (Wnt/webmail): at most this many messages wait in primedEmails (each holds a whole message). */
 const PRIMED_EMAIL_MAX_ENTRIES = 8;
 const threadFetchKey = (accountId: string, threadId: string) => `${accountId}\u0000${threadId}`;
@@ -1406,13 +1419,12 @@ export class JMAPClient implements IJMAPClient {
     // copies kept for it - looked unchanged, even for a session with no
     // account at all). Without one, the old account is retired, its copies
     // are stale, and the refresh fails (the request keeps its 401).
-    const primary = session.primaryAccounts?.["urn:ietf:params:jmap:mail"];
-    this.accountId = (primary && this.accounts[primary] ? primary : Object.keys(this.accounts)[0]) || '';
-    this.noteSessionIdentity();
+    this.accountId = mailAccountOf(session);
     if (!this.accountId) {
-      this.primedEmails.clear();
+      this.retireSessionCopies();
       throw new Error('No mail account found in session');
     }
+    this.noteSessionIdentity();
     this.noteSession(raw);
   }
 
@@ -1454,8 +1466,8 @@ export class JMAPClient implements IJMAPClient {
       || typeof session.downloadUrl !== 'string' || !session.accounts || typeof session.accounts !== 'object') {
       return false;
     }
-    const accountId = session.primaryAccounts?.["urn:ietf:params:jmap:mail"] || Object.keys(session.accounts)[0];
-    if (!accountId || !session.accounts[accountId]) return false;
+    const accountId = mailAccountOf(session);
+    if (!accountId) return false;
     const raw = cloneSession(saved);
     this.intentionallyDisconnected = false;
     this.rewriteSessionUrls(session);
@@ -1486,8 +1498,15 @@ export class JMAPClient implements IJMAPClient {
         if (!response.ok || this.intentionallyDisconnected) return 'failed';
         const session = await response.json() as JMAPSession | null;
         if (!session || typeof session.apiUrl !== 'string' || !session.apiUrl || !session.accounts) return 'failed';
-        const accountId = session.primaryAccounts?.["urn:ietf:params:jmap:mail"] || Object.keys(session.accounts)[0];
-        if (!accountId || this.intentionallyDisconnected) return 'failed';
+        const accountId = mailAccountOf(session);
+        if (this.intentionallyDisconnected) return 'failed';
+        if (!accountId) {
+          // Fork (Wnt/webmail): the server's session lists no mail account (it
+          // answers so for a login it no longer knows): the current session
+          // stays for the caller, but nothing kept for it is handed out again.
+          this.retireSessionCopies();
+          return 'failed';
+        }
         const raw = cloneSession(session as unknown as Record<string, unknown>);
         const unchanged = !!raw && !!this.sessionRaw && JSON.stringify(raw) === JSON.stringify(this.sessionRaw);
         this.rewriteSessionUrls(session);
@@ -1557,11 +1576,13 @@ export class JMAPClient implements IJMAPClient {
       this.downloadUrl = session.downloadUrl;
       this.accounts = session.accounts || {};
 
-      const mailAccount = session.primaryAccounts?.["urn:ietf:params:jmap:mail"];
-      const fallbackAccount = Object.keys(this.accounts)[0];
-      this.accountId = mailAccount || fallbackAccount;
+      this.accountId = mailAccountOf(session);
 
       if (!this.accountId) {
+        // Fork (Wnt/webmail): the server knows no mail account here: copies
+        // kept for the last one are stale for good (a later reconnect of the
+        // same identity does not bring them back).
+        this.retireSessionCopies();
         throw new Error('No mail account found in session');
       }
 
@@ -1671,9 +1692,7 @@ export class JMAPClient implements IJMAPClient {
     this.sessionRaw = null;
     this.capabilities = {};
     // Fork (Wnt/webmail): copies kept for an open belong to the session that is gone.
-    this.sessionGeneration++;
-    this.disconnectedSinceSession = true;
-    this.primedEmails.clear();
+    this.retireSessionCopies();
   }
 
   private rewriteSessionUrl(url: string): string {
@@ -2538,6 +2557,17 @@ export class JMAPClient implements IJMAPClient {
    */
   getIdentity(): string {
     return `${this.username}\u0000${this.apiUrl}\u0000${this.accountId}`;
+  }
+
+  /**
+   * The session's copies are stale for good: a new generation, the kept
+   * copies dropped, and the next session installed counts as new even with
+   * the same identity (after a sign-out, or a session without a mail account).
+   */
+  private retireSessionCopies(): void {
+    this.sessionGeneration++;
+    this.disconnectedSinceSession = true;
+    this.primedEmails.clear();
   }
 
   /** A session was installed: a new generation after a sign-out or for another identity. */
