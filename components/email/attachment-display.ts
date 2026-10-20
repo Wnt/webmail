@@ -52,7 +52,8 @@ const MIME_TYPE_LABELS: Record<string, string> = {
 export const getAttachmentDisplayName = (name: string | null | undefined, mimeType?: string): string => {
   // Without directional overrides, which would show `report\u202Efdp.exe`
   // as `reportexe.pdf` (upstream 29b33eb4; the download name is cleaned separately).
-  if (name) return stripBidiControls(name);
+  const shown = name ? stripBidiControls(name) : '';
+  if (shown) return shown;
   if (mimeType) {
     const label = MIME_TYPE_LABELS[mimeType.toLowerCase()];
     if (label) return label;

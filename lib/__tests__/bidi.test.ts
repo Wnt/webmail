@@ -21,5 +21,8 @@ describe('getAttachmentDisplayName', () => {
     const { getAttachmentDisplayName } = await import('@/components/email/attachment-display');
     expect(getAttachmentDisplayName('report‮fdp.exe', 'application/octet-stream')).toBe('reportfdp.exe');
     expect(getAttachmentDisplayName('plain.pdf', 'application/pdf')).toBe('plain.pdf');
+    // A name of nothing but controls falls back like a missing one.
+    expect(getAttachmentDisplayName('\u202E\u202D', 'application/pdf')).toBe(getAttachmentDisplayName(undefined, 'application/pdf'));
+    expect(getAttachmentDisplayName('\u202E', 'application/pdf')).not.toBe('');
   });
 });
