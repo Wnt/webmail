@@ -10,6 +10,12 @@
 // scripts/launch-images/build.mjs): the app's own page background with its
 // icon in the middle, light and dark. iPhones only, portrait (the manifest's
 // orientation).
+//
+// The images show the shipped icon (public/icon-512x512.png), not the admin's
+// branding settings, so a deployment turns them on only when that icon is its
+// brand: PWA_LAUNCH_IMAGES=true (runtime env, read by app/(main)/layout.tsx).
+// Without it iOS keeps its own launch screen. After changing the icon, re-run
+// the generator.
 
 /** [CSS width, CSS height, device pixel ratio] of each iPhone screen. */
 export const LAUNCH_SCREENS: readonly (readonly [number, number, number])[] = [

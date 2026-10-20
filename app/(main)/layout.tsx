@@ -294,8 +294,8 @@ export default async function RootLayout({
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-title" content={appName} />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-        {/* Fork patch (Wnt/webmail): iPhone launch screens (lib/pwa-launch.ts). */}
-        {!IS_LITE && launchImageLinks((process.env.NEXT_PUBLIC_BASE_PATH ?? "").replace(/\/+$/, "")).map((l) => (
+        {/* Fork patch (Wnt/webmail): iPhone launch screens (lib/pwa-launch.ts), for a deployment whose brand is the shipped icon. */}
+        {!IS_LITE && process.env.PWA_LAUNCH_IMAGES === "true" && launchImageLinks((process.env.NEXT_PUBLIC_BASE_PATH ?? "").replace(/\/+$/, "")).map((l) => (
           <link key={l.href} rel="apple-touch-startup-image" href={l.href} media={l.media} />
         ))}
         {parentOrigin && (
