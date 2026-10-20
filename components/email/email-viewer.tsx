@@ -4123,7 +4123,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
           a long subject) and stays there; on the phone it swipes with its
           message. Keyed by message: a copy result never carries over. */}
       {codeBarCode && (
-        <VerificationCodeBar key={email.id} code={codeBarCode} className="flex-shrink-0" />
+        <VerificationCodeBar key={`${email.id}:${codeBarCode}`} code={codeBarCode} className="flex-shrink-0" />
       )}
       {/* === SUBJECT BLOCK === */}
       <div className={cn(
@@ -4182,7 +4182,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
               </div>
               {verificationCode && !codeBarCode && (
                 <div className="mt-1.5 flex">
-                  <VerificationCodeChip code={verificationCode} className="py-1 text-sm" />
+                  <VerificationCodeChip key={`${email.id}:${verificationCode}`} code={verificationCode} className="py-1 text-sm" />
                 </div>
               )}
               {sortedTagIds.length > 0 && (

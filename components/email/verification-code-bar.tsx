@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useRef } from "react";
 import { useTranslations } from "next-intl";
 import { AlertCircle, Check, Copy, Key } from "@/components/icons";
 import { Button } from "@/components/ui/button";
-import { copyText, selectElementText } from "@/lib/copy-text";
+import { selectElementText } from "@/lib/copy-text";
 import { cn } from "@/lib/utils";
-
-type CopyState = "idle" | "copying" | "copied" | "failed";
+import { useCodeCopy } from "./use-code-copy";
 
 interface VerificationCodeBarProps {
   code: string;
@@ -31,47 +30,14 @@ interface VerificationCodeBarProps {
  */
 export function VerificationCodeBar({ code, className }: VerificationCodeBarProps) {
   const t = useTranslations("email_viewer.verification_code");
-  const [state, setState] = useState<CopyState>("idle");
-  // Whether the code could be selected for copying by hand after a failure.
-  const [selected, setSelected] = useState(false);
   const codeRef = useRef<HTMLSpanElement>(null);
-  const busy = useRef(false);
-  // Aborted when the bar goes (another message): a copy still waiting for the
-  // browser then writes nothing more and changes nothing.
-  const lifetime = useRef<AbortController | null>(null);
+  // A refusal selects the code for copying by hand (false: the browser would not).
+  const { state, selected, copy } = useCodeCopy(code, { onFailed: () => selectElementText(codeRef.current) });
   const statusId = useId();
   const labelId = useId();
 
-  useEffect(() => {
-    const controller = new AbortController();
-    lifetime.current = controller;
-    return () => controller.abort();
-  }, []);
-
-  useEffect(() => {
-    if (state !== "copied") return;
-    const timer = setTimeout(() => setState("idle"), 3000);
-    return () => clearTimeout(timer);
-  }, [state]);
-
   const onCopy = () => {
-    if (busy.current) return;
-    busy.current = true;
-    setState("copying");
-    const signal = lifetime.current?.signal;
-    // Called right here in the tap, before anything is awaited.
-    void copyText(code, { signal }).then((result) => {
-      busy.current = false;
-      if (signal?.aborted) return;
-      if (result === "copied") {
-        setState("copied");
-      } else if (result === "superseded") {
-        setState("idle");
-      } else {
-        setSelected(selectElementText(codeRef.current));
-        setState("failed");
-      }
-    });
+    void copy();
   };
 
   const status = state === "copied"

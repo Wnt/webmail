@@ -62,7 +62,7 @@ function RowChips({ email, loadAttachments, onOpenAttachment }: {
   onOpenAttachment?: (attachment: Attachment) => void;
 }) {
   const code = useListVerificationCode(email);
-  const leading = code ? <VerificationCodeChip code={code} /> : undefined;
+  const leading = code ? <VerificationCodeChip key={`${email.id}:${code}`} code={code} /> : undefined;
   if (onOpenAttachment) {
     return <ListAttachmentChips email={email} load={loadAttachments} onOpen={onOpenAttachment} leading={leading} className="mt-1.5" />;
   }

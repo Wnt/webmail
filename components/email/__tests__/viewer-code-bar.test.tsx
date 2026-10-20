@@ -145,6 +145,24 @@ describe('the code bar in the reading view', () => {
   });
 });
 
+describe('old code mails in the reader (the small chip)', () => {
+  it('moving to another old code mail while a copy waits: its chip copies its own code (Astra r2 N1a)', async () => {
+    let rejectA!: (e: unknown) => void;
+    writeText.mockImplementation((text: string) => (text === '604217'
+      ? new Promise<void>((_, rej) => { rejectA = rej; })
+      : Promise.resolve()));
+    const old = (id: string, code: string) => ({ ...otpEmail, id, receivedAt: minutesAgo(3 * 24 * 60),
+      bodyValues: { h1: { value: `<p>Your verification code is ${code}.</p>`, isTruncated: false } } }) as unknown as Email;
+    const { rerender } = renderViewer(old('m-old-a', '604217'));
+    screen.getByTestId('verification-code-chip').click();
+    rerender(<EmailViewer email={old('m-old-b', '771204')} mailboxes={mailboxes} selectedMailbox="inbox" currentMailboxRole="inbox" onQuickReply={vi.fn(async () => {})} />);
+    screen.getByTestId('verification-code-chip').click();
+    expect(writeText).toHaveBeenLastCalledWith('771204');
+    rejectA(new DOMException('not allowed', 'NotAllowedError'));
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+  });
+});
+
 describe('opened from a notification: a cold start at the message link with the kept message', () => {
   // The push worker keeps the notified message whole (public/sw.js, fetched
   // with the preview); the app started at /mail/message/<id> takes it (no

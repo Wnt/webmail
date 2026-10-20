@@ -64,7 +64,7 @@ describe('VerificationCodeBar', () => {
     writeText.mockImplementation(() => Promise.reject(new DOMException('not allowed', 'NotAllowedError')));
     render(<VerificationCodeBar code={CODE} />);
     await act(async () => { fireEvent.click(button()); });
-    expect(execCommand).toHaveBeenCalledWith('copy'); // the fallback was tried, and refused too
+    expect(execCommand).not.toHaveBeenCalled(); // nothing is written after the tap
     expect(bar()).toHaveAttribute('data-copy-state', 'failed');
     expect(status()).toHaveTextContent('copy_failed_select');
     expect(button()).toHaveTextContent('copy_button');
@@ -72,8 +72,8 @@ describe('VerificationCodeBar', () => {
     expect(String(window.getSelection())).toBe(CODE);
   });
 
-  it('the execCommand fallback that worked counts as copied', async () => {
-    writeText.mockImplementation(() => Promise.reject(new DOMException('denied', 'NotAllowedError')));
+  it('no Clipboard API: the legacy copy that worked counts as copied', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
     execCommand.mockReturnValue(true);
     render(<VerificationCodeBar code={CODE} />);
     await act(async () => { fireEvent.click(button()); });
@@ -149,6 +149,27 @@ describe('VerificationCodeBar', () => {
     unmount();
     await act(async () => { rejectA(new Error('refused')); });
     expect(execCommand).not.toHaveBeenCalled();
+  });
+
+  it('the same bar given another code while a copy waits: the new code copies at once, the old answer changes nothing (Astra r2 N1a)', async () => {
+    let rejectA!: (e: unknown) => void;
+    let resolveB!: () => void;
+    writeText.mockImplementation((text: string) => (text === '123456'
+      ? new Promise<void>((_, rej) => { rejectA = rej; })
+      : new Promise<void>((r) => { resolveB = r; })));
+    const { rerender } = render(<VerificationCodeBar code="123456" />);
+    fireEvent.click(button());
+    rerender(<VerificationCodeBar code="654321" />);
+    expect(bar()).toHaveAttribute('data-copy-state', 'idle');
+    fireEvent.click(button());
+    expect(writeText).toHaveBeenLastCalledWith('654321');
+    await act(async () => { rejectA(new DOMException('not allowed', 'NotAllowedError')); });
+    // A's refusal neither fails B's bar nor unlocks it.
+    expect(bar()).toHaveAttribute('data-copy-state', 'copying');
+    fireEvent.click(button());
+    expect(writeText).toHaveBeenCalledTimes(2);
+    await act(async () => { resolveB(); });
+    expect(bar()).toHaveAttribute('data-copy-state', 'copied');
   });
 
   it('shows the code exactly as it is copied (no regrouping), left to right and untranslated', () => {

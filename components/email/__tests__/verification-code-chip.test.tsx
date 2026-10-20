@@ -42,4 +42,19 @@ describe('VerificationCodeChip', () => {
     expect(toasts.success).not.toHaveBeenCalled();
     expect(toasts.error).toHaveBeenCalledTimes(1);
   });
+
+  it('a chip reused for another message (code changed) while a copy waits: the new code copies, the old answer is ignored (Astra r2 N1a)', async () => {
+    let rejectA!: (e: unknown) => void;
+    writeText.mockImplementation((text: string) => (text === '604217'
+      ? new Promise<void>((_, rej) => { rejectA = rej; })
+      : Promise.resolve()));
+    const { rerender } = render(<VerificationCodeChip code="604217" />);
+    fireEvent.click(screen.getByTestId('verification-code-chip'));
+    rerender(<VerificationCodeChip code="771204" />);
+    await act(async () => { fireEvent.click(screen.getByTestId('verification-code-chip')); });
+    expect(writeText).toHaveBeenLastCalledWith('771204');
+    expect(toasts.success).toHaveBeenCalledTimes(1);
+    await act(async () => { rejectA(new DOMException('not allowed', 'NotAllowedError')); });
+    expect(toasts.error).not.toHaveBeenCalled();
+  });
 });

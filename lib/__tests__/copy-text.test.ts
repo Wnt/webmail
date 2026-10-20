@@ -52,24 +52,23 @@ describe('copyText', () => {
     expect(execCommand).not.toHaveBeenCalled();
   });
 
-  it('refused write (NotAllowedError): falls back to execCommand on a selection holding exactly the code', async () => {
+  it('a refused write (NotAllowedError): failed, and nothing is written afterwards', async () => {
     stubClipboard(() => Promise.reject(new DOMException('not allowed', 'NotAllowedError')));
+    execCommand.mockReturnValue(true);
+    expect(await copyText(CODE)).toBe('failed');
+    // By the time a refusal comes back the tap is over (WebKit refuses the
+    // legacy copy then too), and a later write could overwrite another copy
+    // the user made since (Astra r2 N1b).
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
+  it('the legacy copy (no Clipboard API): a selection holding exactly the code, cleaned up, the user\'s selection put back', async () => {
+    stubClipboard(undefined);
     let selected = '';
     execCommand.mockImplementation((cmd: string) => {
       selected = String(window.getSelection());
       return cmd === 'copy';
     });
-    expect(await copyText(CODE)).toBe('copied');
-    expect(execCommand).toHaveBeenCalledWith('copy');
-    expect(selected).toBe(CODE);
-    // The helper span is gone and nothing stays selected after a copy.
-    expect(document.body.childElementCount).toBe(0);
-    expect(String(window.getSelection())).toBe('');
-  });
-
-  it('the fallback puts back what the user had selected', async () => {
-    stubClipboard(() => Promise.reject(new DOMException('not allowed', 'NotAllowedError')));
-    execCommand.mockReturnValue(true);
     const p = document.createElement('p');
     p.textContent = 'an earlier selection';
     document.body.appendChild(p);
@@ -77,17 +76,14 @@ describe('copyText', () => {
     range.selectNodeContents(p);
     window.getSelection()!.addRange(range);
     expect(await copyText(CODE)).toBe('copied');
+    expect(execCommand).toHaveBeenCalledWith('copy');
+    expect(selected).toBe(CODE);
+    expect(document.body.childElementCount).toBe(1); // only the paragraph; the helper span is gone
     expect(String(window.getSelection())).toBe('an earlier selection');
   });
 
-  it('both refused: failed, never copied', async () => {
-    stubClipboard(() => Promise.reject(new DOMException('not allowed', 'NotAllowedError')));
-    expect(await copyText(CODE)).toBe('failed');
-    expect(document.body.childElementCount).toBe(0);
-  });
-
-  it('execCommand throwing counts as a failure', async () => {
-    stubClipboard(() => Promise.reject(new Error('refused')));
+  it('the legacy copy throwing counts as a failure', async () => {
+    stubClipboard(undefined);
     execCommand.mockImplementation(() => { throw new Error('SecurityError'); });
     expect(await copyText(CODE)).toBe('failed');
   });
@@ -118,9 +114,11 @@ describe('copyText', () => {
 });
 
 describe('an older copy still waiting for the browser', () => {
-  // Astra otp-code-bar r1 N1: message A's copy was pending, the user copied
-  // B's code, then A's write was refused and its fallback wrote A's code over
-  // B's. A newer copy (or the caller's abort) now stops the old fallback.
+  // Astra otp-code-bar r1 N1 / r2 N1b: message A's copy was pending, the user
+  // copied something else (B's code, the message link), then A's write was
+  // refused and a late fallback wrote A's code over it. Nothing is written
+  // after the tap any more, and a newer copy (or the caller's abort) makes the
+  // old one report 'superseded'.
   it('a newer copy started meanwhile: the old one writes nothing more and reports superseded', async () => {
     let rejectA!: (e: unknown) => void;
     const writes: string[] = [];
@@ -136,6 +134,22 @@ describe('an older copy still waiting for the browser', () => {
     expect(await a).toBe('superseded');
     expect(execCommand).not.toHaveBeenCalled();
     expect(writes).toEqual(['123456', '654321']);
+  });
+
+  it('another writer in the app (the message link) copied meanwhile: the late refusal writes nothing over it', async () => {
+    let rejectA!: (e: unknown) => void;
+    const clipboard: string[] = [];
+    stubClipboard((text) => (text === CODE
+      ? new Promise<void>((_, rej) => { rejectA = rej; })
+      : (clipboard.push(text), Promise.resolve())));
+    execCommand.mockImplementation(() => { clipboard.push('fallback'); return true; });
+    const a = copyText(CODE);
+    // hooks/use-copy-link.ts writes directly, not through copyText.
+    await navigator.clipboard.writeText('https://mail.example.test/en/mail/message/b');
+    rejectA(new DOMException('not allowed', 'NotAllowedError'));
+    expect(await a).toBe('failed');
+    expect(execCommand).not.toHaveBeenCalled();
+    expect(clipboard).toEqual(['https://mail.example.test/en/mail/message/b']);
   });
 
   it('an old write that succeeds late reports superseded, not copied', async () => {

@@ -10,25 +10,29 @@
 // started from a notification tap has no tap at all. So: call copyText
 // synchronously from the click handler, before any await.
 
-/** 'superseded': a newer copy started, or the caller cancelled, before this one finished; nothing more was written. */
+/** 'superseded': a newer copy started, or the caller cancelled, before the browser answered this one. */
 export type CopyResult = 'copied' | 'failed' | 'superseded';
 
-// The newest copy; an older one still waiting for the browser never runs its
-// fallback (which would write its text over the newer one's).
+// The newest copy; an older one still waiting for the browser reports
+// 'superseded' instead of its own outcome.
 let generation = 0;
 
 /**
  * Writes `text` to the clipboard. Resolves 'copied' only when the browser
- * confirmed the write (the Clipboard API's promise resolved, or the
- * execCommand('copy') fallback reported success), 'failed' when it refused,
- * 'superseded' when a newer copyText call started (anywhere in the page) or
- * `signal` was aborted before the browser answered. Never throws, never reads
- * the clipboard.
+ * confirmed the write, 'failed' when it refused, 'superseded' when a newer
+ * copyText call started (anywhere in the page) or `signal` was aborted before
+ * the browser answered. Never throws, never reads the clipboard.
+ *
+ * Every write starts synchronously in the caller's tap; nothing is written
+ * later. The legacy execCommand('copy') runs only when the Clipboard API is
+ * missing (an insecure page, an old browser) or throws at once - never after
+ * a refusal that came back later, because by then the tap is over (WebKit
+ * refuses it anyway) and another copy the user made since (a link, an
+ * address, another code) must not be overwritten (Astra otp-code-bar r2 N1b).
  */
 export async function copyText(text: string, opts?: { signal?: AbortSignal }): Promise<CopyResult> {
   const mine = ++generation;
   const current = () => mine === generation && !opts?.signal?.aborted;
-  // Started synchronously: writeText checks the tap when it is called.
   let write: Promise<void> | null = null;
   try {
     const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
@@ -36,17 +40,14 @@ export async function copyText(text: string, opts?: { signal?: AbortSignal }): P
   } catch {
     write = null;
   }
-  if (write) {
-    try {
-      await write;
-      return current() ? 'copied' : 'superseded';
-    } catch {
-      // Refused (no tap, permission denied, page not focused): try the old way,
-      // unless this copy is no longer the one the user asked for last.
-      if (!current()) return 'superseded';
-    }
+  if (!write) return execCommandCopy(text) ? 'copied' : 'failed';
+  try {
+    await write;
+    return current() ? 'copied' : 'superseded';
+  } catch {
+    // Refused (no tap, permission denied, page not focused).
+    return current() ? 'failed' : 'superseded';
   }
-  return execCommandCopy(text) ? 'copied' : 'failed';
 }
 
 /** The legacy copy of a selection; true only when the browser says it copied. */
