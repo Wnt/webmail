@@ -258,7 +258,12 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
   const { dialogProps: confirmDialogProps, confirm: confirmDialog } = useConfirmDialog();
   const { dialogProps: promptDialogProps, prompt: promptDialog } = usePromptDialog();
   const { showAppsModal, inlineApp, loadedApps, handleManageApps, handleInlineApp, closeInlineApp, closeAppsModal } = useSidebarApps();
-  const [initialCheckDone, setInitialCheckDone] = useState(() => useAuthStore.getState().isAuthenticated && !!useAuthStore.getState().client);
+  // Fork patch (Wnt/webmail): not done while this page start's early restore
+  // is untaken (startAuthCheckEarly): the first render may be hydration, where
+  // the store hooks still read the server's (signed-out) snapshot even if the
+  // restore has already finished - "done and not signed in" would send the
+  // page to the login route.
+  const [initialCheckDone, setInitialCheckDone] = useState(() => earlyAuthCheck === null && useAuthStore.getState().isAuthenticated && !!useAuthStore.getState().client);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const [showAdvancedFields, setShowAdvancedFields] = useState(false);
   // Column resize state (disable transitions during drag)
@@ -1330,6 +1335,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
   // Redirect to login if not authenticated
   useEffect(() => {
     if (initialCheckDone && !isAuthenticated && !authLoading) {
+      // The hooks' values can trail the store right after hydration.
+      const live = useAuthStore.getState();
+      if (live.isAuthenticated || live.isLoading) return;
       saveRedirectAfterLogin();
       redirectToLogin();
     }
