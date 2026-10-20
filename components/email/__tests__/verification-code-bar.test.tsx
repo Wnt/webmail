@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { VerificationCodeBar } from '../verification-code-bar';
 
 // Fork (Wnt/webmail): the one-time-code bar at the top of the reading view.
-// One tap on "Copy code" copies; the bar never copies on its own (no browser
-// lets a page write the clipboard without a tap, and iOS WebKit refuses even
+// One tap on "Copy code" copies; the bar never copies on its own (the app
+// copies only on a tap, and iOS WebKit refuses a write without one, even
 // right after a notification tap), and it says "copied" only after the
 // browser confirmed the write. Invented codes only. (The translation mock
 // returns keys: 'copy_button', 'copied', ...)

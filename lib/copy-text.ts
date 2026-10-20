@@ -33,6 +33,8 @@ let generation = 0;
 export async function copyText(text: string, opts?: { signal?: AbortSignal }): Promise<CopyResult> {
   const mine = ++generation;
   const current = () => mine === generation && !opts?.signal?.aborted;
+  // Cancelled before it started: nothing is written.
+  if (opts?.signal?.aborted) return 'superseded';
   let write: Promise<void> | null = null;
   try {
     const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;

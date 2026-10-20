@@ -161,6 +161,17 @@ describe('an older copy still waiting for the browser', () => {
     expect(await a).toBe('superseded');
   });
 
+  it('a signal already aborted: nothing is written at all', async () => {
+    const writeText = stubClipboard(() => Promise.resolve());
+    const controller = new AbortController();
+    controller.abort();
+    expect(await copyText('123456', { signal: controller.signal })).toBe('superseded');
+    expect(writeText).not.toHaveBeenCalled();
+    stubClipboard(undefined);
+    expect(await copyText('123456', { signal: controller.signal })).toBe('superseded');
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
   it('aborted by its caller (the bar went away): no fallback', async () => {
     let rejectA!: (e: unknown) => void;
     stubClipboard(() => new Promise<void>((_, rej) => { rejectA = rej; }));
