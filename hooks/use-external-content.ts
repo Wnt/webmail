@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import type { Email } from "@/lib/jmap/types";
-import { shouldBlockExternalFor } from "@/lib/email-content-cache";
+import { senderCheckFor, shouldBlockExternalFor } from "@/lib/email-content-cache";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useContactStore } from "@/stores/contact-store";
 
@@ -15,17 +15,26 @@ import { useContactStore } from "@/stores/contact-store";
  * The decision follows lib/email-content-cache.ts shouldBlockExternalFor: the
  * external-content policy, this message's own "Load images" permission, and
  * whether the sender is trusted (the trusted-sender list, or the trusted-
- * senders address book when that is on). It subscribes to those lists, so a
+ * senders address book when that is on) - never a sender the receiving
+ * server's checks do not back. It subscribes to those lists, so a
  * message prepared before the address book has loaded is decided again when
  * it arrives (a neighbour prepared early used to keep "unknown sender,
  * blocked" while the reading pane, deciding later, loaded its pictures).
  */
-export function useBlockExternal(email: Pick<Email, "from"> | null | undefined, allowExternalContent: boolean): boolean {
+export function useBlockExternal(
+  email: (Pick<Email, "from"> & Partial<Pick<Email, "authenticationResults" | "headers">>) | null | undefined,
+  allowExternalContent: boolean,
+): boolean {
   const externalContentPolicy = useSettingsStore((s) => s.externalContentPolicy);
   const trustedSenders = useSettingsStore((s) => s.trustedSenders);
   const trustedSendersAddressBook = useSettingsStore((s) => s.trustedSendersAddressBook);
   const trustedSenderEmails = useContactStore((s) => s.trustedSenderEmails);
   const sender = email?.from?.[0]?.email?.toLowerCase() ?? "";
+  // The receiving server's check of the From address is an input too: a
+  // sender it does not back gets no automatic trust (shouldBlockExternalFor).
+  const senderCheck = useMemo(() => (email ? senderCheckFor(email)?.status ?? "ok" : ""),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [email?.authenticationResults, email?.headers, sender]);
   return useMemo(() => {
     if (!email) return false;
     return shouldBlockExternalFor(email, {
@@ -37,5 +46,5 @@ export function useBlockExternal(email: Pick<Email, "from"> | null | undefined, 
     });
     // The trust lists are inputs: a change re-decides (they are read through the stores' own predicates).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [!!email, sender, externalContentPolicy, allowExternalContent, trustedSenders, trustedSendersAddressBook, trustedSenderEmails]);
+  }, [!!email, sender, senderCheck, externalContentPolicy, allowExternalContent, trustedSenders, trustedSendersAddressBook, trustedSenderEmails]);
 }

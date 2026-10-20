@@ -16,6 +16,7 @@
 // the server is never cached ahead: the open fetches the full value first.
 
 import type { Email } from '@/lib/jmap/types';
+import { getSenderVerification, parseAuthenticationResults, type SenderVerification } from '@/lib/email-headers';
 import { getRenderableHtmlBody } from '@/lib/email-body-selection';
 import { sanitizeEmailBodyForIframe } from '@/lib/email-sanitization';
 import { useSettingsStore } from '@/stores/settings-store';
@@ -131,8 +132,33 @@ export function prepareEmailHtml(email: Email, blockExternal: boolean, cidBlobUr
  * trusted-senders address book when that is on) and the policy is 'block', or
  * 'ask' before the user allowed it.
  */
+type SenderFacts = Pick<Email, 'from'> & Partial<Pick<Email, 'authenticationResults' | 'headers'>>;
+
+/**
+ * The receiving server's verdict on the message's From address (its
+ * Authentication-Results; the parsed ones getEmail sets, else the raw header
+ * of a message fetched ahead): null when its checks back the address or there
+ * are none to judge by, else unverified or failed (lib/email-headers.ts).
+ */
+export function senderCheckFor(email: SenderFacts): SenderVerification | null {
+  let auth = email.authenticationResults;
+  if (!auth && email.headers) {
+    const raw: string[] = [];
+    if (Array.isArray(email.headers)) {
+      for (const h of email.headers as unknown as { name?: string; value?: string }[]) {
+        if (h?.name === 'Authentication-Results' && typeof h.value === 'string') raw.push(h.value);
+      }
+    } else {
+      const v = (email.headers as Record<string, string | string[]>)['Authentication-Results'];
+      if (typeof v === 'string') raw.push(v); else if (Array.isArray(v)) raw.push(...v);
+    }
+    if (raw.length) auth = parseAuthenticationResults(raw);
+  }
+  return getSenderVerification(auth, email.from?.[0]?.email);
+}
+
 export function shouldBlockExternalFor(
-  email: Pick<Email, 'from'>,
+  email: SenderFacts,
   opts: {
     externalContentPolicy: string;
     allowExternalContent: boolean;
@@ -142,7 +168,11 @@ export function shouldBlockExternalFor(
   },
 ): boolean {
   const senderEmail = email.from?.[0]?.email?.toLowerCase();
-  const senderIsTrusted = senderEmail
+  // Fork (Wnt/webmail): a From address the receiving server's checks do not
+  // back (unverified or failed: possibly forged) gets no trust from the lists,
+  // so a forged trusted address cannot load remote content (review swipe-trust
+  // r1 R1). The "allow" setting and the message's own "Load images" still apply.
+  const senderIsTrusted = senderEmail && !senderCheckFor(email)
     ? opts.isSenderTrusted(senderEmail) || (!!opts.trustedSendersAddressBook && opts.isTrustedAddressBookSender(senderEmail))
     : false;
   return !senderIsTrusted && (

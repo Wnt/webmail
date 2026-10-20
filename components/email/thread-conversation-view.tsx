@@ -37,6 +37,7 @@ import {
 import { useTranslations } from "next-intl";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useContactStore } from "@/stores/contact-store";
+import { useBlockExternal } from "@/hooks/use-external-content";
 import { useAuthStore } from "@/stores/auth-store";
 import { isFilePreviewable, toInertBlob } from "@/lib/file-preview";
 import { useWopiStatus, canWopiOpen } from "@/hooks/use-wopi-status";
@@ -90,11 +91,8 @@ export function ThreadConversationView({
   onMarkAsRead,
 }: ThreadConversationViewProps) {
   const t = useTranslations();
-  const externalContentPolicy = useSettingsStore((state) => state.externalContentPolicy);
   const addTrustedSender = useSettingsStore((state) => state.addTrustedSender);
-  const isSenderTrusted = useSettingsStore((state) => state.isSenderTrusted);
   const trustedSendersAddressBook = useSettingsStore((state) => state.trustedSendersAddressBook);
-  const isTrustedAddressBookSender = useContactStore((state) => state.isTrustedAddressBookSender);
   const addToTrustedSendersBook = useContactStore((state) => state.addToTrustedSendersBook);
   const client = useAuthStore((s) => s.client);
 
@@ -179,16 +177,13 @@ export function ThreadConversationView({
         <div className="space-y-3" style={{ padding: 'var(--density-card-p)' }}>
           {emails.map((email, index) => {
             const senderEmail = email.from?.[0]?.email?.toLowerCase();
-            const senderIsTrusted = senderEmail
-              ? isSenderTrusted(senderEmail) || (trustedSendersAddressBook && isTrustedAddressBookSender(senderEmail))
-              : false;
             return (
               <EmailCard
                 key={email.id}
                 email={email}
                 isExpanded={expandedIds.has(email.id)}
                 isLatest={index === 0}
-                allowExternal={externalContentPolicy === 'allow' || senderIsTrusted || allowExternalContent.has(email.id)}
+                explicitAllow={allowExternalContent.has(email.id)}
                 onToggleExpanded={() => toggleExpanded(email.id)}
                 onAllowExternal={() => toggleAllowExternal(email.id)}
                 onTrustSender={senderEmail ? () => {
@@ -218,7 +213,8 @@ interface EmailCardProps {
   email: Email;
   isExpanded: boolean;
   isLatest: boolean;
-  allowExternal: boolean;
+  /** "Load images" was pressed for this message. */
+  explicitAllow: boolean;
   onToggleExpanded: () => void;
   onAllowExternal: () => void;
   onTrustSender?: () => void;
@@ -233,7 +229,7 @@ function EmailCard({
   email,
   isExpanded,
   isLatest: _isLatest,
-  allowExternal,
+  explicitAllow,
   onToggleExpanded,
   onAllowExternal,
   onTrustSender,
@@ -243,6 +239,9 @@ function EmailCard({
   onDownloadAttachment,
   onMarkAsRead,
 }: EmailCardProps) {
+  // Fork (Wnt/webmail): the reading pane's own decision (hooks/use-external-content.ts),
+  // made again when the trust lists change, for this card's message.
+  const allowExternal = !useBlockExternal(email, explicitAllow);
   const t = useTranslations();
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const density = useSettingsStore((state) => state.density);
