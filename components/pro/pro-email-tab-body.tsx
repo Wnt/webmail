@@ -82,6 +82,7 @@ export function ProEmailView({ emailId, client: clientOverride, accountId, onLoa
 
   const activeClient = useAuthStore((s) => s.client);
   const client = clientOverride ?? activeClient;
+  const blobSource = useMemo(() => ({ client: client ?? null, accountId }), [client, accountId]);
   const fetchEmailContent = useEmailStore((s) => s.fetchEmailContent);
   const deleteEmail = useEmailStore((s) => s.deleteEmail);
   const markAsRead = useEmailStore((s) => s.markAsRead);
@@ -372,6 +373,10 @@ export function ProEmailView({ emailId, client: clientOverride, accountId, onLoa
       <ErrorBoundary fallback={EmailViewerErrorFallback}>
         <EmailViewer
           email={email}
+          // Fork (Wnt/webmail): the client and account this message was read
+          // with: its owner for the reading pane's per-message state, and where
+          // its inline images and attachments come from.
+          blobSource={blobSource}
           isLoading={isLoading}
           onReply={handleReply}
           onReplyAll={handleReplyAll}

@@ -201,10 +201,16 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
         const t0 = performance.now();
         setupQuoteCollapse(doc, { show: t("show_quoted_text"), hide: t("hide_quoted_text") });
         if (isDark) applyEmailDarkMode(doc, { remoteContentAllowed: !content?.externalBlocked });
+        // The pane shows the first screen only: the frame grows to two window
+        // heights at most. That also ends the feedback of a body sized by the
+        // frame's own viewport (`height: 100vh`, review swipe-preload r3 R3-E):
+        // at the cap the frame no longer grows, so the body stops growing.
+        const maxHeight = Math.max(1600, 2 * (window.innerHeight || 0));
         const applyHeight = () => {
           if (iframe.contentDocument !== doc) return;
           const scale = fitEmailBodyWidth(doc, { enabled: true });
-          iframe.style.height = Math.ceil(Math.max(doc.documentElement.scrollHeight, doc.body.scrollHeight) * scale) + "px";
+          const height = Math.min(maxHeight, Math.ceil(Math.max(doc.documentElement.scrollHeight, doc.body.scrollHeight) * scale));
+          if (iframe.style.height !== height + "px") iframe.style.height = height + "px";
         };
         applyHeight();
         if (typeof ResizeObserver !== "undefined") {

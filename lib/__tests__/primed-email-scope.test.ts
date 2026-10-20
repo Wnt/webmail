@@ -75,7 +75,8 @@ describe('copies kept for an open', () => {
     (client as unknown as { apiUrl: string }).apiUrl = 'https://other.example.test/jmap/api';
     release();
     const opened = await opening;
-    expect(opened?.bodyValues?.['1']?.value).toBe('Server body of m2');
+    // An open that spans a session change returns nothing of the old session.
+    expect(opened?.bodyValues?.['1']?.value).not.toBe('Copy from the old session');
   });
 
   it('a copy made in another session is refused at the hand-over (no render needed)', async () => {
@@ -128,6 +129,44 @@ describe('copies kept for an open: a new session at the same address (review swi
     release(full('same-id', 'OLD LOGIN BODY'));
     expect(await ahead).toBeNull();
     spy.mockRestore();
+  });
+});
+
+describe('an open checks its session again before it returns (review swipe-preload r3 R3-B)', () => {
+  it('a copy taken for an open is not returned when the session changed while the open finished', async () => {
+    client.primeEmailForOpen('ready', full('ready', 'OLD READY BODY'), 10_000, client.getSessionScope());
+    const opening = client.getEmail('ready');
+    client.disconnect();
+    client.adoptSession(session());
+    expect((await opening)?.bodyValues?.['1']?.value).not.toBe('OLD READY BODY');
+  });
+
+  it('nor the completion of a cut body fetched for the old session', async () => {
+    const copy = full('truncated', 'OLD PARTIAL BODY');
+    (copy.bodyValues as Record<string, { isTruncated: boolean }>)['1'].isTruncated = true;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    fetchSpy.mockImplementation((async () => {
+      await gate;
+      return json({ methodResponses: [['Email/get', { list: [full('truncated', 'OLD COMPLETE BODY')] }, '0']] });
+    }) as never);
+    client.primeEmailForOpen('truncated', copy, 10_000, client.getSessionScope());
+    const opening = client.getEmail('truncated');
+    client.disconnect();
+    const next = session();
+    client.adoptSession({ ...next, accounts: { 'acct-2': next.accounts['acct-1'] }, primaryAccounts: { 'urn:ietf:params:jmap:mail': 'acct-2' } });
+    release();
+    expect((await opening)?.bodyValues?.['1']?.value).not.toBe('OLD COMPLETE BODY');
+  });
+
+  it('a reconnect of the same session keeps the generation (R3-D)', async () => {
+    const before = client.getSessionScope();
+    fetchSpy.mockResolvedValueOnce(json(session()));
+    await client.reconnect();
+    expect(client.getSessionScope()).toBe(before);
+    client.disconnect();
+    client.adoptSession(session());
+    expect(client.getSessionScope()).not.toBe(before);
   });
 });
 

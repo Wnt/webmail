@@ -1,4 +1,4 @@
-import { render, act, fireEvent } from '@testing-library/react';
+import { render, act, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Email, Mailbox } from '@/lib/jmap/types';
 
@@ -157,4 +157,123 @@ describe('per-message state follows the account, not just the id (review swipe-p
     committed.mockRestore(); plugin.mockRestore();
     expect(staleDocs.map(() => 'old account body committed with permissive CSP')).toEqual([]);
   });
+});
+
+describe('the owner of a message without a blobSource, and the Pro host (review swipe-preload r3 R3-A, R3-C, R3-D)', () => {
+  it('does not carry Load images to an equal id after the active client changes', async () => {
+    const { useAuthStore } = await import('@/stores/auth-store');
+    const { JMAPClient } = await import('@/lib/jmap/client');
+    const oldAuth = useAuthStore.getState();
+    const aClient = new JMAPClient('https://mail.example.test', 'alice', 'p');
+    const bClient = new JMAPClient('https://mail.example.test', 'bob', 'p');
+    try {
+      useAuthStore.setState({client:aClient,activeAccountId:'login-a'});
+      const a = htmlEmail('unstamped-same-id', true);
+      a.bodyValues!['1'].value = '<img src="https://tracker.example.test/unstamped-a">';
+      const view = render(viewer(a, 0));
+      fireEvent.click(view.getByText('load_external_content'));
+      const b = htmlEmail('unstamped-same-id', true);
+      b.bodyValues!['1'].value = '<img src="https://tracker.example.test/unstamped-b">';
+      sanitize.inputs = [];
+      act(() => useAuthStore.setState({client:bClient,activeAccountId:'login-b'}));
+      view.rerender(viewer(b, 1));
+      const inputs = sanitize.inputs.filter(x=>x.html.includes('/unstamped-b'));
+      expect(inputs).not.toHaveLength(0);
+      expect(inputs.every(x=>x.block)).toBe(true);
+      view.unmount();
+    } finally {
+      aClient.disconnect(); bClient.disconnect();
+      useAuthStore.setState(oldAuth);
+    }
+  });
+});
+
+it('ProEmailView shared-account change preserves neither Load images nor the previous body', async () => {
+  const { ProEmailView } = await import('@/components/pro/pro-email-tab-body');
+  const { useAuthStore } = await import('@/stores/auth-store');
+  const { JMAPClient } = await import('@/lib/jmap/client');
+  const oldAuth = useAuthStore.getState();
+  const c = new JMAPClient('https://mail.example.test', 'owner', 'p');
+  const a = htmlEmail('shared-same-id', true);
+  a.mailboxIds = {'shared-a:inbox':true};
+  a.bodyValues!['1'].value = '<img src="https://tracker.example.test/pro-shared-a">';
+  const b = htmlEmail('shared-same-id', true);
+  b.mailboxIds = {'shared-b:inbox':true};
+  b.bodyValues!['1'].value = '<img src="https://tracker.example.test/pro-shared-b">';
+  const get = vi.spyOn(c, 'getEmail').mockImplementation(async (_id, account) => account === 'shared-a' ? a : b);
+  try {
+    useAuthStore.setState({client:c,activeAccountId:'owner-login'});
+    const close = () => {};
+    const view = render(<ProEmailView emailId="shared-same-id" client={c} accountId="shared-a" onClose={close}/>);
+    await waitFor(()=>expect(view.getByText('load_external_content')).toBeDefined());
+    fireEvent.click(view.getByText('load_external_content'));
+    sanitize.inputs = [];
+    view.rerender(<ProEmailView emailId="shared-same-id" client={c} accountId="shared-b" onClose={close}/>);
+    await waitFor(()=>expect(sanitize.inputs.some(x=>x.html.includes('/pro-shared-b'))).toBe(true));
+    expect(get).toHaveBeenLastCalledWith('shared-same-id','shared-b');
+    expect(sanitize.inputs.filter(x=>x.html.includes('/pro-shared-b')).every(x=>x.block)).toBe(true);
+    view.unmount();
+  } finally { get.mockRestore(); c.disconnect(); useAuthStore.setState(oldAuth); }
+});
+
+it('a reconnect of the same session keeps an extracted body (the same email object)', async () => {
+  const { JMAPClient } = await import('@/lib/jmap/client');
+  const c = new JMAPClient('https://mail.example.test','owner','p');
+  const session = {capabilities:{}, accounts:{a:{name:'owner',isPersonal:true,accountCapabilities:{}}}, primaryAccounts:{'urn:ietf:params:jmap:mail':'a'}, apiUrl:'https://mail.example.test/jmap/api',downloadUrl:'https://mail.example.test/download/{blobId}', uploadUrl:'https://mail.example.test/upload',eventSourceUrl:'https://mail.example.test/events'};
+  c.adoptSession(session);
+  const plugin = vi.spyOn(renderHooks.onRenderEmailBody,'transform').mockResolvedValue({html:'<p>EXTRACTED-SESSION-BODY</p>',text:'',attachments:[],handledBy:'test'});
+  const e = htmlEmail('stable-email-object',true);
+  const renderViewer = (tick = 0) => <EmailViewer className={`tick-${tick}`} email={e} blobSource={{client:c,clientAccountId:'owner-login'}} mailboxes={mailboxes}/>;
+  try {
+    const view = render(renderViewer());
+    await waitFor(()=>expect(view.container.querySelector('iframe')?.getAttribute('srcdoc')).toContain('EXTRACTED-SESSION-BODY'));
+    expect(plugin).toHaveBeenCalledTimes(1);
+    c.adoptSession(session);
+    view.rerender(renderViewer(1));
+    await act(async()=>{await Promise.resolve();});
+    expect(view.container.querySelector('iframe')?.getAttribute('srcdoc')).toContain('EXTRACTED-SESSION-BODY');
+    view.unmount();
+  } finally {plugin.mockRestore(); c.disconnect();}
+});
+
+it('reconnecting the same account does not discard an unsent quick reply', async () => {
+  const { JMAPClient } = await import('@/lib/jmap/client');
+  const c = new JMAPClient('https://mail.example.test','owner','p');
+  const session = {capabilities:{}, accounts:{a:{name:'owner',isPersonal:true,accountCapabilities:{}}}, primaryAccounts:{'urn:ietf:params:jmap:mail':'a'}, apiUrl:'https://mail.example.test/jmap/api',downloadUrl:'https://mail.example.test/download/{blobId}', uploadUrl:'https://mail.example.test/upload',eventSourceUrl:'https://mail.example.test/events'};
+  c.adoptSession(session);
+  useSettingsStore.setState({interfaceLayout:'default'});
+  const e = htmlEmail('unchanged-reply',true);
+  e.htmlBody=[];e.textBody=[{partId:'1',type:'text/plain'}] as Email['textBody'];e.bodyValues!['1'].value='Hello';
+  const ui=(tick=0)=><EmailViewer className={`tick-${tick}`} email={e} blobSource={{client:c,clientAccountId:'owner-login'}} mailboxes={mailboxes}/>;
+  const fetchMock=vi.spyOn(globalThis,'fetch').mockImplementation(async()=>new Response(JSON.stringify(session),{status:200,headers:{'Content-Type':'application/json'}}));
+  try {
+    const view=render(ui());
+    const textarea=view.getByPlaceholderText('quick_reply_placeholder');
+    fireEvent.change(textarea,{target:{value:'UNSENT REPLY'}});
+    expect(textarea).toHaveValue('UNSENT REPLY');
+    await c.reconnect();
+    view.rerender(ui(1));
+    expect(view.getByPlaceholderText('quick_reply_placeholder')).toHaveValue('UNSENT REPLY');
+    view.unmount();
+  } finally {fetchMock.mockRestore();c.disconnect();}
+});
+
+it('a new session (sign-out and in) restarts body extraction for the same email object', async () => {
+  const { JMAPClient } = await import('@/lib/jmap/client');
+  const c = new JMAPClient('https://mail.example.test','owner','p');
+  const session = {capabilities:{}, accounts:{a:{name:'owner',isPersonal:true,accountCapabilities:{}}}, primaryAccounts:{'urn:ietf:params:jmap:mail':'a'}, apiUrl:'https://mail.example.test/jmap/api',downloadUrl:'https://mail.example.test/download/{blobId}', uploadUrl:'https://mail.example.test/upload',eventSourceUrl:'https://mail.example.test/events'};
+  c.adoptSession(session);
+  const plugin = vi.spyOn(renderHooks.onRenderEmailBody,'transform').mockResolvedValue({html:'<p>EXTRACTED-SESSION-BODY</p>',text:'',attachments:[],handledBy:'test'});
+  const e = htmlEmail('stable-email-object-2',true);
+  const ui = (tick = 0) => <EmailViewer className={`tick-${tick}`} email={e} blobSource={{client:c,clientAccountId:'owner-login'}} mailboxes={mailboxes}/>;
+  try {
+    const view = render(ui());
+    await waitFor(()=>expect(view.container.querySelector('iframe')?.getAttribute('srcdoc')).toContain('EXTRACTED-SESSION-BODY'));
+    c.disconnect();
+    c.adoptSession(session);
+    view.rerender(ui(1));
+    await waitFor(()=>expect(view.container.querySelector('iframe')?.getAttribute('srcdoc')).toContain('EXTRACTED-SESSION-BODY'));
+    expect(plugin).toHaveBeenCalledTimes(2);
+    view.unmount();
+  } finally {plugin.mockRestore(); c.disconnect();}
 });

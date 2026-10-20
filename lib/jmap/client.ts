@@ -1400,6 +1400,7 @@ export class JMAPClient implements IJMAPClient {
     this.apiUrl = session.apiUrl;
     this.downloadUrl = session.downloadUrl;
     this.accounts = session.accounts || {};
+    this.noteSessionIdentity();
     this.noteSession(raw);
   }
 
@@ -1453,7 +1454,7 @@ export class JMAPClient implements IJMAPClient {
     this.accounts = session.accounts || {};
     this.accountId = accountId;
     this.sessionRaw = raw;
-    this.sessionGeneration++;
+    this.noteSessionIdentity();
     this.startKeepAlive();
     return true;
   }
@@ -1485,7 +1486,7 @@ export class JMAPClient implements IJMAPClient {
         this.downloadUrl = session.downloadUrl;
         this.accounts = session.accounts || {};
         this.accountId = accountId;
-        if (replaced) this.sessionGeneration++;
+        this.noteSessionIdentity();
         this.noteSession(raw);
         if (replaced) return 'replaced';
         return unchanged ? 'same' : 'changed';
@@ -1552,8 +1553,9 @@ export class JMAPClient implements IJMAPClient {
         throw new Error('No mail account found in session');
       }
 
-      // Fork (Wnt/webmail): a new session: copies made in the last one are not this one's.
-      this.sessionGeneration++;
+      // Fork (Wnt/webmail): a new session (after a sign-out, or another identity)
+      // makes copies of the last one stale; a reconnect of the same one does not.
+      this.noteSessionIdentity();
       this.noteSession(raw);
       this.startKeepAlive();
     } catch (error) {
@@ -1658,6 +1660,7 @@ export class JMAPClient implements IJMAPClient {
     this.capabilities = {};
     // Fork (Wnt/webmail): copies kept for an open belong to the session that is gone.
     this.sessionGeneration++;
+    this.disconnectedSinceSession = true;
     this.primedEmails.clear();
   }
 
@@ -2504,15 +2507,33 @@ export class JMAPClient implements IJMAPClient {
   }
 
   /**
-   * Fork (Wnt/webmail): which session this is: a generation that changes with
-   * every connect, adopted session, replacement and disconnect, plus the
-   * signed-in user, the API URL and the mail account. A copy of a message made
+   * Fork (Wnt/webmail): which session this is: a generation that changes at a
+   * sign-out (disconnect) and whenever a session of another identity is
+   * installed (connect, an adopted session, a refresh or replacement; a
+   * reconnect of the same one keeps it), plus the identity (getIdentity). A copy of a message made
    * in one session is never handed out in another (primedEmails, checked again
    * after every await), and callers keeping copies of their own carry it with
    * each copy (the phone swipe's neighbours, hooks/use-swipe-neighbours.ts).
    */
   getSessionScope(): string {
-    return this.apiUrl ? `${this.sessionGeneration}\u0000${this.username}\u0000${this.apiUrl}\u0000${this.accountId}` : '';
+    return this.apiUrl ? `${this.sessionGeneration}\u0000${this.getIdentity()}` : '';
+  }
+
+  /**
+   * Fork (Wnt/webmail): who the session belongs to - the signed-in user, the
+   * API URL and the mail account - without the generation: what a message's
+   * owner is (EmailViewer keeps per-message state by it).
+   */
+  getIdentity(): string {
+    return `${this.username}\u0000${this.apiUrl}\u0000${this.accountId}`;
+  }
+
+  /** A session was installed: a new generation after a sign-out or for another identity. */
+  private noteSessionIdentity(): void {
+    const identity = this.getIdentity();
+    if (this.disconnectedSinceSession || identity !== this.sessionIdentity) this.sessionGeneration++;
+    this.sessionIdentity = identity;
+    this.disconnectedSinceSession = false;
   }
 
   /** Adds a primed entry for this session: expired and other sessions' entries go, and the oldest past the cap. */
@@ -2606,6 +2627,14 @@ export class JMAPClient implements IJMAPClient {
   }
 
   async getEmail(emailId: string, accountId?: string, opts?: { threadId?: string }): Promise<Email | null> {
+    // Fork (Wnt/webmail): a message read in one session is not handed to the
+    // next (a sign-out or a replaced session while this was under way).
+    const scopeAtEntry = this.getSessionScope();
+    const email = await this.getEmailInScope(emailId, accountId, opts);
+    return email && this.getSessionScope() === scopeAtEntry ? email : null;
+  }
+
+  private async getEmailInScope(emailId: string, accountId?: string, opts?: { threadId?: string }): Promise<Email | null> {
     try {
       const targetAccountId = accountId || this.accountId;
 
@@ -8937,6 +8966,8 @@ export class JMAPClient implements IJMAPClient {
   // Fork (Wnt/webmail): messages handed in by primeEmail, keyed by account and id.
   /** Fork (Wnt/webmail): see getSessionScope. */
   private sessionGeneration = 0;
+  private sessionIdentity = '';
+  private disconnectedSinceSession = true;
   private primedEmails = new Map<string, { email?: Email; pending?: Promise<Email | null>; at: number; maxAgeMs: number; scope?: string }>();
   // Shared/secondary accounts get no SSE push (Stalwart pushes the primary
   // account only), so poll them on a slow cadence alongside SSE to keep their

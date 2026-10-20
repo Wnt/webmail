@@ -802,17 +802,8 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   className,
 }: EmailViewerProps) {
   const t = useTranslations('email_viewer');
-  // Fork (Wnt/webmail): the message the per-message state below belongs to -
-  // its owner (the login, the JMAP account and the session it was read in)
-  // and its id: JMAP ids are only unique within one account, so two accounts'
-  // messages with the same id never share "Load images", the light/dark
-  // switch, inline images or a decrypted/unpacked body. Read by the setters.
-  const messageKey = email?.id
-    ? [email.sourceClientAccountId, email.sourceAccountId, email.accountId, blobSource?.clientAccountId, blobSource?.accountId,
-      blobSource?.client?.getSessionScope?.(), email.id].map((part) => part ?? '').join('\u0000')
-    : null;
+  // Set below, once the message's owner is resolved (see messageKey).
   const messageKeyRef = useRef<string | null>(null);
-  messageKeyRef.current = messageKey;
   const tComposer = useTranslations('email_composer');
   const tNotifications = useTranslations('notifications');
   const tCommon = useTranslations('common');
@@ -940,6 +931,24 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   const legacyBlobAccountId = isUnifiedView ? email?.sourceAccountId : undefined;
   const blobClient = blobSource ? blobSource.client : legacyBlobClient;
   const blobAccountId = blobSource ? blobSource.accountId : legacyBlobAccountId;
+
+  // Fork (Wnt/webmail): whose message this is - its source stamps, the
+  // resolved login, client identity and JMAP account it is read with - and its
+  // id: JMAP ids are only unique within one account, so two accounts' messages
+  // with the same id share no per-message state. `ownerKey` decides when the
+  // reading pane starts afresh (the quick reply, the source view); the
+  // sensitive state ("Load images", inline image URLs, decrypted or unpacked
+  // bodies) also belongs to the session it was made in (`messageKey`): a
+  // sign-out or a replaced session drops it and its producers run again. A
+  // reconnect of the same session changes neither.
+  const ownerKey = email?.id
+    ? [email.sourceClientAccountId, email.sourceAccountId, email.accountId, blobSource?.clientAccountId,
+      blobClient?.getIdentity?.(), blobAccountId, email.id].map((part) => part ?? '').join('\u0000')
+    : null;
+  const messageKey = ownerKey ? `${ownerKey}\u0000${blobClient?.getSessionScope?.() ?? ''}` : null;
+  messageKeyRef.current = messageKey;
+  const ownerKeyRef = useRef<string | null>(null);
+  ownerKeyRef.current = ownerKey;
 
   // List-Unsubscribe mailto: send the message ourselves - this is a webmail
   // client, handing a mailto: URL to the OS mail handler goes nowhere for
@@ -1466,7 +1475,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     setDarkOverride(null);
     // The extracted bodies (plugin, TNEF, message/rfc822) are message-scoped
     // (useMessageScopedState): another message reads them as empty.
-  }, [messageKey, externalContentPolicy]);
+  }, [ownerKey, externalContentPolicy]);
 
   // Crypto-plugin body takeover (S/MIME, PGP, …). A privileged crypto plugin
   // can fetch the raw message via api.jmap.fetchBlob, decrypt/verify it, and
@@ -1545,7 +1554,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     })();
 
     return () => { cancelled = true; };
-  }, [email, pluginRenderNonce, setPluginRenderedHtml, setPluginRenderedText, setPluginRenderedAttachments]);
+  }, [email, messageKey, pluginRenderNonce, setPluginRenderedHtml, setPluginRenderedText, setPluginRenderedAttachments]);
 
   // TNEF (winmail.dat) detection and processing
   useEffect(() => {
@@ -1635,7 +1644,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     processTnef();
 
     return () => { cancelled = true; };
-  }, [email, client, blobClient, blobAccountId, setTnefHtml, setTnefText, setTnefAttachments]);
+  }, [email, messageKey, client, blobClient, blobAccountId, setTnefHtml, setTnefText, setTnefAttachments]);
 
   // Embedded message/rfc822 unwrapping
   // When Outlook forwards an email as an attachment, the outer email body is
@@ -1712,7 +1721,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     unwrapEmbedded();
 
     return () => { cancelled = true; };
-  }, [email, client, blobClient, blobAccountId, setEmbeddedEmailHtml, setEmbeddedEmailText, setEmbeddedEmailAttachments]);
+  }, [email, messageKey, client, blobClient, blobAccountId, setEmbeddedEmailHtml, setEmbeddedEmailText, setEmbeddedEmailAttachments]);
 
   // Fetch inline CID images with authentication to prevent browser auth dialogs
   useEffect(() => {
@@ -1799,7 +1808,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
         cidBlobParts.delete(url);
       });
     };
-  }, [client, blobClient, blobAccountId, email?.id, pluginRenderedAttachments, email?.attachments]);
+  }, [client, blobClient, blobAccountId, email?.id, messageKey, pluginRenderedAttachments, email?.attachments]);
 
   const effectiveAttachments = useMemo<EffectiveAttachment[]>(() => {
     if (pluginRenderedAttachments.length > 0) {
@@ -2382,10 +2391,10 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // Fork (Wnt/webmail): the reader's light/dark switch counts for the message
   // it was used on (as the reset effect intends), from its first render on.
   const [darkOverride, setDarkOverride] = useState<{ id: string | null; value: boolean } | null>(null);
-  const emailViewDarkOverride = darkOverride && darkOverride.id === messageKey ? darkOverride.value : null;
+  const emailViewDarkOverride = darkOverride && darkOverride.id === ownerKey ? darkOverride.value : null;
   const setEmailViewDarkOverride = useCallback((next: boolean | null | ((prev: boolean | null) => boolean | null)) => {
     setDarkOverride((prev) => {
-      const id = messageKeyRef.current;
+      const id = ownerKeyRef.current;
       const current = prev && prev.id === id ? prev.value : null;
       const value = typeof next === 'function' ? next(current) : next;
       return value === null ? null : { id, value };

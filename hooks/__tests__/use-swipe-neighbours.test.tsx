@@ -234,7 +234,8 @@ describe('swipe neighbours: whose messages (review swipe-preload r2 R2-B, R2-C)'
     act(() => bodyReady('open'));
     await settle(400);
     expect(view.result.current.neighbours?.next?.email?.id).toBe('neighbour');
-    client.adoptSession({ ...session, apiUrl: 'https://other.example.test/jmap/api' });
+    // Another mail account in the same client, with no render in between.
+    client.adoptSession({ ...session, accounts: { 'acct-2': session.accounts['acct-1'] }, primaryAccounts: { 'urn:ietf:params:jmap:mail': 'acct-2' } });
     expect(view.result.current.prime(row('neighbour'))).toBe('none');
     const before = emailGets('neighbour');
     await client.getEmail('neighbour');

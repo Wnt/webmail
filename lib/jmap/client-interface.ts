@@ -192,6 +192,8 @@ export interface IJMAPClient {
   prefetchEmail?(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number }): Promise<Email | null> | null;
   /** Fork (Wnt/webmail): see JMAPClient.getSessionScope. */
   getSessionScope?(): string;
+  /** Fork (Wnt/webmail): see JMAPClient.getIdentity. */
+  getIdentity?(): string;
   /** Fork (Wnt/webmail): see JMAPClient.fetchEmailAhead. */
   fetchEmailAhead?(emailId: string): Promise<Email | null>;
   /** Fork (Wnt/webmail): see JMAPClient.primeEmailForOpen. */
