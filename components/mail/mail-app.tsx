@@ -1785,12 +1785,8 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       try {
         // A tapped notification's message, kept by the push worker: shown
         // without fetching it again (lib/push-prefetch.ts).
-        // Kept under the account and session it was looked up in: if the
-        // session changed meanwhile, the open below fetches the current one's.
-        const keptAccountId = activeClient.getAccountId();
-        const keptGeneration = activeClient.getSessionGeneration?.();
-        const prefetched = await takePrefetchedEmail(keptAccountId, link.id);
-        if (prefetched) activeClient.primeEmail?.(prefetched, keptAccountId, { generation: keptGeneration });
+        const prefetched = await takePrefetchedEmail(activeClient.getAccountId(), link.id);
+        if (prefetched) activeClient.primeEmail?.(prefetched);
         const email = await fetchEmailContent(activeClient, link.id);
         if (!email) {
           if (isMobile) setActiveView('list');

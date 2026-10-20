@@ -54,12 +54,10 @@ export function prefetchForOpen(client: IJMAPClient | null | undefined, row: Ema
   if (seenRecently(`${accountId}\u0000${row.id}`, Date.now())) return;
   const prewarm = (email: Email | null) => { if (email) prewarmEmailContent(email); };
   if (kept?.has(keptEmailKey(accountId, row.id))) {
-    const keptGeneration = client.getSessionGeneration?.();
     void peekPrefetchedEmail(accountId, row.id).then((copy) => {
       // The kept copy is from the push; the row's flags and folders are current.
       const current = copy ? { ...copy, keywords: row.keywords ?? copy.keywords, mailboxIds: row.mailboxIds ?? copy.mailboxIds } : null;
-      // Looked up for `accountId` in this session: the client ignores it if the session changed meanwhile.
-      void client.prefetchEmail?.(row.id, current, { maxAgeMs: OPEN_PREFETCH_MAX_AGE_MS, keptAccountId: accountId, keptGeneration })?.then(prewarm);
+      void client.prefetchEmail?.(row.id, current, { maxAgeMs: OPEN_PREFETCH_MAX_AGE_MS })?.then(prewarm);
     });
     return;
   }

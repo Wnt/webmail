@@ -187,11 +187,9 @@ export interface IJMAPClient {
   getEmailsInMailbox(mailboxId: string): Promise<Email[]>;
   /** `threadId` lets the client reuse a getThreadEmails fetch of that thread in flight. */
   /** Fork (Wnt/webmail): a message fetched elsewhere (the push worker) for the next getEmail of it. */
-  primeEmail?(email: Email, accountId?: string, opts?: { generation?: number }): void;
-  /** Fork (Wnt/webmail): see JMAPClient.getSessionGeneration. */
-  getSessionGeneration?(): number;
+  primeEmail?(email: Email, accountId?: string): void;
   /** Fork (Wnt/webmail): see JMAPClient.prefetchEmail. */
-  prefetchEmail?(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number; keptAccountId?: string; keptGeneration?: number }): Promise<Email | null> | null;
+  prefetchEmail?(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number }): Promise<Email | null> | null;
   /** Fork (Wnt/webmail): see JMAPClient.setSessionListener / getSessionSnapshot (the session cache). */
   setSessionListener?(listener: ((session: Record<string, unknown>) => void) | null): void;
   getSessionSnapshot?(): Record<string, unknown> | null;

@@ -1451,19 +1451,8 @@ export class JMAPClient implements IJMAPClient {
     this.accounts = session.accounts || {};
     this.accountId = accountId;
     this.sessionRaw = raw;
-    this.newSessionGeneration();
     this.startKeepAlive();
     return true;
-  }
-
-  /** Fork (Wnt/webmail): the session's generation (see sessionGeneration). */
-  getSessionGeneration(): number {
-    return this.sessionGeneration;
-  }
-
-  private newSessionGeneration(): void {
-    this.sessionGeneration += 1;
-    this.primedEmails.clear();
   }
 
   /**
@@ -1494,10 +1483,7 @@ export class JMAPClient implements IJMAPClient {
         this.accounts = session.accounts || {};
         this.accountId = accountId;
         this.noteSession(raw);
-        if (replaced) {
-          this.newSessionGeneration();
-          return 'replaced';
-        }
+        if (replaced) return 'replaced';
         return unchanged ? 'same' : 'changed';
       } catch {
         return 'failed';
@@ -1517,7 +1503,6 @@ export class JMAPClient implements IJMAPClient {
 
   async connect(): Promise<void> {
     this.intentionallyDisconnected = false;
-    this.newSessionGeneration();
     const sessionUrl = `${this.serverUrl}/.well-known/jmap`;
 
     try {
@@ -2504,11 +2489,9 @@ export class JMAPClient implements IJMAPClient {
    * same properties (FULL_EMAIL_PROPERTIES) - the push worker's copy for a
    * tapped notification. Used once, within PRIMED_EMAIL_MAX_AGE_MS.
    */
-  primeEmail(email: Email, accountId?: string, opts?: { generation?: number }): void {
+  primeEmail(email: Email, accountId?: string): void {
     if (!email?.id || !email.bodyValues) return;
-    // A copy looked up in an earlier session generation is not this session's.
-    if (opts?.generation !== undefined && opts.generation !== this.sessionGeneration) return;
-    this.primedEmails.set(`${accountId || this.accountId}\u0000${email.id}`, { email, at: Date.now(), maxAgeMs: PRIMED_EMAIL_MAX_AGE_MS, generation: this.sessionGeneration });
+    this.primedEmails.set(`${accountId || this.accountId}\u0000${email.id}`, { email, at: Date.now(), maxAgeMs: PRIMED_EMAIL_MAX_AGE_MS });
   }
 
   /**
@@ -2516,20 +2499,14 @@ export class JMAPClient implements IJMAPClient {
    * `emailId`, ahead of the code that shows it - a page opened at a message
    * link asks for it as soon as the session is up, while the app is still
    * drawing; a list row asks for its message while the pointer rests on it.
-   * With `kept` (the push worker's copy of it, looked up for `opts.keptAccountId`,
-   * which must be this client's account now) nothing is sent. getEmail then
+   * With `kept` (the push worker's copy of it) nothing is sent. getEmail then
    * takes this (or waits for it) instead of asking again. Used once, within
    * `maxAgeMs` (default PRIMED_EMAIL_MAX_AGE_MS); a second call meanwhile
    * returns the first one's. The request leaves before this returns.
    */
-  prefetchEmail(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number; keptAccountId?: string; keptGeneration?: number }): Promise<Email | null> | null {
+  prefetchEmail(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number }): Promise<Email | null> | null {
     if (!emailId || !this.apiUrl) return null;
     const accountId = this.accountId;
-    const generation = this.sessionGeneration;
-    // Fork (Wnt/webmail): a kept copy counts only for the session it was
-    // looked up in: the same mail account and the same generation (no
-    // replacement of the account or API URL while the lookup was out).
-    if (kept && (opts?.keptAccountId !== accountId || opts?.keptGeneration !== generation)) kept = null;
     const key = `${accountId}\u0000${emailId}`;
     const maxAgeMs = opts?.maxAgeMs ?? PRIMED_EMAIL_MAX_AGE_MS;
     // Copies nobody opened in time go (each holds a whole message).
@@ -2540,11 +2517,11 @@ export class JMAPClient implements IJMAPClient {
       return existing.email ? Promise.resolve(existing.email) : existing.pending ?? null;
     }
     if (kept?.id === emailId && kept.bodyValues) {
-      this.primedEmails.set(key, { email: kept, at: Date.now(), maxAgeMs, generation });
+      this.primedEmails.set(key, { email: kept, at: Date.now(), maxAgeMs });
       return Promise.resolve(kept);
     }
     const pending = this.fetchFullEmail(accountId, emailId).catch(() => null);
-    this.primedEmails.set(key, { pending, at: Date.now(), maxAgeMs, generation });
+    this.primedEmails.set(key, { pending, at: Date.now(), maxAgeMs });
     return pending;
   }
 
@@ -2590,10 +2567,8 @@ export class JMAPClient implements IJMAPClient {
       const primed = this.primedEmails.get(primedKey);
       this.primedEmails.delete(primedKey);
       let email: Email | null | undefined;
-      if (primed && Date.now() - primed.at < primed.maxAgeMs && primed.generation === this.sessionGeneration) {
+      if (primed && Date.now() - primed.at < primed.maxAgeMs) {
         email = primed.email ?? (primed.pending ? await primed.pending : null);
-        // The session was replaced while the prefetch was out: not this session's answer.
-        if (primed.generation !== this.sessionGeneration) email = null;
       }
       if (!email) {
         const response = await this.request([
@@ -8891,11 +8866,7 @@ export class JMAPClient implements IJMAPClient {
   /** getThreadEmails calls getEmail may reuse (see getEmail), by account and thread. */
   private threadFetches = new Map<string, { at: number; promise: Promise<Email[]> }>();
   // Fork (Wnt/webmail): messages handed in by primeEmail, keyed by account and id.
-  private primedEmails = new Map<string, { email?: Email; pending?: Promise<Email | null>; at: number; maxAgeMs: number; generation: number }>();
-  // Fork (Wnt/webmail): bumped whenever the session is replaced (another mail
-  // account or API URL), adopted, connected or dropped. A copy of a message
-  // looked up in one generation is never handed out in another.
-  private sessionGeneration = 0;
+  private primedEmails = new Map<string, { email?: Email; pending?: Promise<Email | null>; at: number; maxAgeMs: number }>();
   // Shared/secondary accounts get no SSE push (Stalwart pushes the primary
   // account only), so poll them on a slow cadence alongside SSE to keep their
   // folder + unified/All-Mail counters from going stale between focus events.
