@@ -202,3 +202,43 @@ describe('swipe neighbours: what the JMAP client keeps', () => {
   });
 });
 
+describe('swipe neighbours: whose messages (review swipe-preload r2 R2-B, R2-C)', () => {
+  afterEach(async () => {
+    const { useEmailStore } = await import('@/stores/email-store');
+    useEmailStore.setState({ selectedMailbox: null, mailboxes: [] } as never);
+  });
+
+  it('in a shared folder nothing is fetched or kept; back in the own Inbox the shared message is not handed out', async () => {
+    const { useEmailStore, resolveEmailBlobContext } = await import('@/stores/email-store');
+    const { DEFAULT_SEARCH_FILTERS } = await import('@/lib/jmap/search-utils');
+    const shared = full('same-id');
+    shared.mailboxIds = { 'shared:inbox': true };
+    shared.bodyValues!['1'].value = 'SHARED ACCOUNT BODY';
+    useEmailStore.setState({ selectedMailbox: 'shared:inbox', viewingAccountId: null,
+      mailboxes: [{ id: 'shared:inbox', originalId: 'inbox', name: 'Shared', isShared: true, accountId: 'shared' }],
+      searchQuery: '', searchFilters: DEFAULT_SEARCH_FILTERS, searchMailboxId: '' } as never);
+    expect(resolveEmailBlobContext(shared, client).accountId).toBe('shared');
+    const view = mount(shared, null, row('neighbour'));
+    act(() => bodyReady('same-id'));
+    await settle(400);
+    expect(calls().filter(([n]) => n === 'Email/get')).toHaveLength(0);
+    useEmailStore.setState({ selectedMailbox: 'inbox', mailboxes: [] } as never);
+    view.rerender({ current: full('primary-open'), prevRow: row('same-id'), nextRow: null });
+    expect(view.result.current.prime(row('same-id'))).toBe('none');
+    const opened = await client.getEmail('same-id');
+    expect(opened?.bodyValues?.['1']?.value).not.toBe('SHARED ACCOUNT BODY');
+  });
+
+  it('a session change before any render: the old copy is not handed over', async () => {
+    const view = mount(full('open'), null, row('neighbour'));
+    act(() => bodyReady('open'));
+    await settle(400);
+    expect(view.result.current.neighbours?.next?.email?.id).toBe('neighbour');
+    client.adoptSession({ ...session, apiUrl: 'https://other.example.test/jmap/api' });
+    expect(view.result.current.prime(row('neighbour'))).toBe('none');
+    const before = emailGets('neighbour');
+    await client.getEmail('neighbour');
+    expect(emailGets('neighbour')).toBe(before + 1);
+  });
+});
+

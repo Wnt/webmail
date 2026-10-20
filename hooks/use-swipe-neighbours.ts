@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Email } from "@/lib/jmap/types";
 import type { IJMAPClient } from "@/lib/jmap/client-interface";
 import { afterBodyPainted } from "@/lib/open-timing";
+import { resolveEmailBlobContext } from "@/stores/email-store";
 import type { SwipePreload } from "@/lib/open-timing";
 import {
   NEIGHBOUR_CACHE_SIZE,
@@ -32,9 +33,12 @@ import {
  * flags, so the open's getEmail takes it instead of asking the server.
  *
  * The copies live here only (JMAPClient.fetchEmailAhead keeps nothing), at
- * most NEIGHBOUR_CACHE_SIZE, for one client and one session
- * (JMAPClient.getSessionScope: its API URL and mail account): another session
- * starts empty, and a fetch that ends in another session is dropped.
+ * most NEIGHBOUR_CACHE_SIZE, for one client; each carries the session it was
+ * fetched in (JMAPClient.getSessionScope: a generation, the user, the API URL
+ * and the mail account) and counts only while the client is still in it -
+ * checked when it is looked up, when its fetch ends and, by the client, when
+ * it is handed over. The caller turns the swipe off for messages that are not
+ * the signed-in account's own (another login, a shared folder).
  */
 
 export interface SwipeNeighbour {
@@ -59,7 +63,24 @@ export interface UseSwipeNeighboursOptions {
   nextRow?: Email | null;
 }
 
-const keyOf = (accountId: string, id: string) => `${accountId}\u0000${id}`;
+const keyOf = (scope: string, id: string) => `${scope}\u0000${id}`;
+
+/**
+ * `row` is a message of the signed-in account itself, as the open resolves its
+ * owner (stores/email-store.ts resolveEmailBlobContext): not another login's,
+ * not a shared folder's, not a source-stamped row; and not a draft. Only such
+ * messages are fetched ahead, kept or handed over (JMAP ids are only unique
+ * within one account).
+ */
+export function swipeOwnsRow(row: Email | null | undefined, client: IJMAPClient | null | undefined): boolean {
+  if (!row || !client || !neighbourFetchable(row)) return false;
+  const owner = resolveEmailBlobContext(row, client);
+  return owner.client === client && !owner.accountId;
+}
+
+/** A full message kept for the swipe, with the session it was fetched in. */
+interface Kept { email: Email; scope: string }
+interface PendingFetch { promise: Promise<Email | null>; scope: string }
 
 export function useSwipeNeighbours({ client, enabled, current, prevRow, nextRow }: UseSwipeNeighboursOptions): {
   neighbours: SwipeNeighbours | null;
@@ -68,43 +89,49 @@ export function useSwipeNeighbours({ client, enabled, current, prevRow, nextRow 
   noteDirection: (dir: "prev" | "next") => void;
 } {
   // Full messages in memory, least recently used first, and the fetches under
-  // way; for one client and one session only.
-  const scope = client?.getSessionScope?.() ?? "";
-  const cache = useRef<{ client: IJMAPClient | null | undefined; scope: string; map: Map<string, Email>; pending: Map<string, Promise<Email | null>> }>(
-    { client, scope, map: new Map(), pending: new Map() });
-  if (cache.current.client !== client || cache.current.scope !== scope) {
-    cache.current = { client, scope, map: new Map(), pending: new Map() };
-  }
+  // way; for one client. Each carries the session it was fetched in, and only
+  // counts while the client is still in that session (checked live: a session
+  // can change without a render).
+  const cache = useRef<{ client: IJMAPClient | null | undefined; map: Map<string, Kept>; pending: Map<string, PendingFetch> }>(
+    { client, map: new Map(), pending: new Map() });
+  if (cache.current.client !== client) cache.current = { client, map: new Map(), pending: new Map() };
   const [version, setVersion] = useState(0);
   const lastDir = useRef<"prev" | "next">("next");
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+  const liveScope = useCallback(() => client?.getSessionScope?.() ?? "", [client]);
 
-  const remember = useCallback((email: Email) => {
+  const remember = useCallback((email: Email, scope: string) => {
     // A message too big to keep is not kept (it is fetched again when needed).
-    if (bodyChars(email) > NEIGHBOUR_REMEMBER_MAX_CHARS) return;
+    if (!scope || bodyChars(email) > NEIGHBOUR_REMEMBER_MAX_CHARS) return;
     const map = cache.current.map;
     const k = keyOf(scope, email.id);
     map.delete(k);
-    map.set(k, email);
+    map.set(k, { email, scope });
     while (map.size > NEIGHBOUR_CACHE_SIZE) {
       const oldest = map.keys().next().value;
       if (oldest === undefined) break;
       map.delete(oldest);
     }
-  }, [scope]);
-  const lookup = useCallback((row: Email | null | undefined): Email | null => {
-    if (!row || !scope || !neighbourFetchable(row)) return null;
-    const copy = cache.current.map.get(keyOf(scope, row.id));
-    return copy && copy.id === row.id ? copy : null;
-  }, [scope]);
+  }, []);
+  /** The copy of `row`'s message kept in the client's current session, if any. */
+  const lookup = useCallback((row: Email | null | undefined): Kept | null => {
+    const scope = liveScope();
+    if (!row || !scope || !swipeOwnsRow(row, client)) return null;
+    const kept = cache.current.map.get(keyOf(scope, row.id));
+    return kept && kept.scope === scope && kept.email.id === row.id ? kept : null;
+  }, [liveScope, client]);
 
-  // The open message stays in memory: after a swipe it is a neighbour.
+  // The open message stays in memory: after a swipe it is a neighbour. Only
+  // while the swipe is on: the caller turns it off for messages that are not
+  // the signed-in account's own (another login, a shared folder).
   const currentId = current?.id;
   useEffect(() => {
-    if (!enabled || !current?.bodyValues || !neighbourFetchable(current)) return;
-    remember(current);
+    if (!enabled || !current?.bodyValues || !swipeOwnsRow(current, client)) return;
+    remember(current, liveScope());
     // Only another message, not each flag change of this one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, currentId, remember]);
+  }, [enabled, currentId, remember, liveScope, client]);
 
   const prevId = prevRow?.id;
   const nextId = nextRow?.id;
@@ -116,9 +143,9 @@ export function useSwipeNeighbours({ client, enabled, current, prevRow, nextRow 
     let cancelIdle: (() => void) | null = null;
     let onVisible: (() => void) | null = null;
     const order = lastDir.current === "prev" ? (["prevRow", "nextRow"] as const) : (["nextRow", "prevRow"] as const);
-    const queue = order.map((k) => rows.current[k]).filter((r): r is Email => !!r && neighbourFetchable(r));
+    const queue = order.map((k) => rows.current[k]).filter((r): r is Email => swipeOwnsRow(r, client));
     const step = (i: number) => {
-      if (cancelled || i >= queue.length) return;
+      if (cancelled || i >= queue.length || !enabledRef.current) return;
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         // A hidden page prepares nothing; it carries on when shown again.
         onVisible = () => {
@@ -132,18 +159,21 @@ export function useSwipeNeighbours({ client, enabled, current, prevRow, nextRow 
       }
       if (saveDataRequested() || !client.fetchEmailAhead) return;
       const row = queue[i];
+      const scope = liveScope();
+      if (!scope || !swipeOwnsRow(row, client)) return;
       const k = keyOf(scope, row.id);
       const box = cache.current;
       if (lookup(row) || box.pending.has(k)) { step(i + 1); return; }
       // Fetched, not taken from the push worker's kept copies: those carry no
       // session identity yet (audit/FOLLOWUPS.md, pwa-start N4).
-      const pending = client.fetchEmailAhead(row.id);
-      box.pending.set(k, pending);
-      void pending.then((email) => {
+      const promise = client.fetchEmailAhead(row.id);
+      box.pending.set(k, { promise, scope });
+      void promise.then((email) => {
         box.pending.delete(k);
-        if (cache.current !== box) return; // another client or session meanwhile
+        // Another client, or another session meanwhile: not kept.
+        if (cache.current !== box || liveScope() !== scope) return;
         if (email && email.id === row.id && email.bodyValues) {
-          remember(email);
+          remember(email, scope);
           setVersion((v) => v + 1);
         }
         if (cancelled) return;
@@ -160,32 +190,37 @@ export function useSwipeNeighbours({ client, enabled, current, prevRow, nextRow 
       cancelIdle?.();
       if (onVisible) document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [enabled, client, scope, currentId, prevId, nextId, lookup, remember]);
+  }, [enabled, client, currentId, prevId, nextId, lookup, remember, liveScope]);
 
+  const scopeNow = liveScope();
   const neighbours = useMemo<SwipeNeighbours | null>(() => {
-    if (!enabled) return null;
+    if (!enabled || !scopeNow) return null;
     return {
-      prev: prevRow ? { row: prevRow, email: lookup(prevRow) } : null,
-      next: nextRow ? { row: nextRow, email: lookup(nextRow) } : null,
+      prev: prevRow ? { row: prevRow, email: lookup(prevRow)?.email ?? null } : null,
+      next: nextRow ? { row: nextRow, email: lookup(nextRow)?.email ?? null } : null,
     };
-    // version: a neighbour arrived.
+    // version: a neighbour arrived; scopeNow: another session shows none of the last one's.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, prevRow, nextRow, lookup, version]);
+  }, [enabled, prevRow, nextRow, lookup, version, scopeNow]);
 
   const prime = useCallback((row: Email): SwipePreload => {
-    if (!client?.primeEmailForOpen || !scope) return "none";
+    if (!enabledRef.current || !client?.primeEmailForOpen) return "none";
     // The row's current flags and folders win (a flag changed since the
     // fetch, e.g. marked read elsewhere, is the row's).
     const withRow = (copy: Email): Email => ({ ...copy, keywords: row.keywords ?? copy.keywords, mailboxIds: row.mailboxIds ?? copy.mailboxIds });
-    const copy = lookup(row);
-    if (copy) {
-      client.primeEmailForOpen(row.id, withRow(copy), NEIGHBOUR_PRIME_MAX_AGE_MS);
-      return peekKind(copy);
+    const kept = lookup(row);
+    if (kept) {
+      // The client refuses it unless it is still in the session the copy came from.
+      client.primeEmailForOpen(row.id, withRow(kept.email), NEIGHBOUR_PRIME_MAX_AGE_MS, kept.scope);
+      return peekKind(kept.email);
     }
-    const pending = cache.current.pending.get(keyOf(scope, row.id));
-    if (pending) client.primeEmailForOpen(row.id, pending.then((e) => (e ? withRow(e) : null)), NEIGHBOUR_PRIME_MAX_AGE_MS);
+    const scope = liveScope();
+    const pending = scope ? cache.current.pending.get(keyOf(scope, row.id)) : undefined;
+    if (pending && pending.scope === scope) {
+      client.primeEmailForOpen(row.id, pending.promise.then((e) => (e ? withRow(e) : null)), NEIGHBOUR_PRIME_MAX_AGE_MS, pending.scope);
+    }
     return "none";
-  }, [client, scope, lookup]);
+  }, [client, lookup, liveScope]);
 
   const noteDirection = useCallback((dir: "prev" | "next") => { lastDir.current = dir; }, []);
 

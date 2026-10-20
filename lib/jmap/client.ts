@@ -1453,6 +1453,7 @@ export class JMAPClient implements IJMAPClient {
     this.accounts = session.accounts || {};
     this.accountId = accountId;
     this.sessionRaw = raw;
+    this.sessionGeneration++;
     this.startKeepAlive();
     return true;
   }
@@ -1484,6 +1485,7 @@ export class JMAPClient implements IJMAPClient {
         this.downloadUrl = session.downloadUrl;
         this.accounts = session.accounts || {};
         this.accountId = accountId;
+        if (replaced) this.sessionGeneration++;
         this.noteSession(raw);
         if (replaced) return 'replaced';
         return unchanged ? 'same' : 'changed';
@@ -1550,6 +1552,8 @@ export class JMAPClient implements IJMAPClient {
         throw new Error('No mail account found in session');
       }
 
+      // Fork (Wnt/webmail): a new session: copies made in the last one are not this one's.
+      this.sessionGeneration++;
       this.noteSession(raw);
       this.startKeepAlive();
     } catch (error) {
@@ -1653,6 +1657,7 @@ export class JMAPClient implements IJMAPClient {
     this.sessionRaw = null;
     this.capabilities = {};
     // Fork (Wnt/webmail): copies kept for an open belong to the session that is gone.
+    this.sessionGeneration++;
     this.primedEmails.clear();
   }
 
@@ -2499,13 +2504,15 @@ export class JMAPClient implements IJMAPClient {
   }
 
   /**
-   * Fork (Wnt/webmail): who the session is - its API URL and mail account.
-   * A copy of a message made in one session is never handed out in another
-   * (primedEmails), and callers keeping copies of their own key them by it
-   * (the phone swipe's neighbours, hooks/use-swipe-neighbours.ts).
+   * Fork (Wnt/webmail): which session this is: a generation that changes with
+   * every connect, adopted session, replacement and disconnect, plus the
+   * signed-in user, the API URL and the mail account. A copy of a message made
+   * in one session is never handed out in another (primedEmails, checked again
+   * after every await), and callers keeping copies of their own carry it with
+   * each copy (the phone swipe's neighbours, hooks/use-swipe-neighbours.ts).
    */
   getSessionScope(): string {
-    return this.apiUrl ? `${this.apiUrl}\u0000${this.accountId}` : '';
+    return this.apiUrl ? `${this.sessionGeneration}\u0000${this.username}\u0000${this.apiUrl}\u0000${this.accountId}` : '';
   }
 
   /** Adds a primed entry for this session: expired and other sessions' entries go, and the oldest past the cap. */
@@ -2539,11 +2546,14 @@ export class JMAPClient implements IJMAPClient {
   /**
    * Fork (Wnt/webmail): hands the open that follows at once the copy of
    * `emailId` the caller holds, or its fetch still under way (the phone
-   * swipe: hooks/use-swipe-neighbours.ts). getEmail takes it once, within
-   * `maxAgeMs`, in this session only; it replaces an earlier entry.
+   * swipe: hooks/use-swipe-neighbours.ts). `scope` is the session the copy
+   * was made in (getSessionScope at its fetch); another is refused. getEmail
+   * takes it once, within `maxAgeMs`, in this session only; it replaces an
+   * earlier entry.
    */
-  primeEmailForOpen(emailId: string, copy: Email | Promise<Email | null>, maxAgeMs: number): void {
-    if (!emailId || !this.apiUrl) return;
+  primeEmailForOpen(emailId: string, copy: Email | Promise<Email | null>, maxAgeMs: number, scope: string): void {
+    // A copy made in another session is refused here, where the scope is known.
+    if (!emailId || !this.apiUrl || scope !== this.getSessionScope()) return;
     const key = `${this.accountId}\u0000${emailId}`;
     if (copy instanceof Promise) {
       this.putPrimed(key, { pending: copy.then((e) => (e && e.id === emailId && e.bodyValues ? e : null), () => null), at: Date.now(), maxAgeMs });
@@ -8925,6 +8935,8 @@ export class JMAPClient implements IJMAPClient {
   /** getThreadEmails calls getEmail may reuse (see getEmail), by account and thread. */
   private threadFetches = new Map<string, { at: number; promise: Promise<Email[]> }>();
   // Fork (Wnt/webmail): messages handed in by primeEmail, keyed by account and id.
+  /** Fork (Wnt/webmail): see getSessionScope. */
+  private sessionGeneration = 0;
   private primedEmails = new Map<string, { email?: Email; pending?: Promise<Email | null>; at: number; maxAgeMs: number; scope?: string }>();
   // Shared/secondary accounts get no SSE push (Stalwart pushes the primary
   // account only), so poll them on a slow cadence alongside SSE to keep their

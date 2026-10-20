@@ -40,13 +40,21 @@ export interface CachedEmailContent {
  * that happens to share them (another login, a replaced session) never gets
  * this body (review swipe-preload R4; audit/FOLLOWUPS.md pwa-start N4).
  */
-type BodyInputs = readonly [string | undefined, string | undefined];
+type BodyInputs = readonly [string | undefined, string | undefined, string];
 
+/**
+ * Everything of `email` that prepareEmailHtml's result depends on besides the
+ * key's options: the shown HTML and text values, and what decides between
+ * them and the cid: rewrite - the parts' ids and media types (a text/plain
+ * part listed as htmlBody renders as text; a distinct text part can win over
+ * a bare HTML wrapper) and whether there are attachments.
+ */
 function bodyInputs(email: Email): BodyInputs {
   const values = email.bodyValues ?? {};
-  const html = email.htmlBody?.[0]?.partId;
-  const text = email.textBody?.[0]?.partId;
-  return [html ? values[html]?.value : undefined, text ? values[text]?.value : undefined];
+  const html = email.htmlBody?.[0];
+  const text = email.textBody?.[0];
+  const shape = [html?.partId ?? '', html?.type ?? '', text?.partId ?? '', text?.type ?? '', email.attachments ? 'a' : ''].join('\u0000');
+  return [html?.partId ? values[html.partId]?.value : undefined, text?.partId ? values[text.partId]?.value : undefined, shape];
 }
 
 const EMAIL_CONTENT_CACHE = new Map<string, CachedEmailContent & { inputs: BodyInputs }>();
@@ -66,8 +74,8 @@ export function emailContentCacheKey(email: Email, blockExternal: boolean, cidBl
 export function cachedEmailContent(key: string | null, email: Email): CachedEmailContent | undefined {
   const entry = key ? EMAIL_CONTENT_CACHE.get(key) : undefined;
   if (!entry) return undefined;
-  const [html, text] = bodyInputs(email);
-  if (entry.inputs[0] !== html || entry.inputs[1] !== text) return undefined;
+  const [html, text, shape] = bodyInputs(email);
+  if (entry.inputs[0] !== html || entry.inputs[1] !== text || entry.inputs[2] !== shape) return undefined;
   return { content: entry.content, blockedExternalContent: entry.blockedExternalContent };
 }
 

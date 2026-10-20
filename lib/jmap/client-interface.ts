@@ -195,7 +195,7 @@ export interface IJMAPClient {
   /** Fork (Wnt/webmail): see JMAPClient.fetchEmailAhead. */
   fetchEmailAhead?(emailId: string): Promise<Email | null>;
   /** Fork (Wnt/webmail): see JMAPClient.primeEmailForOpen. */
-  primeEmailForOpen?(emailId: string, copy: Email | Promise<Email | null>, maxAgeMs: number): void;
+  primeEmailForOpen?(emailId: string, copy: Email | Promise<Email | null>, maxAgeMs: number, scope: string): void;
   /** Fork (Wnt/webmail): see JMAPClient.setSessionListener / getSessionSnapshot (the session cache). */
   setSessionListener?(listener: ((session: Record<string, unknown>) => void) | null): void;
   getSessionSnapshot?(): Record<string, unknown> | null;

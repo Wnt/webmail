@@ -166,7 +166,7 @@ const NO_CID_URLS: Record<string, string> = Object.freeze({}) as Record<string, 
 interface EmailViewerProps {
   email: Email | null;
   /** Captured message routing supplied by the standard mail UI. */
-  blobSource?: { client: IJMAPClient | null; accountId?: string };
+  blobSource?: { client: IJMAPClient | null; accountId?: string; clientAccountId?: string };
   isLoading?: boolean;
   onReply?: (draftText?: string) => void;
   onReplyAll?: () => void;
@@ -802,9 +802,17 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   className,
 }: EmailViewerProps) {
   const t = useTranslations('email_viewer');
-  // The message the per-message state below belongs to (read by its setters).
-  const emailIdForStateRef = useRef<string | null>(null);
-  emailIdForStateRef.current = email?.id ?? null;
+  // Fork (Wnt/webmail): the message the per-message state below belongs to -
+  // its owner (the login, the JMAP account and the session it was read in)
+  // and its id: JMAP ids are only unique within one account, so two accounts'
+  // messages with the same id never share "Load images", the light/dark
+  // switch, inline images or a decrypted/unpacked body. Read by the setters.
+  const messageKey = email?.id
+    ? [email.sourceClientAccountId, email.sourceAccountId, email.accountId, blobSource?.clientAccountId, blobSource?.accountId,
+      blobSource?.client?.getSessionScope?.(), email.id].map((part) => part ?? '').join('\u0000')
+    : null;
+  const messageKeyRef = useRef<string | null>(null);
+  messageKeyRef.current = messageKey;
   const tComposer = useTranslations('email_composer');
   const tNotifications = useTranslations('notifications');
   const tCommon = useTranslations('common');
@@ -992,9 +1000,9 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // they were pressed on only. Kept with its id, so the next message's first
   // render (before the reset effect ran) never loads its remote content.
   const [externalAllowedFor, setExternalAllowedFor] = useState<string | null>(null);
-  const allowExternalContent = externalContentPolicy === 'allow' || (!!email?.id && externalAllowedFor === email.id);
+  const allowExternalContent = externalContentPolicy === 'allow' || (!!messageKey && externalAllowedFor === messageKey);
   const setAllowExternalContent = useCallback((allow: boolean) => {
-    setExternalAllowedFor(allow ? emailIdForStateRef.current : null);
+    setExternalAllowedFor(allow ? messageKeyRef.current : null);
   }, []);
   const [hasBlockedContent, setHasBlockedContent] = useState(false);
   // Fork (Wnt/webmail): the inline images' blob URLs belong to one message.
@@ -1002,7 +1010,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // effect below runs again) neither uses the last message's URLs - revoked
   // right after - nor misses the body sanitized ahead under an empty map.
   const [cidBlobState, setCidBlobState] = useState<{ id: string | null; urls: Record<string, string> }>({ id: null, urls: NO_CID_URLS });
-  const cidBlobUrls = cidBlobState.id === (email?.id ?? null) ? cidBlobState.urls : NO_CID_URLS;
+  const cidBlobUrls = cidBlobState.id === messageKey ? cidBlobState.urls : NO_CID_URLS;
   // blob: URL -> the cid: part behind it, so a click on a link the body points
   // at a part can be routed through the attachment preview/download gate
   // instead of window.open() (GHSA-xvjh-v9c6-qcvc). A ref because the iframe
@@ -1139,9 +1147,9 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // from: message-scoped, so the next message's first renders (before the
   // reset effect) never show or sanitize the last message's body under the
   // next message's external-content permission.
-  const [pluginRenderedHtml, setPluginRenderedHtml] = useMessageScopedState<string | null>(email?.id, null);
-  const [pluginRenderedText, setPluginRenderedText] = useMessageScopedState<string | null>(email?.id, null);
-  const [pluginRenderedAttachments, setPluginRenderedAttachments] = useMessageScopedState<PostalMimeAttachment[]>(email?.id, NO_PARTS as PostalMimeAttachment[]);
+  const [pluginRenderedHtml, setPluginRenderedHtml] = useMessageScopedState<string | null>(messageKey, null);
+  const [pluginRenderedText, setPluginRenderedText] = useMessageScopedState<string | null>(messageKey, null);
+  const [pluginRenderedAttachments, setPluginRenderedAttachments] = useMessageScopedState<PostalMimeAttachment[]>(messageKey, NO_PARTS as PostalMimeAttachment[]);
   // Bumped when a plugin calls `api.ui.rerenderEmail` (e.g. the S/MIME plugin
   // after the user unlocks a key from the banner) to force the onRenderEmailBody
   // hook to run again for the open message so the body re-decrypts.
@@ -1153,14 +1161,14 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   }, []);
 
   // TNEF (winmail.dat) support
-  const [tnefHtml, setTnefHtml] = useMessageScopedState<string | null>(email?.id, null);
-  const [tnefText, setTnefText] = useMessageScopedState<string | null>(email?.id, null);
-  const [tnefAttachments, setTnefAttachments] = useMessageScopedState<TnefAttachment[]>(email?.id, NO_PARTS as TnefAttachment[]);
+  const [tnefHtml, setTnefHtml] = useMessageScopedState<string | null>(messageKey, null);
+  const [tnefText, setTnefText] = useMessageScopedState<string | null>(messageKey, null);
+  const [tnefAttachments, setTnefAttachments] = useMessageScopedState<TnefAttachment[]>(messageKey, NO_PARTS as TnefAttachment[]);
 
   // Embedded message/rfc822 unwrapping (Outlook forward-as-attachment)
-  const [embeddedEmailHtml, setEmbeddedEmailHtml] = useMessageScopedState<string | null>(email?.id, null);
-  const [embeddedEmailText, setEmbeddedEmailText] = useMessageScopedState<string | null>(email?.id, null);
-  const [embeddedEmailAttachments, setEmbeddedEmailAttachments] = useMessageScopedState<PostalMimeAttachment[]>(email?.id, NO_PARTS as PostalMimeAttachment[]);
+  const [embeddedEmailHtml, setEmbeddedEmailHtml] = useMessageScopedState<string | null>(messageKey, null);
+  const [embeddedEmailText, setEmbeddedEmailText] = useMessageScopedState<string | null>(messageKey, null);
+  const [embeddedEmailAttachments, setEmbeddedEmailAttachments] = useMessageScopedState<PostalMimeAttachment[]>(messageKey, NO_PARTS as PostalMimeAttachment[]);
 
   // Plugin detail sidebar state. Collapsed/width persist across opens and
   // sessions so the panel reopens the way the user last left it.
@@ -1458,7 +1466,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     setDarkOverride(null);
     // The extracted bodies (plugin, TNEF, message/rfc822) are message-scoped
     // (useMessageScopedState): another message reads them as empty.
-  }, [email?.id, externalContentPolicy]);
+  }, [messageKey, externalContentPolicy]);
 
   // Crypto-plugin body takeover (S/MIME, PGP, …). A privileged crypto plugin
   // can fetch the raw message via api.jmap.fetchBlob, decrypt/verify it, and
@@ -1468,7 +1476,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   useEffect(() => {
     if (!email) return;
     let cancelled = false;
-    const forId = email.id;
+    const forId = messageKeyRef.current;
 
     const dataUrlToBytes = (dataUrl: string): Uint8Array | null => {
       try {
@@ -1542,7 +1550,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // TNEF (winmail.dat) detection and processing
   useEffect(() => {
     if (!email?.attachments || !blobClient) return;
-    const forId = email.id;
+    const forId = messageKeyRef.current;
 
     const tnefAtt = email.attachments.find(att => isTnefAttachment(att.name, att.type));
     if (!tnefAtt?.blobId) {
@@ -1636,7 +1644,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   useEffect(() => {
     if (!email?.attachments || !blobClient) return;
 
-    const forId = email.id;
+    const forId = messageKeyRef.current;
     // Find message/rfc822 attachment
     const rfc822Att = email.attachments.find(
       att => att.type === 'message/rfc822' && att.blobId
@@ -1709,7 +1717,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // Fetch inline CID images with authentication to prevent browser auth dialogs
   useEffect(() => {
     let cancelled = false;
-    const forId = email?.id ?? null;
+    const forId = messageKeyRef.current;
     const setCidBlobUrls = (urls: Record<string, string>) =>
       setCidBlobState({ id: forId, urls: Object.keys(urls).length ? urls : NO_CID_URLS });
     const objectUrls: string[] = [];
@@ -2374,10 +2382,10 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // Fork (Wnt/webmail): the reader's light/dark switch counts for the message
   // it was used on (as the reset effect intends), from its first render on.
   const [darkOverride, setDarkOverride] = useState<{ id: string | null; value: boolean } | null>(null);
-  const emailViewDarkOverride = darkOverride && darkOverride.id === (email?.id ?? null) ? darkOverride.value : null;
+  const emailViewDarkOverride = darkOverride && darkOverride.id === messageKey ? darkOverride.value : null;
   const setEmailViewDarkOverride = useCallback((next: boolean | null | ((prev: boolean | null) => boolean | null)) => {
     setDarkOverride((prev) => {
-      const id = emailIdForStateRef.current;
+      const id = messageKeyRef.current;
       const current = prev && prev.id === id ? prev.value : null;
       const value = typeof next === 'function' ? next(current) : next;
       return value === null ? null : { id, value };

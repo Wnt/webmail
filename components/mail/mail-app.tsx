@@ -140,7 +140,7 @@ import { usePasskeyGateStore } from "@/stores/passkey-gate-store";
 import { takePrefetchedEmail } from "@/lib/push-prefetch";
 import { afterBodyPainted, beginOpen, bodyPainted, markOpen, noteSwipePrep } from "@/lib/open-timing";
 import { peekCost } from "@/lib/swipe-neighbours";
-import { useSwipeNeighbours } from "@/hooks/use-swipe-neighbours";
+import { swipeOwnsRow, useSwipeNeighbours } from "@/hooks/use-swipe-neighbours";
 import { useProInterfaceActive } from "@/components/pro/pro-interface-redirect";
 import type { QuoteHeader } from "@/lib/plugin-types";
 import { useLiteLinkSegments } from "@/hooks/use-lite-link-segments";
@@ -4058,7 +4058,10 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
   const swipeNextRow = selectedEmailIndex >= 0 && selectedEmailIndex < activeEmails.length - 1 ? activeEmails[selectedEmailIndex + 1] : null;
   const swipe = useSwipeNeighbours({
     client,
-    enabled: isMobile && !conversationThread && !!selectedEmail,
+    // Only the signed-in account's own messages (swipeOwnsRow: as the open
+    // resolves their owner - not another login's view, a shared folder or a
+    // stamped row).
+    enabled: isMobile && !conversationThread && !!selectedEmail && swipeOwnsRow(selectedEmail, client),
     current: selectedEmail,
     prevRow: swipePrevRow,
     nextRow: swipeNextRow,

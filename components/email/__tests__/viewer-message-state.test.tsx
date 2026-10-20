@@ -11,7 +11,9 @@ import type { Email, Mailbox } from '@/lib/jmap/types';
 // - a lite swipe neighbour reads nothing of its body beyond its first lines
 //   (no DOM parse of an over-limit body for its attachment chips);
 // - the sanitized-body cache hands out a body only for the very text it was
-//   made from: another login's message with the same id gets its own body.
+//   made from: another login's message with the same id gets its own body;
+// - (r2) all of it is keyed by the message's owner and id: two accounts'
+//   messages with the same JMAP id share nothing.
 
 const sanitize = vi.hoisted(() => ({ calls: 0, inputs: [] as { html: string; block: boolean }[] }));
 vi.mock('@/lib/email-sanitization', async (importOriginal) => {
@@ -120,4 +122,39 @@ it('a neighbour from a different login cannot reuse the first login body', async
   const second = render(<SwipePeek neighbour={{ row: { ...b, accountId: 'login-b' }, email: b }} isDark={false} />);
   expect(second.container.querySelector('iframe')?.getAttribute('srcdoc')).not.toContain('PRIVATE-LOGIN-A-BODY');
 });
+});
+
+describe('per-message state follows the account, not just the id (review swipe-preload r2 R2-A)', () => {
+  it('Load images permission cannot follow an equal id to another account', () => {
+    const a = htmlEmail('same-id', true);
+    a.sourceClientAccountId = 'login-a'; a.sourceAccountId = 'account-a';
+    a.bodyValues!['1'].value = '<img src="https://tracker.example.test/account-a">';
+    const view = render(viewer(a, 0));
+    fireEvent.click(view.getByText('load_external_content'));
+    const b = htmlEmail('same-id', true);
+    b.sourceClientAccountId = 'login-b'; b.sourceAccountId = 'account-b';
+    b.bodyValues!['1'].value = '<img src="https://tracker.example.test/account-b">';
+    sanitize.inputs = [];
+    view.rerender(viewer(b, 1));
+    expect(sanitize.inputs.filter(x => x.html.includes('/account-b'))).not.toHaveLength(0);
+    expect(sanitize.inputs.filter(x => x.html.includes('/account-b')).every(x => x.block)).toBe(true);
+  });
+  it('an extracted body cannot follow an equal id to a trusted sender in another account', async () => {
+    const oldBody = '<p>EXTRACTED-ACCOUNT-A</p><img src="https://tracker.example.test/old-account">';
+    const plugin = vi.spyOn(renderHooks.onRenderEmailBody, 'transform').mockResolvedValue({ html: oldBody, handledBy: 'test', text: '', attachments: [] });
+    const a = htmlEmail('same-extracted-id', true);
+    a.sourceClientAccountId = 'login-a'; a.sourceAccountId = 'account-a';
+    const view = render(viewer(a, 0));
+    await act(async () => { await Promise.resolve(); });
+    expect(view.container.querySelector('iframe')?.getAttribute('srcdoc')).toContain('EXTRACTED-ACCOUNT-A');
+    plugin.mockImplementation(() => new Promise(() => {}));
+    const committed = vi.spyOn(Element.prototype, 'setAttribute');
+    const b = htmlEmail('same-extracted-id', true);
+    b.sourceClientAccountId = 'login-b'; b.sourceAccountId = 'account-b';
+    b.from = [{email: 'trusted@example.test'}];
+    view.rerender(viewer(b, 1));
+    const staleDocs = committed.mock.calls.filter(([name, value]) => name.toLowerCase() === 'srcdoc' && value.includes('EXTRACTED-ACCOUNT-A') && value.includes('img-src data: blob: http: https:'));
+    committed.mockRestore(); plugin.mockRestore();
+    expect(staleDocs.map(() => 'old account body committed with permissive CSP')).toEqual([]);
+  });
 });

@@ -59,7 +59,7 @@ describe('copies kept for an open', () => {
   });
 
   it('are not handed out in a session that replaced the one they were made in', async () => {
-    client.primeEmailForOpen('m1', full('m1', 'Copy from the old session'), 10_000);
+    client.primeEmailForOpen('m1', full('m1', 'Copy from the old session'), 10_000, client.getSessionScope());
     (client as unknown as { apiUrl: string }).apiUrl = 'https://other.example.test/jmap/api';
     const opened = await client.getEmail('m1');
     expect(opened?.bodyValues?.['1']?.value).toBe('Server body of m1');
@@ -70,12 +70,33 @@ describe('copies kept for an open', () => {
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => { release = r; });
     const pending = gate.then(() => full('m2', 'Copy from the old session'));
-    client.primeEmailForOpen('m2', pending, 10_000);
+    client.primeEmailForOpen('m2', pending, 10_000, client.getSessionScope());
     const opening = client.getEmail('m2');
     (client as unknown as { apiUrl: string }).apiUrl = 'https://other.example.test/jmap/api';
     release();
     const opened = await opening;
     expect(opened?.bodyValues?.['1']?.value).toBe('Server body of m2');
+  });
+
+  it('a copy made in another session is refused at the hand-over (no render needed)', async () => {
+    const before = client.getSessionScope();
+    client.disconnect();
+    expect(client.adoptSession(session())).toBe(true); // same server and account, a new session
+    client.primeEmailForOpen('m4', full('m4', 'Copy from the old session'), 10_000, before);
+    expect(primed().size).toBe(0);
+    expect((await client.getEmail('m4'))?.bodyValues?.['1']?.value).toBe('Server body of m4');
+  });
+
+  it('a fetch ahead that ends in another session is dropped', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const realFetch = fetchSpy.getMockImplementation()!;
+    fetchSpy.mockImplementation((async (u: string, init?: RequestInit) => { await gate; return realFetch(u, init); }) as never);
+    const ahead = client.fetchEmailAhead('m5');
+    client.disconnect();
+    client.adoptSession(session());
+    release();
+    expect(await ahead).toBeNull();
   });
 
   it('fetchEmailAhead keeps nothing in the client', async () => {
@@ -84,3 +105,29 @@ describe('copies kept for an open', () => {
     expect(primed().size).toBe(0);
   });
 });
+
+describe('copies kept for an open: a new session at the same address (review swipe-preload r2 R2-C)', () => {
+  it('an open waiting on a copy does not take it after a sign-out and a new session', async () => {
+    let release!: (e: Email) => void;
+    const pending = new Promise<Email>((r) => { release = r; });
+    client.primeEmailForOpen('same-id', pending, 10_000, client.getSessionScope());
+    const opening = client.getEmail('same-id');
+    client.disconnect();
+    client.adoptSession(session());
+    release(full('same-id', 'OLD LOGIN BODY'));
+    expect((await opening)?.bodyValues?.['1']?.value).not.toBe('OLD LOGIN BODY');
+  });
+
+  it('fetchEmailAhead drops a result that arrives after a sign-out and a new session', async () => {
+    let release!: (e: Email) => void;
+    const spy = vi.spyOn(client as unknown as { fetchFullEmail: () => Promise<Email> }, 'fetchFullEmail')
+      .mockImplementation(() => new Promise<Email>((r) => { release = r; }));
+    const ahead = client.fetchEmailAhead('same-id');
+    client.disconnect();
+    client.adoptSession(session());
+    release(full('same-id', 'OLD LOGIN BODY'));
+    expect(await ahead).toBeNull();
+    spy.mockRestore();
+  });
+});
+
