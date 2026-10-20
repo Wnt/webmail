@@ -7,6 +7,7 @@
 
 import { emailIframeCsp } from '@/lib/email-sanitization';
 import { DARK_PENDING_CLASS, emailColorScheme, emailDarkModeCss, resolveColorSchemeMedia } from '@/lib/email-dark-mode';
+import { hasFullBleedCanvas } from '@/lib/email-full-bleed';
 import type { MessageSpacing } from '@/stores/settings-store';
 
 export interface EmailFrameContent {
@@ -41,13 +42,10 @@ export function buildEmailFrameSrcDoc(
   // background. A <style> tag alone is too weak a signal: plenty of
   // transactional mails ship one for web fonts yet have no gutter of their
   // own, and zeroing the padding glues their content to the corner.
-  const emailHtml = content.html;
-  const hasFullBleedCanvas =
-    /<(?:table|div|body)\b[^>]*(?:\bwidth\s*=\s*["']?\s*100%|width\s*:\s*100%)[^>]*(?:\bbgcolor\s*=|background(?:-color)?\s*:)/i.test(emailHtml) ||
-    /<(?:table|div|body)\b[^>]*(?:\bbgcolor\s*=|background(?:-color)?\s*:)[^>]*(?:\bwidth\s*=\s*["']?\s*100%|width\s*:\s*100%)/i.test(emailHtml);
-  const autoDropsGutter = content.hasStyleTag && !isWordHtml && hasFullBleedCanvas;
-  const dropGutter =
-    messageSpacing === 'edge' || (messageSpacing === 'auto' && autoDropsGutter);
+  // Only looked at when it decides anything (lib/email-full-bleed.ts, upstream 29cb6b7f).
+  const autoDropsGutter =
+    messageSpacing === 'auto' && content.hasStyleTag && !isWordHtml && hasFullBleedCanvas(content.html);
+  const dropGutter = messageSpacing === 'edge' || autoDropsGutter;
   const bodyPadding = dropGutter ? '0' : '1rem 1.25rem';
   const mobileBodyPaddingX = dropGutter ? '0' : '0.75rem';
 

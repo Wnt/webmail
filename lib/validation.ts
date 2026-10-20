@@ -103,7 +103,8 @@ export function parseUnsubscribeUrls(header: string): {
 } {
   if (!header?.trim()) return {};
 
-  const matches = header.match(/<([^>]+)>/g);
+  // `[^<>]`: an unclosed `<` ends at the next `<` (upstream 29cb6b7f's form).
+  const matches = header.match(/<([^<>]+)>/g);
   if (!matches) return {};
 
   const urls = matches.map(m => m.slice(1, -1).trim());

@@ -14,6 +14,7 @@ import { collectReferencedCids, isEmbeddedInBody } from "@/lib/attachment-visibi
 import { collapsePlainTextQuotes, setupQuoteCollapse } from "@/lib/quote-collapse";
 import { applyEmailDarkMode, emailColorScheme, emailHasNativeDarkMode as htmlHasNativeDarkMode } from "@/lib/email-dark-mode";
 import { buildEmailFrameSrcDoc } from "@/lib/email-frame-doc";
+import { readReceiptRequestAddress } from "@/lib/read-receipt-request";
 import { fitEmailBodyWidth } from "@/lib/email-fit-width";
 import { withBasePath } from "@/lib/browser-navigation";
 import { buildContactsPath, buildMailPath } from "@/lib/deep-links";
@@ -2819,22 +2820,11 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // Detect a Disposition-Notification-To request on the open message. The
   // header is parsed into email.headers by the client; look it up
   // case-insensitively and extract the bare address.
-  const readReceiptRequestedBy = useMemo(() => {
-    const headers = email?.headers as Record<string, string | string[]> | undefined;
-    if (!headers) return null;
-    let raw: string | undefined;
-    for (const key of Object.keys(headers)) {
-      if (key.toLowerCase() === 'disposition-notification-to') {
-        const v = headers[key];
-        raw = Array.isArray(v) ? v[0] : v;
-        break;
-      }
-    }
-    if (!raw) return null;
-    const m = raw.match(/<([^>]+)>/);
-    const addr = (m ? m[1] : raw).trim();
-    return addr || null;
-  }, [email?.headers]);
+  // The parse is bounded (lib/read-receipt-request.ts, upstream 29cb6b7f).
+  const readReceiptRequestedBy = useMemo(
+    () => readReceiptRequestAddress(email?.headers as Record<string, string | string[]> | undefined),
+    [email?.headers],
+  );
 
   // The identity whose address received the original message — the MDN is sent
   // "from" that address. Falls back to the primary identity.
