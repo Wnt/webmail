@@ -1401,10 +1401,18 @@ export class JMAPClient implements IJMAPClient {
     this.downloadUrl = session.downloadUrl;
     this.accounts = session.accounts || {};
     // Fork (Wnt/webmail): the refreshed session's own mail account, as connect()
-    // takes it (review swipe-preload r4 R4-B: the old account id stayed, so
-    // the session's identity - and copies kept for it - looked unchanged).
-    this.accountId = session.primaryAccounts?.["urn:ietf:params:jmap:mail"] || Object.keys(this.accounts)[0] || this.accountId;
+    // takes it, and only one the session lists (review swipe-preload r4 R4-B,
+    // r5 R5-A: the old account id stayed, so the session's identity - and
+    // copies kept for it - looked unchanged, even for a session with no
+    // account at all). Without one, the old account is retired, its copies
+    // are stale, and the refresh fails (the request keeps its 401).
+    const primary = session.primaryAccounts?.["urn:ietf:params:jmap:mail"];
+    this.accountId = (primary && this.accounts[primary] ? primary : Object.keys(this.accounts)[0]) || '';
     this.noteSessionIdentity();
+    if (!this.accountId) {
+      this.primedEmails.clear();
+      throw new Error('No mail account found in session');
+    }
     this.noteSession(raw);
   }
 

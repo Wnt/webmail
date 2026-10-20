@@ -188,3 +188,20 @@ it('a 401 session refresh to another primary account makes earlier copies stale 
   expect({sameScope:client.getSessionScope()===before,returnedOld:opened?.bodyValues?.['1']?.value==='PRIVATE-OLD-ACCOUNT'})
     .toEqual({sameScope:false,returnedOld:false});
 });
+
+it.each(['u', ''])('a 401 refresh to a session with no mail account retires the old one and its copies (review swipe-preload r5 R5-A, user %j)', async (username) => {
+  const before = client.getSessionScope();
+  client.primeEmailForOpen('old-ready', full('old-ready', 'PRIVATE-OLD-ACCOUNT'), 10_000, before);
+  const next = session();
+  const replacement = { ...next, username, accounts: {}, primaryAccounts: {} };
+  fetchSpy.mockReset();
+  fetchSpy.mockResolvedValueOnce(new Response('', { status: 401 }));
+  fetchSpy.mockResolvedValueOnce(json(replacement));
+  fetchSpy.mockResolvedValue(json({ methodResponses: [['error', { type: 'accountNotFound' }, '0']] }));
+  expect(await client.getEmail('trigger-refresh')).toBeNull();
+  expect(client.getAccountId()).toBe('');
+  const opened = await client.getEmail('old-ready');
+  expect({ sameScope: client.getSessionScope() === before, returnedOld: opened?.bodyValues?.['1']?.value === 'PRIVATE-OLD-ACCOUNT' })
+    .toEqual({ sameScope: false, returnedOld: false });
+});
+
