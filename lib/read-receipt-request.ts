@@ -24,6 +24,9 @@ export function readReceiptRequestAddress(
   // `<` rather than rescanning to the end once per `<` (sender-controlled).
   const line = raw.slice(0, 1000);
   const m = line.match(/<([^<>]+)>/);
+  // Fork: a cut header with no whole `<address>` in its first 1000
+  // characters names no usable address (review upstream-backport-bulwark r1).
+  if (!m && raw.length > line.length) return null;
   const addr = (m ? m[1] : line).trim();
   return addr || null;
 }

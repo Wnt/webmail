@@ -20,7 +20,7 @@ describe('read-receipt header parse on long tokens', () => {
   it('answers 64k characters of unclosed `<` in milliseconds', () => {
     const { result, ms } = timed(() => readReceiptRequestAddress({ 'Disposition-Notification-To': '<a'.repeat(32_000) }));
     expect(ms).toBeLessThan(BUDGET_MS);
-    expect(result).not.toBeNull();
+    expect(result).toBeNull();
   });
 
   it('answers a megabyte header in milliseconds and still finds an early address', () => {

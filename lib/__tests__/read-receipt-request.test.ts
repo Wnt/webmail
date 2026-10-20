@@ -15,6 +15,11 @@ describe('readReceiptRequestAddress', () => {
     expect(readReceiptRequestAddress({ 'Disposition-Notification-To': '   ' })).toBeNull();
   });
 
+  it('gives null for a header cut at 1000 characters without a whole <address>', () => {
+    expect(readReceiptRequestAddress({ 'Disposition-Notification-To': `${'x'.repeat(995)} <late@example.test>` })).toBeNull();
+    expect(readReceiptRequestAddress({ 'Disposition-Notification-To': `<r@example.test> ${'x'.repeat(2000)}` })).toBe('r@example.test');
+  });
+
   it('skips an unclosed `<` before the address', () => {
     expect(readReceiptRequestAddress({ 'Disposition-Notification-To': 'x < y <z@example.test>' })).toBe('z@example.test');
   });
