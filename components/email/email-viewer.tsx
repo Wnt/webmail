@@ -11,7 +11,8 @@ import { getRenderableHtmlBody } from "@/lib/email-body-selection";
 import { cachedEmailContent, emailContentCacheKey, prepareEmailHtml, shouldBlockExternalFor } from "@/lib/email-content-cache";
 import { collectReferencedCids, isEmbeddedInBody } from "@/lib/attachment-visibility";
 import { collapsePlainTextQuotes, setupQuoteCollapse } from "@/lib/quote-collapse";
-import { DARK_PENDING_CLASS, applyEmailDarkMode, emailColorScheme, emailDarkModeCss, emailHasNativeDarkMode as htmlHasNativeDarkMode, resolveColorSchemeMedia } from "@/lib/email-dark-mode";
+import { applyEmailDarkMode, emailColorScheme, emailHasNativeDarkMode as htmlHasNativeDarkMode } from "@/lib/email-dark-mode";
+import { buildEmailFrameSrcDoc } from "@/lib/email-frame-doc";
 import { fitEmailBodyWidth } from "@/lib/email-fit-width";
 import { withBasePath } from "@/lib/browser-navigation";
 import { buildContactsPath, buildMailPath } from "@/lib/deep-links";
@@ -48,10 +49,6 @@ import {
   MailOpen,
   Loader2,
   Printer,
-  FileText,
-  FileImage,
-  FileVideo,
-  FileAudio,
   FileArchive,
   File,
   Eye,
@@ -113,6 +110,8 @@ import { useTour } from "@/components/tour/tour-provider";
 import { useMenuNavigation } from "@/hooks/use-menu-navigation";
 import { findCalendarAttachment, isCalendarMimeType } from "@/lib/calendar-invitation";
 import { RecipientPopover } from "./recipient-popover";
+import { renderClickableRecipients } from "./recipient-list";
+import { getAttachmentDisplayName, getFileIcon } from "./attachment-display";
 import { MailtoLink } from "@/components/ui/mailto-link";
 import { imageBlobUrl, inertBlobType, isFilePreviewable, isMimeTypeSafeForInlinePreview, toInertBlob } from "@/lib/file-preview";
 import { useWopiStatus, canWopiOpen } from "@/hooks/use-wopi-status";
@@ -130,6 +129,9 @@ import { emailHooks, uiHooks, renderHooks } from "@/lib/plugin-hooks";
 import type { AttachmentInfo, AttachmentPreview } from "@/lib/plugin-types";
 import { useAttachmentDrag, isDragOutSupported, type AttachmentDragSource } from "@/hooks/use-attachment-drag";
 import { useMessageSwipe } from "@/hooks/use-message-swipe";
+import type { SwipeNeighbours } from "@/hooks/use-swipe-neighbours";
+import { peekKind } from "@/lib/swipe-neighbours";
+import { SwipePeek } from "./swipe-peek";
 import type { IJMAPClient } from "@/lib/jmap/client-interface";
 import { afterBodyPainted, bodyReady } from "@/lib/open-timing";
 
@@ -138,6 +140,9 @@ type MoreMenuSub = 'move' | 'tag' | 'rules';
 
 /** Whatever a sub-view offers to act on, in the order it is read out. */
 const SUB_MENU_ITEM_SELECTOR = '[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"]';
+
+/** No inline image fetched (yet): one shared object, so memoised bodies keep their key. */
+const NO_CID_URLS: Record<string, string> = Object.freeze({}) as Record<string, string>;
 
 interface EmailViewerProps {
   email: Email | null;
@@ -161,6 +166,12 @@ interface EmailViewerProps {
   onBack?: () => void;
   onNavigateNext?: () => void;
   onNavigatePrev?: () => void;
+  /**
+   * Fork (Wnt/webmail): the phone's swipe neighbours (hooks/use-swipe-neighbours.ts):
+   * the previous and next list rows with their messages once fetched, shown in
+   * the panes beside the message while the finger moves.
+   */
+  swipeNeighbours?: SwipeNeighbours | null;
   /** Mountain View: where the open message sits in the list, for the "1 of N" pager. */
   mvPosition?: { index: number; total: number };
   /** Mountain View: the folder the message is in, shown as a chip by the subject. */
@@ -193,68 +204,6 @@ interface EmailViewerProps {
   selectedMailbox?: string;
   className?: string;
 }
-
-// Helper function to get file icon based on mime type or extension
-const getFileIcon = (name?: string, type?: string) => {
-  const ext = name?.split('.').pop()?.toLowerCase();
-  const mimeType = type?.toLowerCase();
-
-  if (mimeType?.startsWith('image/') || ['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'].includes(ext || '')) {
-    return FileImage;
-  }
-  if (mimeType?.startsWith('video/') || ['mp4', 'avi', 'mov', 'wmv'].includes(ext || '')) {
-    return FileVideo;
-  }
-  if (mimeType?.startsWith('audio/') || ['mp3', 'wav', 'ogg', 'flac'].includes(ext || '')) {
-    return FileAudio;
-  }
-  if (mimeType === 'application/pdf' || ext === 'pdf') {
-    return FileText;
-  }
-  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext || '')) {
-    return FileArchive;
-  }
-  if (['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext || '')) {
-    return FileText;
-  }
-  return File;
-};
-
-const MIME_TYPE_LABELS: Record<string, string> = {
-  'application/pdf': 'Document.pdf',
-  'application/zip': 'Archive.zip',
-  'application/x-zip-compressed': 'Archive.zip',
-  'application/gzip': 'Archive.gz',
-  'application/x-rar-compressed': 'Archive.rar',
-  'application/x-7z-compressed': 'Archive.7z',
-  'application/msword': 'Document.doc',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Document.docx',
-  'application/vnd.ms-excel': 'Spreadsheet.xls',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'Spreadsheet.xlsx',
-  'application/vnd.ms-powerpoint': 'Presentation.ppt',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'Presentation.pptx',
-  'text/plain': 'Text.txt',
-  'text/html': 'Document.html',
-  'text/csv': 'Data.csv',
-  'application/json': 'Data.json',
-  'application/xml': 'Data.xml',
-  'application/octet-stream': 'Attachment',
-  'message/rfc822': 'Email.eml',
-};
-
-const getAttachmentDisplayName = (name: string | null | undefined, mimeType?: string): string => {
-  if (name) return name;
-  if (mimeType) {
-    const label = MIME_TYPE_LABELS[mimeType.toLowerCase()];
-    if (label) return label;
-    const sub = mimeType.split('/')[1];
-    if (sub) {
-      const clean = sub.replace(/^x-/, '').replace(/^vnd\./, '');
-      return `Attachment.${clean}`;
-    }
-  }
-  return 'Attachment';
-};
 
 // Helper function to format recipients with contextual display
 const _formatRecipients = (
@@ -364,34 +313,6 @@ function getPostalMimeAttachmentSize(attachment: PostalMimeAttachment): number {
 }
 
 // Helper to render clickable recipient elements with popovers
-function renderClickableRecipients(
-  recipients: Array<{ name?: string; email: string }>,
-  currentUserEmail: string | undefined,
-  t: (key: string, params?: Record<string, string | number>) => string,
-  onViewContact?: (contact: ContactCard | null, email: string) => void,
-  maxVisible: number = 2
-) {
-  const visible = recipients.slice(0, maxVisible);
-  return visible.map((r, index) => {
-    const isMe = currentUserEmail &&
-      (r.email.toLowerCase() === currentUserEmail.toLowerCase() ||
-       r.email.toLowerCase().startsWith(currentUserEmail.toLowerCase().split('@')[0] + '+'));
-
-    return (
-      <span key={r.email + index} className="inline-flex items-center">
-        {index > 0 && <span className="text-muted-foreground me-1">,</span>}
-        <RecipientPopover
-          name={r.name}
-          email={r.email}
-          displayLabel={isMe ? t('recipient_me') : undefined}
-          onViewContact={onViewContact}
-          className="text-sm"
-        />
-      </span>
-    );
-  });
-}
-
 // Contact sidebar panel that slides in from the right on desktop
 export function ContactSidebarPanel({
   email,
@@ -841,6 +762,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   onBack,
   onNavigateNext,
   onNavigatePrev,
+  swipeNeighbours,
   mvPosition,
   mvFolderName,
   mvConversation,
@@ -861,6 +783,9 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   className,
 }: EmailViewerProps) {
   const t = useTranslations('email_viewer');
+  // The message the per-message state below belongs to (read by its setters).
+  const emailIdForStateRef = useRef<string | null>(null);
+  emailIdForStateRef.current = email?.id ?? null;
   const tComposer = useTranslations('email_composer');
   const tNotifications = useTranslations('notifications');
   const tCommon = useTranslations('common');
@@ -1044,9 +969,21 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   const belowHeaderRowRef = useRef<HTMLDivElement>(null);
   const belowHeaderGhostRef = useRef<HTMLDivElement>(null);
   const [imageThumbUrls, setImageThumbUrls] = useState<Record<string, string>>({});
-  const [allowExternalContent, setAllowExternalContent] = useState(false);
+  // Fork (Wnt/webmail): "Load images" / "Trust sender" count for the message
+  // they were pressed on only. Kept with its id, so the next message's first
+  // render (before the reset effect ran) never loads its remote content.
+  const [externalAllowedFor, setExternalAllowedFor] = useState<string | null>(null);
+  const allowExternalContent = externalContentPolicy === 'allow' || (!!email?.id && externalAllowedFor === email.id);
+  const setAllowExternalContent = useCallback((allow: boolean) => {
+    setExternalAllowedFor(allow ? emailIdForStateRef.current : null);
+  }, []);
   const [hasBlockedContent, setHasBlockedContent] = useState(false);
-  const [cidBlobUrls, setCidBlobUrls] = useState<Record<string, string>>({});
+  // Fork (Wnt/webmail): the inline images' blob URLs belong to one message.
+  // Tagged with its id, so the first render of the next message (before the
+  // effect below runs again) neither uses the last message's URLs - revoked
+  // right after - nor misses the body sanitized ahead under an empty map.
+  const [cidBlobState, setCidBlobState] = useState<{ id: string | null; urls: Record<string, string> }>({ id: null, urls: NO_CID_URLS });
+  const cidBlobUrls = cidBlobState.id === (email?.id ?? null) ? cidBlobState.urls : NO_CID_URLS;
   // blob: URL -> the cid: part behind it, so a click on a link the body points
   // at a part can be routed through the attachment preview/download gate
   // instead of window.open() (GHSA-xvjh-v9c6-qcvc). A ref because the iframe
@@ -1488,12 +1425,13 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // Initialize allowExternalContent based on externalContentPolicy setting
   useEffect(() => {
     // 'allow' = always allow, 'block' = always block, 'ask' = user decides per email
-    setAllowExternalContent(externalContentPolicy === 'allow');
+    // (allowExternalContent is derived from the policy and this message's id).
+    setExternalAllowedFor(null);
     setHasBlockedContent(false);
     setQuickReplyText("");
     setIsQuickReplyFocused(false);
     setShowSourceModal(false);
-    setEmailViewDarkOverride(null);
+    setDarkOverride(null);
     setPluginRenderedHtml(null);
     setPluginRenderedText(null);
     setPluginRenderedAttachments([]);
@@ -1751,6 +1689,9 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // Fetch inline CID images with authentication to prevent browser auth dialogs
   useEffect(() => {
     let cancelled = false;
+    const forId = email?.id ?? null;
+    const setCidBlobUrls = (urls: Record<string, string>) =>
+      setCidBlobState({ id: forId, urls: Object.keys(urls).length ? urls : NO_CID_URLS });
     const objectUrls: string[] = [];
     // The Map itself is never replaced, so the cleanup can hold it directly.
     const cidBlobParts = cidBlobPartsRef.current;
@@ -2410,109 +2351,30 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   }, [effectiveEmailContent.html, effectiveEmailContent.isHtml]);
 
   const emailAlwaysLightMode = useSettingsStore((state) => state.emailAlwaysLightMode);
-  const [emailViewDarkOverride, setEmailViewDarkOverride] = useState<boolean | null>(null);
+  // Fork (Wnt/webmail): the reader's light/dark switch counts for the message
+  // it was used on (as the reset effect intends), from its first render on.
+  const [darkOverride, setDarkOverride] = useState<{ id: string | null; value: boolean } | null>(null);
+  const emailViewDarkOverride = darkOverride && darkOverride.id === (email?.id ?? null) ? darkOverride.value : null;
+  const setEmailViewDarkOverride = useCallback((next: boolean | null | ((prev: boolean | null) => boolean | null)) => {
+    setDarkOverride((prev) => {
+      const id = emailIdForStateRef.current;
+      const current = prev && prev.id === id ? prev.value : null;
+      const value = typeof next === 'function' ? next(current) : next;
+      return value === null ? null : { id, value };
+    });
+  }, []);
   const isDark = emailViewDarkOverride !== null
     ? emailViewDarkOverride
     : (emailAlwaysLightMode ? false : resolvedTheme === 'dark');
+  // A neighbour shown beside the message opens without this message's switch.
+  const neighbourIsDark = emailAlwaysLightMode ? false : resolvedTheme === 'dark';
 
-  const emailIframeSrcDoc = useMemo(() => {
-    if (!effectiveEmailContent.isHtml) return '';
-
-    // Dark mode rewrites the mail's colours after load (applyEmailDarkMode in
-    // handleIframeLoad); this only sets the fallback colours and keeps the
-    // body hidden until that pass ran. A mail with its own dark styles gets
-    // them pinned to the app theme rather than the OS.
-    const darkModeCSS = isDark ? emailDarkModeCss() : '';
-    const colorScheme = emailColorScheme(isDark, emailHasNativeDarkMode);
-
-    // Bare HTML emails (no <style>) tend to be plain prose without their own
-    // layout - give them the same padding as plain-text mails (.email-content-text).
-    // Word/Outlook HTML emails ship a <style> block but put their gutter in
-    // @page margins (print-only), so they need a fallback body padding too.
-    const isWordHtml = /class=["']?(?:Mso|WordSection)|<o:p[\s>/]|urn:schemas-microsoft-com:office:office/i.test(effectiveEmailContent.html);
-    // "auto" spacing: only drop our gutter when the mail paints a full-bleed
-    // background canvas (a width:100% element carrying a background colour) --
-    // the one case where the gutter shows as a frame around the email's own
-    // background. A <style> tag alone is too weak a signal: plenty of
-    // transactional mails ship one for web fonts yet have no gutter of their
-    // own, and zeroing the padding glues their content to the corner.
-    const emailHtml = effectiveEmailContent.html;
-    const hasFullBleedCanvas =
-      /<(?:table|div|body)\b[^>]*(?:\bwidth\s*=\s*["']?\s*100%|width\s*:\s*100%)[^>]*(?:\bbgcolor\s*=|background(?:-color)?\s*:)/i.test(emailHtml) ||
-      /<(?:table|div|body)\b[^>]*(?:\bbgcolor\s*=|background(?:-color)?\s*:)[^>]*(?:\bwidth\s*=\s*["']?\s*100%|width\s*:\s*100%)/i.test(emailHtml);
-    const autoDropsGutter = effectiveEmailContent.hasStyleTag && !isWordHtml && hasFullBleedCanvas;
-    const dropGutter =
-      messageSpacing === 'edge' || (messageSpacing === 'auto' && autoDropsGutter);
-    const bodyPadding = dropGutter ? '0' : '1rem 1.25rem';
-    const mobileBodyPaddingX = dropGutter ? '0' : '0.75rem';
-
-    // Word emails rely on empty <p class=MsoNormal>&nbsp;</p> spacers for vertical
-    // rhythm. With our default line-height: 1.6 these stack into oversized gaps;
-    // tighten to match how Outlook/Gmail render the same source.
-    const wordHtmlCSS = isWordHtml ? `
-      body { line-height: 1.15; }
-      p.MsoNormal, li.MsoNormal, div.MsoNormal { margin: 0 0 6px; }
-    ` : '';
-
-    // Defense-in-depth CSP inside srcDoc (see emailIframeCsp). When the user
-    // loads/trusts the sender the srcDoc is rebuilt (see emailContent) with
-    // the permissive variant so real images, web fonts and media load.
-    const iframeCsp = emailIframeCsp(effectiveEmailContent.externalBlocked);
-
-    return `<!DOCTYPE html>
-<html class="${isDark ? DARK_PENDING_CLASS : ''}" style="color-scheme: ${colorScheme};"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="${iframeCsp}">
-<meta name="referrer" content="no-referrer">
-<meta http-equiv="x-dns-prefetch-control" content="off">
-<style>
-  /* Force content height: some emails set html/body { height: 100% }, which -
-     combined with overflow:hidden and our scrollHeight-based auto-resize -
-     collapses the measured height and clips everything below the fold. The
-     height reset is repeated in a trailing <style> after the body content
-     (see below): the email's own <style> is injected inside our <body> and so
-     lands later in source order, where - at equal specificity and !important -
-     it would otherwise win the cascade. */
-  /* overflow-y stays hidden so our scrollHeight-based height measurement works;
-     overflow-x is auto on the body so an intrinsically wide table (e.g. a
-     20-column data table) can scroll horizontally instead of being crushed to
-     fit - the latter wraps header text to one character per line, which reads
-     as 90deg-rotated vertical headers (issue #409). On a phone that scroll is
-     the wrong answer for ordinary fixed-width mail, so fitEmailBodyWidth()
-     shrinks the whole body to the screen width after load and only content too
-     wide to stay legible when scaled keeps scrolling. */
-  html { overflow: hidden; height: auto !important; }
-  /* Some emails put height:100% on a full-bleed wrapper table/div (not html/body),
-     which - with body's overflow:hidden - clips the content to a sliver, and the
-     scrollHeight-based auto-resize then locks the iframe short (a Box.co.il
-     verification email rendered as a logo-only 150px strip). Neutralise the
-     full-height trick on any element so the body grows to its content. */
-  [style*="height:100%"], [style*="height: 100%"] { height: auto !important; }
-  body { margin: 0; padding: ${bodyPadding}; overflow-x: auto; overflow-y: hidden; height: auto !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; line-height: 1.6; color: #1a1a1a; background: #ffffff; word-wrap: break-word; overflow-wrap: break-word; }
-  @media (max-width: 640px) { body { padding-left: ${mobileBodyPaddingX}; padding-right: ${mobileBodyPaddingX}; } }
-  /* Only force the cap on images that set no width of their own: an
-     !important 100% also overrides a sender's inline max-width, and an
-     image sized by max-width + max-height + width:100% then grows to
-     the pane width while its max-height still clamps the height - the
-     picture renders stretched. Same reasoning as the table rule below (#790).
-     height stays !important so a fixed inline height cannot squash it. */
-  img:not([style*="max-width"]) { max-width: 100% !important; }
-  img[style*="max-width"] { max-width: 100%; }
-  img { height: auto !important; }
-  a { color: #1a73e8; }
-  /* Only force the cap on tables that set no width of their own: an
-     !important 100% would also override a newsletter's inline
-     max-width:600px and stretch it across the pane. (#790) */
-  table:not([style*="max-width"]) { max-width: 100% !important; }
-  table[style*="max-width"] { max-width: 100%; }
-  table { table-layout: auto; overflow-wrap: break-word; }
-  /* break-word (not anywhere): break only over-long single words, and keep each
-     word's min-content width so columns are not collapsed to a single char. */
-  td, th { overflow-wrap: break-word; }
-  pre { white-space: pre-wrap; word-wrap: break-word; }
-  ${wordHtmlCSS}
-  ${darkModeCSS}
-</style></head><body dir="auto">${resolveColorSchemeMedia(effectiveEmailContent.html, isDark)}<style>html,body{height:auto!important;min-height:0!important;max-height:none!important}</style></body></html>`;
-  }, [effectiveEmailContent.html, effectiveEmailContent.isHtml, effectiveEmailContent.hasStyleTag, effectiveEmailContent.externalBlocked, isDark, emailHasNativeDarkMode, messageSpacing]);
+  const emailIframeSrcDoc = useMemo(
+    () => buildEmailFrameSrcDoc(effectiveEmailContent, { isDark, nativeDarkMode: emailHasNativeDarkMode, messageSpacing }),
+    // Only these parts of the content go into the document.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [effectiveEmailContent.html, effectiveEmailContent.isHtml, effectiveEmailContent.hasStyleTag, effectiveEmailContent.externalBlocked, isDark, emailHasNativeDarkMode, messageSpacing],
+  );
 
   // Unblocking external content is handled by rebuilding the iframe srcDoc:
   // toggling allowExternalContent (both "Load images" and "Trust sender" set
@@ -2598,28 +2460,35 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   const swipeRootRef = useRef<HTMLDivElement>(null);
   const swipePrevGutterRef = useRef<HTMLDivElement>(null);
   const swipeNextGutterRef = useRef<HTMLDivElement>(null);
-  const swipeHintLeftRef = useRef<HTMLDivElement>(null);
-  const swipeHintRightRef = useRef<HTMLDivElement>(null);
   const tSettings = useTranslations('settings');
   const swipeBlocked = quickReplyText.length > 0;
   const onSwipeBlocked = useCallback(() => {
     toast.info(tSettings('unsaved_changes'));
   }, [tSettings]);
-  const { modes: swipeGutters } = useMessageSwipe({
+  // What each pane can show (for the open-speed beacon).
+  const swipePreload = useMemo(() => {
+    const of = (n: SwipeNeighbours['prev'] | undefined) => (n?.email ? peekKind(n.email) : 'none' as const);
+    return { prev: of(swipeNeighbours?.prev), next: of(swipeNeighbours?.next) };
+  }, [swipeNeighbours]);
+  const { modes: swipeGutters, committing: swipeCommitting } = useMessageSwipe({
     enabled: isMobile,
     trackRef: swipeTrackRef,
     pageRef: swipePageRef,
     paneRef: swipeRootRef,
     prevGutterRef: swipePrevGutterRef,
     nextGutterRef: swipeNextGutterRef,
-    hintLeftRef: swipeHintLeftRef,
-    hintRightRef: swipeHintRightRef,
     onNext: onNavigateNext,
     onPrev: onNavigatePrev,
     blocked: swipeBlocked,
     onBlocked: onSwipeBlocked,
     resetKey: email?.id ?? null,
+    preload: swipePreload,
   });
+  // The panes keep what they show while a swipe hands over to the page: the
+  // one the track rests on is the message the page is taking.
+  const shownNeighboursRef = useRef(swipeNeighbours);
+  if (!swipeCommitting) shownNeighboursRef.current = swipeNeighbours;
+  const peeks = isMobile ? shownNeighboursRef.current : null;
 
   const handleIframeLoad = useCallback(() => {
     const iframe = iframeRef.current;
@@ -4104,15 +3973,6 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
           ? "relative flex-1 min-h-0 flex overflow-x-auto overflow-y-hidden snap-x snap-mandatory overscroll-x-contain scroll-hidden"
           : "contents"}
       >
-      {isMobile && swipeGutters.prev !== 'off' && (
-        <div
-          ref={swipePrevGutterRef}
-          aria-hidden="true"
-          data-swipe-gutter="prev"
-          data-mode={swipeGutters.prev}
-          className={cn("shrink-0 self-stretch", swipeGutters.prev === 'go' ? "w-[40%] snap-start" : "w-12")}
-        />
-      )}
       <div
         ref={swipePageRef}
         data-message-swipe-page={isMobile ? "" : undefined}
@@ -5140,7 +5000,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
 
         {/* Unified Notification Banner - External Content + Calendar Invitation + Read Receipt */}
         {(senderVerification ||
-          (hasBlockedContent && !allowExternalContent && externalContentPolicy !== 'allow') ||
+          (hasBlockedContent && !allowExternalContent) ||
           hasCalendarInvitation ||
           (readReceiptResponse === 'ask' && shouldOfferReadReceipt)) && (
           <div className="border-b border-border bg-muted/30 isolate">
@@ -5170,7 +5030,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
                 )}
 
                 {/* External Content Controls */}
-                {hasBlockedContent && !allowExternalContent && externalContentPolicy !== 'allow' && (
+                {hasBlockedContent && !allowExternalContent && (
                   <div className="flex items-start gap-3 py-1">
                     <div className="w-10 h-10 rounded-full bg-info/15 text-info flex items-center justify-center flex-shrink-0 shadow-sm">
                       <Image className="w-5 h-5" />
@@ -5801,14 +5661,36 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
       </div>
       </div>
       </div>
+      {/* The previous side comes after the page in the document (it is placed
+          first with `order`), so the page's own subject, code bar and body frame
+          are the first of their kind in the document. */}
+      {isMobile && swipeGutters.prev !== 'off' && (
+        <div
+          ref={swipePrevGutterRef}
+          aria-hidden="true"
+          inert
+          data-swipe-gutter="prev"
+          data-mode={swipeGutters.prev}
+          className={cn("order-first shrink-0 self-stretch overflow-hidden", swipeGutters.prev === 'go' ? "w-full snap-start" : "w-12")}
+        >
+          {swipeGutters.prev === 'go' && peeks?.prev && (
+            <SwipePeek key={peeks.prev.row.id} neighbour={peeks.prev} isDark={neighbourIsDark} currentUserEmail={currentUserEmail} />
+          )}
+        </div>
+      )}
       {isMobile && swipeGutters.next !== 'off' && (
         <div
           ref={swipeNextGutterRef}
           aria-hidden="true"
+          inert
           data-swipe-gutter="next"
           data-mode={swipeGutters.next}
-          className={cn("shrink-0 self-stretch", swipeGutters.next === 'go' ? "w-[40%] snap-end" : "w-12")}
-        />
+          className={cn("shrink-0 self-stretch overflow-hidden", swipeGutters.next === 'go' ? "w-full snap-start" : "w-12")}
+        >
+          {swipeGutters.next === 'go' && peeks?.next && (
+            <SwipePeek key={peeks.next.row.id} neighbour={peeks.next} isDark={neighbourIsDark} currentUserEmail={currentUserEmail} />
+          )}
+        </div>
       )}
       </div>
 
@@ -5923,20 +5805,6 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
           </>)}
         </div>
       </nav>
-    )}
-
-    {/* Phone: the swipe's hint chips at the edges (opacity set by useMessageSwipe). */}
-    {isMobile && (
-      <>
-        <div ref={swipeHintLeftRef} aria-hidden="true" data-swipe-hint="prev" style={{ opacity: 0 }}
-          className="pointer-events-none fixed left-2 top-1/2 -translate-y-1/2 z-40 grid place-items-center w-10 h-10 rounded-full bg-background/90 border border-border shadow-sm text-muted-foreground transition-colors data-[ready=true]:bg-primary data-[ready=true]:text-primary-foreground">
-          <ChevronLeft className="w-5 h-5" />
-        </div>
-        <div ref={swipeHintRightRef} aria-hidden="true" data-swipe-hint="next" style={{ opacity: 0 }}
-          className="pointer-events-none fixed right-2 top-1/2 -translate-y-1/2 z-40 grid place-items-center w-10 h-10 rounded-full bg-background/90 border border-border shadow-sm text-muted-foreground transition-colors data-[ready=true]:bg-primary data-[ready=true]:text-primary-foreground">
-          <ChevronRight className="w-5 h-5" />
-        </div>
-      </>
     )}
 
     {/* Plugin Detail Sidebar - resizable, collapsible */}

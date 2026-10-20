@@ -11,6 +11,12 @@ import { useCodeCopy } from "./use-code-copy";
 interface VerificationCodeBarProps {
   code: string;
   className?: string;
+  /**
+   * Fork: drawn for looks only (the phone swipe's neighbour pane, which is
+   * inert): no test id or copy state, so it is never taken for the open
+   * message's bar.
+   */
+  decorative?: boolean;
 }
 
 /**
@@ -28,7 +34,7 @@ interface VerificationCodeBarProps {
  * text plus the code the detector found (letters, digits, hyphens), never the
  * mail's words, so a mail cannot put instructions here.
  */
-export function VerificationCodeBar({ code, className }: VerificationCodeBarProps) {
+export function VerificationCodeBar({ code, className, decorative = false }: VerificationCodeBarProps) {
   const t = useTranslations("email_viewer.verification_code");
   const codeRef = useRef<HTMLSpanElement>(null);
   // A refusal selects the code for copying by hand (false: the browser would not).
@@ -48,8 +54,8 @@ export function VerificationCodeBar({ code, className }: VerificationCodeBarProp
   return (
     <section
       aria-labelledby={labelId}
-      data-testid="verification-code-bar"
-      data-copy-state={state}
+      data-testid={decorative ? undefined : "verification-code-bar"}
+      data-copy-state={decorative ? undefined : state}
       className={cn(
         "border-b border-amber-500/30 bg-amber-500/10 px-4 lg:px-6 py-2.5",
         className,
@@ -63,7 +69,7 @@ export function VerificationCodeBar({ code, className }: VerificationCodeBarProp
           </div>
           <span
             ref={codeRef}
-            data-testid="verification-code-value"
+            data-testid={decorative ? undefined : "verification-code-value"}
             translate="no"
             dir="ltr"
             className={cn(
@@ -79,7 +85,7 @@ export function VerificationCodeBar({ code, className }: VerificationCodeBarProp
           size="lg"
           onClick={onCopy}
           aria-describedby={statusId}
-          data-testid="verification-code-copy"
+          data-testid={decorative ? undefined : "verification-code-copy"}
           className="flex-shrink-0 gap-2 px-4 min-w-[7.5rem]"
         >
           <ButtonIcon aria-hidden="true" className="w-5 h-5" />
@@ -88,10 +94,10 @@ export function VerificationCodeBar({ code, className }: VerificationCodeBarProp
       </div>
       <p
         id={statusId}
-        role="status"
-        aria-live="polite"
+        role={decorative ? undefined : "status"}
+        aria-live={decorative ? undefined : "polite"}
         aria-atomic="true"
-        data-testid="verification-code-status"
+        data-testid={decorative ? undefined : "verification-code-status"}
         className={cn(
           status ? "mt-1.5 flex items-start gap-1.5 text-sm" : "sr-only",
           state === "failed" ? "text-foreground" : "text-success",

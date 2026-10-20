@@ -138,7 +138,9 @@ import { navigationKind, scheduleTapTraceFlush, tapTraceApplies, traceTap } from
 import { checkWorkerRevision } from "@/lib/sw-revision";
 import { usePasskeyGateStore } from "@/stores/passkey-gate-store";
 import { takePrefetchedEmail } from "@/lib/push-prefetch";
-import { afterBodyPainted, beginOpen, bodyPainted, markOpen } from "@/lib/open-timing";
+import { afterBodyPainted, beginOpen, bodyPainted, markOpen, noteSwipePrep } from "@/lib/open-timing";
+import { peekCost } from "@/lib/swipe-neighbours";
+import { useSwipeNeighbours } from "@/hooks/use-swipe-neighbours";
 import { useProInterfaceActive } from "@/components/pro/pro-interface-redirect";
 import type { QuoteHeader } from "@/lib/plugin-types";
 import { useLiteLinkSegments } from "@/hooks/use-lite-link-segments";
@@ -4048,6 +4050,20 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the open message, not on every list refresh
   }, [mvConversationThreadId, mvConversationRef?.id, client]);
 
+  // Fork (Wnt/webmail): the phone's swipe between messages shows and opens the
+  // previous / next message of the list as shown, fetched ahead
+  // (hooks/use-swipe-neighbours.ts): the rows the navigation below opens.
+  const selectedEmailIndex = selectedEmail ? activeEmails.findIndex(e => e.id === selectedEmail.id) : -1;
+  const swipePrevRow = selectedEmailIndex > 0 ? activeEmails[selectedEmailIndex - 1] : null;
+  const swipeNextRow = selectedEmailIndex >= 0 && selectedEmailIndex < activeEmails.length - 1 ? activeEmails[selectedEmailIndex + 1] : null;
+  const swipe = useSwipeNeighbours({
+    client,
+    enabled: isMobile && !conversationThread && !!selectedEmail,
+    current: selectedEmail,
+    prevRow: swipePrevRow,
+    nextRow: swipeNextRow,
+  });
+
   // Show loading state while checking auth. Fork patch (Wnt/webmail): the
   // app's own layout with placeholders, which an iPhone paints at once (see
   // MailStartShell), instead of a spinner it kept white until the end of the HTML.
@@ -4185,16 +4201,17 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
     setActiveView("list");
   };
 
-  // Navigate to next/previous email in the list
-  const selectedEmailIndex = selectedEmail ? activeEmails.findIndex(e => e.id === selectedEmail.id) : -1;
-
-  const handleNavigateNext = selectedEmailIndex >= 0 && selectedEmailIndex < activeEmails.length - 1
-    ? () => handleEmailSelect(activeEmails[selectedEmailIndex + 1])
-    : undefined;
-
-  const handleNavigatePrev = selectedEmailIndex > 0
-    ? () => handleEmailSelect(activeEmails[selectedEmailIndex - 1])
-    : undefined;
+  // Navigate to next/previous email in the list. A neighbour prepared for
+  // the swipe is handed to the client first, so the open needs no fetch.
+  const navigateTo = (row: Email, dir: 'prev' | 'next') => {
+    swipe.noteDirection(dir);
+    swipe.prime(row);
+    void handleEmailSelect(row);
+    // A swipe's open began just now (lib/open-timing.ts): what its pane cost.
+    noteSwipePrep(row.id, peekCost(row.id));
+  };
+  const handleNavigateNext = swipeNextRow ? () => navigateTo(swipeNextRow, 'next') : undefined;
+  const handleNavigatePrev = swipePrevRow ? () => navigateTo(swipePrevRow, 'prev') : undefined;
 
   // Handle opening conversation view on mobile
   const handleOpenConversation = async (thread: ThreadGroup) => {
@@ -5277,6 +5294,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
                     onBack={handleMobileBack}
                     onNavigateNext={handleNavigateNext}
                     onNavigatePrev={handleNavigatePrev}
+                    swipeNeighbours={swipe.neighbours}
                     mvPosition={mvShell && selectedEmailIndex >= 0 ? {
                       index: selectedEmailIndex + 1,
                       total: Math.max(activeEmails.length, mailboxes.find((mb) => mb.id === selectedMailbox)?.totalEmails ?? 0),

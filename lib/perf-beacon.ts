@@ -2,7 +2,7 @@
 // lib/open-timing.ts). Unknown stage names and values are refused; other
 // top-level fields are dropped (only the fields below are stored).
 
-const STAGES = new Set(['msg', 'ttfb', 'html', 'fcp', 'dcl', 'boot', 'hyd', 'sw', 'session', 'snap', 'data', 'painted', 'done']);
+const STAGES = new Set(['msg', 'ttfb', 'html', 'fcp', 'dcl', 'boot', 'hyd', 'sw', 'session', 'snap', 'data', 'painted', 'done', 'prep']);
 const SOURCES = new Set(['list', 'tap', 'link', 'swipe']);
 /** A swipe: what its neighbour pane showed at the release (lib/open-timing.ts SwipePreload). */
 const PRELOADS = new Set(['full', 'lite', 'none']);

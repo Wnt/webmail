@@ -6,12 +6,11 @@ import {
   isRevealed,
   isZoomed,
   restingScrollLeft,
-  swipeProgress,
   visibleWidth,
   type GutterModes,
   type SwipeDirection,
 } from "@/lib/message-swipe";
-import { markSwipeDone, noteSwipeCommit } from "@/lib/open-timing";
+import { afterBodyPainted, markSwipeDone, noteSwipeCommit, type SwipePreload } from "@/lib/open-timing";
 
 /**
  * Swipe between messages on the phone: finger left opens the next message,
@@ -19,52 +18,59 @@ import { markSwipeDone, noteSwipeCommit } from "@/lib/open-timing";
  *
  * The swipe is native horizontal scrolling (see `lib/message-swipe.ts` for
  * why): the caller renders a horizontal scroll-snap track holding
- *   [prev gutter] [the message page] [next gutter]
- * with the gutters this hook's `modes` ask for. The hook keeps the page at
- * rest between them, drives the edge hint chips from the scroll position,
- * and when the track settles with a whole `go` gutter on screen it slides
- * the message out, opens that neighbour, and brings the new one in.
+ *   [prev pane] [the message page] [next pane]
+ * where a `go` side is a pane as wide as the page showing that neighbour as
+ * it will open (components/email/swipe-peek.tsx), so the real next message
+ * moves in with the finger. The browser's own snapping settles the track on
+ * the page or on a pane; settling on a whole pane opens that neighbour.
+ *
+ * Nothing slides or fades after the snap: the track stays on the pane while
+ * the reading page behind it takes the new message (taken from memory when
+ * it was prepared, so no fetch), and once that page's body is on screen the
+ * track is put back on the page in one step. Pane and page show the same
+ * thing, so the hand-over is not seen. While a commit is in flight the panes
+ * keep what they show (`committing`), and a second swipe waits.
  *
  * It needs no touch listeners for the swipe itself, so touches that start on
  * the sandboxed body iframe (where WebKit runs no listener of ours) work like
  * any other, and nothing here can get in the way of scrolling, zoom,
  * selection or typing. The only touch listeners (passive) lock the track
- * during a long-press or while a second finger is down.
+ * during a long-press or while a second finger is down, and note the
+ * release for the open-speed beacon.
  */
 
 export interface UseMessageSwipeOptions {
   enabled: boolean;
   /** The horizontal scroll-snap track (position: relative). */
   trackRef: React.RefObject<HTMLElement | null>;
-  /** The message page between the gutters; it slides on a commit. */
+  /** The message page between the panes. */
   pageRef: React.RefObject<HTMLElement | null>;
   /** The pane inside the page that scrolls the message vertically. */
   paneRef?: React.RefObject<HTMLElement | null>;
   prevGutterRef: React.RefObject<HTMLElement | null>;
   nextGutterRef: React.RefObject<HTMLElement | null>;
-  /** Fixed hint chips at the left and right edge (opacity is driven here). */
-  hintLeftRef?: React.RefObject<HTMLElement | null>;
-  hintRightRef?: React.RefObject<HTMLElement | null>;
   onNext?: () => void;
   onPrev?: () => void;
   /** Leaving would lose something (an unsent quick reply): never navigate. */
   blocked?: boolean;
   /** A swipe was tried while blocked (once per gesture). */
   onBlocked?: () => void;
-  /** Changes when another message is shown (its id): the new one slides in. */
+  /** Changes when another message is shown (its id). */
   resetKey?: string | null;
+  /** What each side's pane shows right now (for the open-speed beacon). */
+  preload?: { prev: SwipePreload; next: SwipePreload };
 }
 
-const OUT_MS = 170;
-const IN_MS = 220;
-/** Give up waiting for the next message to arrive and show what is there. */
-const ENTER_FALLBACK_MS = 1500;
+/** Give up waiting for the next message and go back to the page as it is. */
+const COMMIT_FALLBACK_MS = 2500;
+/** The longest the track waits on the pane for the page's body to be on screen. */
+const BODY_WAIT_MS = 1200;
 /** A blocked swipe this far into a gutter says why it does not navigate. */
 const BLOCKED_NOTICE_PX = 16;
 /** Without `scrollend` (older engines): settled after this long without a scroll event. */
 const SETTLE_MS = 180;
 /**
- * After the hook itself moves the track (back to rest, a new message in), a
+ * After the hook itself moves the track (back to rest, the hand-over), a
  * settle within this long is that move's, never a swipe to commit.
  */
 const RESNAP_GUARD_MS = 300;
@@ -106,14 +112,13 @@ export function useMessageSwipe({
   paneRef,
   prevGutterRef,
   nextGutterRef,
-  hintLeftRef,
-  hintRightRef,
   onNext,
   onPrev,
   blocked = false,
   onBlocked,
   resetKey,
-}: UseMessageSwipeOptions): { modes: GutterModes } {
+  preload,
+}: UseMessageSwipeOptions): { modes: GutterModes; committing: boolean } {
   // A pinch-zoomed page pans with the finger; the track must not take that pan.
   const [zoomed, setZoomed] = useState(false);
   useEffect(() => {
@@ -126,14 +131,21 @@ export function useMessageSwipe({
     return () => vv.removeEventListener("resize", update);
   }, [enabled]);
 
-  const modes = gutterModes({ enabled, zoomed, blocked, canPrev: !!onPrev, canNext: !!onNext });
+  const liveModes = gutterModes({ enabled, zoomed, blocked, canPrev: !!onPrev, canNext: !!onNext });
+  // While a commit is in flight the track keeps its shape: the pane it rests
+  // on must stay where it is until the page has taken the new message.
+  const [committing, setCommitting] = useState(false);
+  const frozenModes = useRef(liveModes);
+  if (!committing) frozenModes.current = liveModes;
+  const modes = committing ? frozenModes.current : liveModes;
 
-  const live = useRef({ onNext, onPrev, onBlocked, blocked, modes });
-  live.current = { onNext, onPrev, onBlocked, blocked, modes };
+  const live = useRef({ onNext, onPrev, onBlocked, blocked, modes, preload });
+  live.current = { onNext, onPrev, onBlocked, blocked, modes, preload };
 
-  /** idle; out = sliding away before navigating; waiting = for the next message. */
-  const phase = useRef<"idle" | "out" | "waiting">("idle");
-  const pendingEnter = useRef<{ timer: number; reduced: boolean } | null>(null);
+  /** idle; committing = settled on a pane, the page is taking the neighbour. */
+  const phase = useRef<"idle" | "committing">("idle");
+  const pending = useRef<{ fromKey: string | null | undefined; timer: number; cancelWait?: () => void } | null>(null);
+  const handOver = useRef<string | null>(null);
   const scrolling = useRef(false);
   const noticed = useRef(false);
   const frame = useRef(0);
@@ -158,39 +170,17 @@ export function useMessageSwipe({
     return id;
   }, []);
 
-  const setHints = useCallback((side: "left" | "right" | null, progress: number) => {
-    const l = hintLeftRef?.current;
-    const r = hintRightRef?.current;
-    if (l) {
-      l.style.opacity = side === "left" ? String(progress) : "0";
-      l.dataset.ready = side === "left" && progress >= 1 ? "true" : "false";
-    }
-    if (r) {
-      r.style.opacity = side === "right" ? String(progress) : "0";
-      r.dataset.ready = side === "right" && progress >= 1 ? "true" : "false";
-    }
-  }, [hintLeftRef, hintRightRef]);
-
-  const clearSurface = useCallback((el: HTMLElement | null) => {
-    if (!el) return;
-    el.style.transition = "";
-    el.style.transform = "";
-    el.style.opacity = "";
-    el.style.willChange = "";
-    delete el.dataset.swipe;
-  }, []);
-
   /**
    * Put the page back at rest, flush with the track, without animating.
    *
    * With mandatory snapping the engine remembers the element it last snapped
-   * to - after a commit, the gutter - and re-snaps to it when the layout
-   * changes (the next message's gutters, its body loading). Re-snapping to a
-   * whole gutter would settle there and open yet another message (seen once
-   * in the iOS Simulator: one swipe, two messages on). So snapping is off
-   * while the hook moves the track and comes back two frames later, at rest,
-   * which makes the page the remembered target; and a settle right after
-   * such a move never commits (RESNAP_GUARD_MS).
+   * to - after a commit, the pane - and re-snaps to it when the layout
+   * changes (new panes, the body loading). Re-snapping to a whole pane would
+   * settle there and open yet another message (seen once in the iOS
+   * Simulator: one swipe, two messages on). So snapping is off while the hook
+   * moves the track and comes back two frames later, at rest, which makes the
+   * page the remembered target; and a settle right after such a move never
+   * commits (RESNAP_GUARD_MS).
    */
   const center = useCallback(() => {
     const track = trackRef.current;
@@ -211,7 +201,7 @@ export function useMessageSwipe({
     snapFrame.current = nextFrame(() => {
       snapFrame.current = nextFrame(() => {
         snapFrame.current = 0;
-        // Mid-commit the next enter() comes back here; it restores then.
+        // Mid-commit the hand-over comes back here; it restores then.
         if (phase.current !== "idle") return;
         track.scrollLeft = rest();
         track.style.scrollSnapType = "";
@@ -237,93 +227,73 @@ export function useMessageSwipe({
     return out;
   }, [trackRef, prevGutterRef, nextGutterRef]);
 
-  const enter = useCallback(() => {
-    const p = pendingEnter.current;
-    pendingEnter.current = null;
-    if (p) window.clearTimeout(p.timer);
+  /**
+   * The hand-over: the page has the new message (or gave up waiting); put the
+   * track back on the page and let the panes take the new neighbours - in one
+   * commit, before the next frame (the layout effect below centres).
+   */
+  const finish = useCallback(() => {
+    const p = pending.current;
+    if (!p) return;
+    pending.current = null;
+    window.clearTimeout(p.timer);
+    p.cancelWait?.();
     phase.current = "idle";
+    scrolling.current = false;
     const track = trackRef.current;
-    const root = pageRef.current;
     if (track) track.style.overflowX = "";
-    center();
-    setHints(null, 0);
-    if (!root) return;
-    const pane = paneRef?.current;
-    if (pane) pane.scrollTop = 0;
-    const shownId = resetKeyRef.current;
-    if (!p || p.reduced || !root.style.transform) {
-      clearSurface(root);
-      if (p && shownId) markSwipeDone(shownId);
-      return;
-    }
-    root.dataset.swipe = "enter";
-    root.style.transition = `transform ${IN_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity ${IN_MS}ms ease-out`;
-    root.style.transform = "translate3d(0,0,0)";
-    root.style.opacity = "1";
-    later(() => {
-      if (root.dataset.swipe === "enter") clearSurface(root);
-      if (shownId) markSwipeDone(shownId);
-    }, IN_MS + 20);
-  }, [trackRef, pageRef, paneRef, center, setHints, clearSurface, later]);
+    handOver.current = resetKeyRef.current ?? null;
+    setCommitting(false);
+  }, [trackRef]);
 
-  /** `sign`: the way the message moved (+1 right, -1 left). */
-  const commit = useCallback((direction: SwipeDirection, sign: number) => {
+  const commit = useCallback((direction: SwipeDirection) => {
     const nav = direction === "next" ? live.current.onNext : live.current.onPrev;
     const snapAt = performance.now();
     const release = releaseAt.current >= gestureAt.current && releaseAt.current <= snapAt ? releaseAt.current : undefined;
-    setHints(null, 0);
     if (!nav) { center(); return; }
     const track = trackRef.current;
-    const root = pageRef.current;
-    // No second swipe until the next message is in, and no re-snap to the
-    // gutter meanwhile (see center()).
+    // No second swipe until the page has the new message, and no re-snap to
+    // the pane meanwhile (see center()).
     if (track) {
       track.style.overflowX = "hidden";
       track.style.scrollSnapType = "none";
     }
-    const reduced = prefersReducedMotion();
-    const width = root?.clientWidth || window.innerWidth;
-    const go = () => {
-      phase.current = "waiting";
-      if (root && !reduced) {
-        // The next message comes in from the side the finger pulled it from.
-        root.style.transition = "none";
-        root.style.transform = `translate3d(${-sign * Math.round(width * 0.3)}px,0,0)`;
-        root.dataset.swipe = "waiting";
-      }
-      const timer = later(() => enter(), ENTER_FALLBACK_MS);
-      pendingEnter.current = { timer, reduced };
-      noteSwipeCommit({ release, snap: snapAt, pre: "none" });
-      nav();
-    };
-    if (reduced || !root) { go(); return; }
-    phase.current = "out";
-    root.dataset.swipe = "out";
-    root.style.willChange = "transform, opacity";
-    root.style.transition = `transform ${OUT_MS}ms ease-in, opacity ${OUT_MS}ms ease-in`;
-    root.style.transform = `translate3d(${sign * width}px,0,0)`;
-    root.style.opacity = "0";
-    later(go, OUT_MS);
-  }, [trackRef, pageRef, center, setHints, enter, later]);
+    phase.current = "committing";
+    setCommitting(true);
+    pending.current = { fromKey: resetKeyRef.current, timer: later(finish, COMMIT_FALLBACK_MS) };
+    noteSwipeCommit({ release, snap: snapAt, pre: live.current.preload?.[direction] ?? "none" });
+    nav();
+  }, [trackRef, center, later, finish]);
+
+  // The page shows another message: wait (on the pane) until its body is on
+  // screen, then hand over.
+  useEffect(() => {
+    const p = pending.current;
+    if (!p || !resetKey || resetKey === p.fromKey) return;
+    const pane = paneRef?.current;
+    if (pane) pane.scrollTop = 0;
+    p.cancelWait?.();
+    p.cancelWait = afterBodyPainted(resetKey, finish, BODY_WAIT_MS);
+  }, [resetKey, paneRef, finish]);
 
   const onScrollEnd = useCallback(() => {
     window.clearTimeout(settleTimer.current);
     scrolling.current = false;
     noticed.current = false;
     if (phase.current !== "idle") return;
-    // The hook's own move settling (or the engine re-snapping after it): not a swipe.
+    const gs = gutters();
+    // The hook's own move settling (or the engine re-snapping after it): not
+    // a swipe. Never left resting on a pane, though.
     if (performance.now() < guardUntil.current) {
-      setHints(null, 0);
+      if (gs.some((g) => g.visible > 1)) center();
       return;
     }
-    const gs = gutters();
     for (const g of gs) {
       if (live.current.modes[g.dir] === "go" && isRevealed(g.visible, g.width)) {
-        commit(g.dir, g.side === "left" ? 1 : -1);
+        commit(g.dir);
         return;
       }
     }
-    setHints(null, 0);
     // Settled part-way into a gutter (an engine without scroll snapping): back to rest.
     if (gs.some((g) => g.visible > 1)) {
       const track = trackRef.current;
@@ -335,7 +305,7 @@ export function useMessageSwipe({
         try { track.scrollTo({ left, behavior: prefersReducedMotion() ? "auto" : "smooth" }); } catch { track.scrollLeft = left; }
       }
     }
-  }, [gutters, commit, setHints, trackRef, pageRef]);
+  }, [gutters, commit, center, trackRef, pageRef]);
 
   const onScroll = useCallback(() => {
     if (!scrolling.current) gestureAt.current = performance.now();
@@ -344,29 +314,22 @@ export function useMessageSwipe({
       window.clearTimeout(settleTimer.current);
       settleTimer.current = window.setTimeout(onScrollEnd, SETTLE_MS);
     }
-    if (phase.current !== "idle" || frame.current) return;
+    if (phase.current !== "idle" || frame.current || !live.current.blocked || noticed.current) return;
     const raf = typeof window.requestAnimationFrame === "function"
       ? window.requestAnimationFrame.bind(window)
       : (fn: FrameRequestCallback) => { fn(performance.now()); return 0; };
     frame.current = raf(() => {
       frame.current = 0;
-      if (phase.current !== "idle") return;
-      let side: "left" | "right" | null = null;
-      let progress = 0;
+      if (phase.current !== "idle" || noticed.current) return;
       for (const g of gutters()) {
-        if (g.visible <= 0.5) continue;
-        const mode = live.current.modes[g.dir];
-        if (mode === "go") {
-          side = g.side;
-          progress = swipeProgress(g.visible, g.width);
-        } else if (live.current.blocked && g.visible >= BLOCKED_NOTICE_PX && !noticed.current) {
+        if (live.current.modes[g.dir] !== "go" && g.visible >= BLOCKED_NOTICE_PX) {
           noticed.current = true;
           live.current.onBlocked?.();
+          return;
         }
       }
-      setHints(side, progress);
     });
-  }, [gutters, setHints, onScrollEnd]);
+  }, [gutters, onScrollEnd]);
 
   // Listen to the track's own scrolling (passive; nothing is ever prevented).
   useEffect(() => {
@@ -459,11 +422,17 @@ export function useMessageSwipe({
   }, [enabled, trackRef, resetKey]);
 
   // At rest whenever the gutters change (a neighbour appears, a reply is typed,
-  // zoom) or another message is shown - unless a commit is mid-flight.
+  // zoom), another message is shown, or a hand-over finished - unless a
+  // commit is mid-flight. Before paint, so the hand-over is one frame.
   useLayoutEffect(() => {
-    if (!enabled || phase.current !== "idle" || scrolling.current) return;
+    if (!enabled || phase.current !== "idle" || (scrolling.current && !handOver.current)) return;
     center();
-  }, [enabled, modes.prev, modes.next, resetKey, center]);
+    const shownId = handOver.current;
+    if (shownId) {
+      handOver.current = null;
+      markSwipeDone(shownId);
+    }
+  }, [enabled, modes.prev, modes.next, resetKey, committing, center]);
 
   // Keep at rest across rotation and pane resizes.
   useEffect(() => {
@@ -476,31 +445,27 @@ export function useMessageSwipe({
     return () => ro.disconnect();
   }, [enabled, trackRef, resetKey, center]);
 
-  // Another message is on screen: bring it in.
-  useEffect(() => {
-    if (pendingEnter.current) enter();
-  }, [resetKey, enter]);
-
   // Leaving the phone layout (rotation, resize) or unmounting mid-swipe: no stray styles.
   useEffect(() => {
     if (enabled) return;
+    const p = pending.current;
+    pending.current = null;
+    if (p) { window.clearTimeout(p.timer); p.cancelWait?.(); }
     phase.current = "idle";
-    if (pendingEnter.current) window.clearTimeout(pendingEnter.current.timer);
-    pendingEnter.current = null;
-    setHints(null, 0);
-    clearSurface(pageRef.current);
+    setCommitting(false);
     const track = trackRef.current;
     if (track) {
       track.style.overflowX = "";
       track.style.scrollSnapType = "";
     }
-  }, [enabled, pageRef, trackRef, setHints, clearSurface]);
+  }, [enabled, trackRef]);
 
   useEffect(() => () => {
     timers.current.forEach((t) => window.clearTimeout(t));
     timers.current = [];
     window.cancelAnimationFrame?.(snapFrame.current);
+    pending.current?.cancelWait?.();
   }, []);
 
-  return { modes };
+  return { modes, committing };
 }

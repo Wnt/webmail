@@ -36,6 +36,7 @@ vi.stubGlobal('ResizeObserver', NoopResizeObserver);
 const { EmailViewer } = await import('../email-viewer');
 const { useSettingsStore } = await import('@/stores/settings-store');
 const { useToastStore } = await import('@/stores/toast-store');
+const { bodyReady, __resetOpenTiming } = await import('@/lib/open-timing');
 
 // Invented data only.
 const WIDE_TABLE = `<table><tr>${Array.from({ length: 14 }, (_, i) => `<td style="white-space:nowrap">Quarter ${i + 1} figure</td>`).join('')}</tr></table>`;
@@ -55,6 +56,17 @@ const htmlEmail = {
   textBody: [], htmlBody: [{ partId: 'h1', type: 'text/html' }],
   bodyValues: { h1: { value: HTML_BODY, isTruncated: false } },
 } as unknown as Email;
+
+const thirdEmail = {
+  ...plainEmail, id: 'e3', blobId: 'b3', threadId: 't3', subject: 'Review minutes',
+  bodyValues: { p1: { value: 'Minutes of the review: all synthetic.', isTruncated: false } },
+} as unknown as Email;
+
+/** List rows: no bodies, a preview. */
+const rowOf = (e: Email) => ({ ...e, bodyValues: undefined, preview: `${e.subject} preview` }) as unknown as Email;
+const plainRow = rowOf(plainEmail);
+const htmlRow = rowOf(htmlEmail);
+const thirdRow = rowOf(thirdEmail);
 
 const mailboxes = [
   { id: 'inbox', name: 'Inbox', role: 'inbox', parentId: null, myRights: { mayAddItems: true } },
@@ -91,7 +103,8 @@ function parts(container: HTMLElement) {
   return { track, page, pane, prev, next };
 }
 
-const gutterWidth = (g: HTMLElement) => (g.dataset.mode === 'go' ? Math.round(W * 0.4) : 48);
+// A `go` side is a pane as wide as the track (the neighbour itself); a `bounce` side a 48 px gutter.
+const gutterWidth = (g: HTMLElement) => (g.dataset.mode === 'go' ? W : 48);
 
 /**
  * Where a sideways pan leaves the track: `px` of the next (finger moved left)
@@ -172,6 +185,7 @@ describe('previous / next on the phone', () => {
     device.isMobile = true;
     useSettingsStore.setState({ interfaceLayout: 'default' } as never);
     useToastStore.setState({ toasts: [] } as never);
+    __resetOpenTiming();
     setReducedMotion(true);
   });
   afterEach(() => {
@@ -230,7 +244,9 @@ describe('previous / next on the phone', () => {
     expect(pane!.contains(frame)).toBe(true);
     // The body keeps its sandbox: no scripts, so no listener could ever run in it on WebKit.
     expect(frame.getAttribute('sandbox')).toBe('allow-same-origin allow-popups allow-popups-to-escape-sandbox');
-    expect([...track!.children]).toEqual([prev, page, next]);
+    // The page first in the document, the previous side placed before it by layout order.
+    expect([...track!.children]).toEqual([page, prev, next]);
+    expect(prev!.className).toMatch(/\border-first\b/);
     expect(prev!.dataset.mode).toBe('go');
     expect(next!.dataset.mode).toBe('go');
   });
@@ -431,26 +447,129 @@ describe('previous / next on the phone', () => {
     expect(snapWhileSliding).toBe('none');
   });
 
-  it('slides out before opening the next message, and the next one slides in (motion allowed)', () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] });
+  it('opens the neighbour as soon as the track settles on its pane - nothing slides or fades - and holds the pane until the page has it', async () => {
     setReducedMotion(false);
     const onNext = vi.fn();
-    const { container, rerender } = renderViewer({ onNavigateNext: onNext });
+    const neighbours = { prev: null, next: { row: htmlRow, email: htmlEmail } };
+    const { container, rerender } = renderViewer({ onNavigateNext: onNext, swipeNeighbours: neighbours });
     const { page, track } = parts(container);
     swipeTo(container, 'next');
-    expect(onNext).not.toHaveBeenCalled();
-    expect(page!.dataset.swipe).toBe('out');
-    expect(page!.style.transform).toMatch(/^translate3d\(-\d+px,0,0\)$/);
-    expect(track!.style.overflowX).toBe('hidden'); // no second swipe meanwhile
-    act(() => { vi.advanceTimersByTime(200); });
+    // At once: no slide-out animation before the open.
     expect(onNext).toHaveBeenCalledTimes(1);
+    expect(page!.style.transform).toBe('');
+    expect(page!.style.opacity).toBe('');
+    expect(track!.style.overflowX).toBe('hidden'); // no second swipe meanwhile
+    // The page takes the next message; the pane the track rests on keeps
+    // showing it (frozen) until the page's body is on screen.
+    const after = { prev: { row: plainRow, email: plainEmail }, next: null };
     rerender(
       <EmailViewer email={htmlEmail} mailboxes={mailboxes} selectedMailbox="inbox" currentMailboxRole="inbox"
-        onQuickReply={vi.fn(async () => {})} onNavigateNext={onNext} />,
+        onQuickReply={vi.fn(async () => {})} onNavigatePrev={vi.fn()} swipeNeighbours={after} />,
     );
-    expect(page!.dataset.swipe).toBe('enter');
+    expect(parts(container).next?.dataset.mode).toBe('go');
+    expect(parts(container).next?.querySelector('[data-swipe-peek-subject]')?.textContent).toBe('Quarterly figures');
+    act(() => bodyReady('e2'));
+    await act(async () => { await new Promise((r) => setTimeout(r, 40)); });
+    // Handed over: the track is free again and the panes show the new neighbours.
     expect(track!.style.overflowX).toBe('');
-    act(() => { vi.advanceTimersByTime(400); });
-    expect(page!.style.transform).toBe('');
+    expect(parts(container).next?.dataset.mode).toBe('bounce');
+    expect(parts(container).prev?.querySelector('[data-swipe-peek-subject]')?.textContent).toBe('Planning notes');
+  });
+
+  it('the panes show the neighbours themselves: subject, sender and the rendered body', () => {
+    const { container } = renderViewer({
+      email: plainEmail, onNavigateNext: vi.fn(), onNavigatePrev: vi.fn(),
+      swipeNeighbours: { prev: { row: thirdRow, email: thirdEmail }, next: { row: htmlRow, email: htmlEmail } },
+    });
+    const { prev, next } = parts(container);
+    expect(next!.querySelector('[data-swipe-peek="full"] [data-swipe-peek-subject]')?.textContent).toBe('Quarterly figures');
+    // Not a heading, no test ids: the page's own subject stays the document's first h1.
+    expect(container.querySelector('h1')?.textContent).toBe('Planning notes');
+    expect(next!.textContent).toContain('Alice Example');
+    const frame = next!.querySelector('iframe') as HTMLIFrameElement;
+    expect(frame.getAttribute('title')).not.toBe('Email content');
+    expect(frame.getAttribute('srcdoc')).toContain('the first link');
+    expect(prev!.querySelector('[data-swipe-peek="full"] .email-content-text')?.textContent).toContain('Minutes of the review');
+    // Never focusable, clickable or read out.
+    expect(next!.hasAttribute('inert')).toBe(true);
+    expect(next!.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('the body frame of a pane is the very document the reading pane shows: same sandbox, same CSP, no script', () => {
+    const { container, unmount } = renderViewer({
+      email: plainEmail, onNavigateNext: vi.fn(), swipeNeighbours: { prev: null, next: { row: htmlRow, email: htmlEmail } },
+    });
+    const peekFrame = parts(container).next!.querySelector('iframe') as HTMLIFrameElement;
+    const peekDoc = peekFrame.getAttribute('srcdoc');
+    const peekSandbox = peekFrame.getAttribute('sandbox');
+    unmount();
+    const opened = renderViewer({ email: htmlEmail });
+    const frame = opened.container.querySelector('[data-message-swipe-page] iframe[title="Email content"]') as HTMLIFrameElement;
+    expect(peekSandbox).toBe('allow-same-origin allow-popups allow-popups-to-escape-sandbox');
+    expect(peekSandbox).toBe(frame.getAttribute('sandbox'));
+    expect(peekDoc).toBe(frame.getAttribute('srcdoc'));
+    // default-src 'none' with no script-src: no script runs (and the sandbox has no allow-scripts).
+    expect(peekDoc).toMatch(/http-equiv="Content-Security-Policy" content="default-src 'none';/);
+    expect(peekDoc).not.toMatch(/script-src/);
+  });
+
+  it('a huge, crowded or cut neighbour is previewed light: sender, subject and first lines, no frame', () => {
+    const huge = { ...htmlEmail, id: 'big', bodyValues: { h1: { value: `<p>${'x'.repeat(210_000)}</p>`, isTruncated: false } } } as unknown as Email;
+    const crowded = { ...htmlEmail, id: 'crowd', bodyValues: { h1: { value: '<span>a</span>'.repeat(7_000), isTruncated: false } } } as unknown as Email;
+    const cut = { ...htmlEmail, id: 'cut', bodyValues: { h1: { value: '<p>start of a long mail</p>', isTruncated: true } } } as unknown as Email;
+    for (const email of [huge, crowded, cut]) {
+      const { container, unmount } = renderViewer({
+        email: plainEmail, onNavigateNext: vi.fn(),
+        swipeNeighbours: { prev: null, next: { row: { ...email, bodyValues: undefined, preview: 'The first lines of it' } as unknown as Email, email } },
+      });
+      const next = parts(container).next!;
+      expect(next.querySelector('[data-swipe-peek="lite"]')).toBeTruthy();
+      expect(next.querySelector('iframe')).toBeNull();
+      expect(next.querySelector('[data-swipe-peek-subject]')?.textContent).toBe('Quarterly figures');
+      unmount();
+    }
+  });
+
+  it('a neighbour not fetched yet shows its row: subject, sender and the list preview', () => {
+    const { container } = renderViewer({
+      email: plainEmail, onNavigateNext: vi.fn(),
+      swipeNeighbours: { prev: null, next: { row: htmlRow, email: null } },
+    });
+    const next = parts(container).next!;
+    expect(next.querySelector('[data-swipe-peek="none"] [data-swipe-peek-subject]')?.textContent).toBe('Quarterly figures');
+    expect(next.querySelector('[data-swipe-peek-lite]')?.textContent).toBe('Quarterly figures preview');
+  });
+
+  it('a pane partly in view and a cancelled drag mark nothing read and open nothing', async () => {
+    const onNext = vi.fn();
+    const onMarkAsRead = vi.fn();
+    useSettingsStore.setState({ markAsReadDelay: 0 } as never);
+    const unreadNext = { ...htmlEmail, keywords: {} } as unknown as Email;
+    const { container } = renderViewer({
+      email: plainEmail, onNavigateNext: onNext, onMarkAsRead,
+      swipeNeighbours: { prev: null, next: { row: { ...htmlRow, keywords: {} } as unknown as Email, email: unreadNext } },
+    });
+    pan(container, 'next', Math.round(W * 0.45), { settle: false }); // held part-way: the neighbour in view
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    pan(container, 'next', 0); // released before the commit point: back at rest
+    act(() => bodyReady('e2')); // even a paint signal for the neighbour's id
+    await act(async () => { await new Promise((r) => setTimeout(r, 60)); });
+    expect(onNext).not.toHaveBeenCalled();
+    expect(onMarkAsRead.mock.calls.map((c) => c[0])).not.toContain('e2');
+  });
+
+  it('with unsent text in the quick reply box the neighbours are not offered: the sides only bounce', () => {
+    const onNext = vi.fn();
+    const { container } = renderViewer({
+      onNavigateNext: onNext, onNavigatePrev: vi.fn(),
+      swipeNeighbours: { prev: { row: thirdRow, email: thirdEmail }, next: { row: htmlRow, email: htmlEmail } },
+    });
+    const box = container.querySelector('textarea') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'Thanks, Thursday works for me.' } });
+    expect(parts(container).next!.dataset.mode).toBe('bounce');
+    expect(container.querySelector('[data-swipe-peek]')).toBeNull();
+    swipeTo(container, 'next');
+    expect(onNext).not.toHaveBeenCalled();
+    expect(box.value).toBe('Thanks, Thursday works for me.');
   });
 });

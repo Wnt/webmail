@@ -36,9 +36,10 @@ export type SwipePreload = 'full' | 'lite' | 'none';
  */
 /**
  * A swipe (`swipe`, from the release): `snap` the track settled, `data` / `painted` as above, `done` the new
- * message at rest on screen (no animation left).
+ * message at rest on screen (no animation left); `prep` is not a time from the start but the main-thread ms
+ * spent earlier preparing the neighbour's pane (sanitizing, the code detector, its frame).
  */
-export type OpenStage = 'msg' | 'ttfb' | 'html' | 'fcp' | 'dcl' | 'boot' | 'hyd' | 'sw' | 'session' | 'snap' | 'data' | 'painted' | 'done';
+export type OpenStage = 'msg' | 'ttfb' | 'html' | 'fcp' | 'dcl' | 'boot' | 'hyd' | 'sw' | 'session' | 'snap' | 'data' | 'painted' | 'done' | 'prep';
 
 /** User Timing marks of the page start (lib/start-marks.ts). */
 export const START_MARK_BOOT = 'mm:start:boot';
@@ -118,6 +119,13 @@ export function beginOpen(emailId: string, source: OpenSource, opts: { t0?: numb
  */
 export function noteSwipeCommit(note: { release?: number; snap: number; pre: SwipePreload }): void {
   swipeNote = { ...note, at: now() };
+}
+
+/** A swipe open's `prep` value (ms of work done before the swipe), when known. */
+export function noteSwipePrep(emailId: string, ms: number | undefined): void {
+  const run = current;
+  if (!run || run.sent || run.source !== 'swipe' || run.emailId !== emailId || ms === undefined || !(ms >= 0)) return;
+  run.stages.prep = Math.round(ms);
 }
 
 /**

@@ -2502,9 +2502,11 @@ export class JMAPClient implements IJMAPClient {
    * With `kept` (the push worker's copy of it) nothing is sent. getEmail then
    * takes this (or waits for it) instead of asking again. Used once, within
    * `maxAgeMs` (default PRIMED_EMAIL_MAX_AGE_MS); a second call meanwhile
-   * returns the first one's. The request leaves before this returns.
+   * returns the first one's, unless `replace` hands in a newer copy of the
+   * message (`kept`: the phone swipe's copy with the list row's current
+   * flags). The request leaves before this returns.
    */
-  prefetchEmail(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number }): Promise<Email | null> | null {
+  prefetchEmail(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number; replace?: boolean }): Promise<Email | null> | null {
     if (!emailId || !this.apiUrl) return null;
     const accountId = this.accountId;
     const key = `${accountId}\u0000${emailId}`;
@@ -2512,6 +2514,10 @@ export class JMAPClient implements IJMAPClient {
     // Copies nobody opened in time go (each holds a whole message).
     const now = Date.now();
     for (const [k, entry] of this.primedEmails) if (now - entry.at >= entry.maxAgeMs) this.primedEmails.delete(k);
+    if (opts?.replace && kept?.id === emailId && kept.bodyValues) {
+      this.primedEmails.set(key, { email: kept, at: now, maxAgeMs });
+      return Promise.resolve(kept);
+    }
     const existing = this.primedEmails.get(key);
     if (existing && Date.now() - existing.at < existing.maxAgeMs) {
       return existing.email ? Promise.resolve(existing.email) : existing.pending ?? null;

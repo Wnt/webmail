@@ -52,16 +52,27 @@ export function prefetchForOpen(client: IJMAPClient | null | undefined, row: Ema
   if (row.sourceClientAccountId || row.sourceAccountId || row.keywords?.$draft) return;
   const accountId = client.getAccountId();
   if (seenRecently(`${accountId}\u0000${row.id}`, Date.now())) return;
-  const prewarm = (email: Email | null) => { if (email) prewarmEmailContent(email); };
+  void fetchAhead(client, row, OPEN_PREFETCH_MAX_AGE_MS)?.then((email) => { if (email) prewarmEmailContent(email); });
+}
+
+/**
+ * The message of list row `row`, fetched ahead of its open: the push
+ * worker's kept copy (with the row's current flags and folders) when it has
+ * one, else one Email/get (JMAPClient.prefetchEmail; the open then takes it
+ * within `maxAgeMs`). Null when the client cannot prefetch. Also used by the
+ * phone swipe's neighbours (hooks/use-swipe-neighbours.ts).
+ */
+export function fetchAhead(client: IJMAPClient, row: Email, maxAgeMs: number): Promise<Email | null> | null {
+  if (!client.prefetchEmail || !row.id) return null;
+  const accountId = client.getAccountId();
   if (kept?.has(keptEmailKey(accountId, row.id))) {
-    void peekPrefetchedEmail(accountId, row.id).then((copy) => {
+    return peekPrefetchedEmail(accountId, row.id).then((copy) => {
       // The kept copy is from the push; the row's flags and folders are current.
       const current = copy ? { ...copy, keywords: row.keywords ?? copy.keywords, mailboxIds: row.mailboxIds ?? copy.mailboxIds } : null;
-      void client.prefetchEmail?.(row.id, current, { maxAgeMs: OPEN_PREFETCH_MAX_AGE_MS })?.then(prewarm);
+      return client.prefetchEmail?.(row.id, current, { maxAgeMs }) ?? null;
     });
-    return;
   }
-  void client.prefetchEmail(row.id, null, { maxAgeMs: OPEN_PREFETCH_MAX_AGE_MS })?.then(prewarm);
+  return client.prefetchEmail(row.id, null, { maxAgeMs });
 }
 
 /**
