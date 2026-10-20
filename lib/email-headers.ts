@@ -79,7 +79,9 @@ export function getSenderVerification(
   // DMARC only counts the MAIL FROM identity; a HELO pass proves nothing
   // about who wrote the message.
   const mailFrom = auth.spf?.all?.find((entry) => entry.identity === 'mailfrom');
-  const spfPass = auth.spf?.all ? mailFrom?.result === 'pass' : auth.spf?.result === 'pass';
+  const spfPass = auth.spf?.all
+    ? mailFrom?.result === 'pass'
+    : auth.spf?.identity !== 'helo' && auth.spf?.result === 'pass';
   const envelope = mailFrom?.domain ?? auth.spf?.domain;
   const envelopeDomain = envelope ? domainOf(envelope) : undefined;
   const sentFrom = envelopeDomain && envelopeDomain !== domain ? envelopeDomain : undefined;
@@ -87,6 +89,65 @@ export function getSenderVerification(
   if (isAuthenticationSpoofed(auth)) return { status: 'failed', domain, sentFrom };
   if (auth.dmarc?.result === 'pass' || spfPass || hasDkimPass(auth)) return null;
   return { status: 'unverified', domain, sentFrom };
+}
+
+/**
+ * Fork (Wnt/webmail): the Authentication-Results field values of a message,
+ * topmost (the receiving server's own) first. Field names are matched without
+ * regard to case (RFC 5322), so a receiver writing `authentication-results`
+ * is still the topmost one and a sender-added `Authentication-Results` below
+ * it cannot take its place. `headers` is the JMAP header list (message order)
+ * or the record getEmail groups it into. A record holding the field under two
+ * spellings cannot tell which came first: null (order unknown).
+ */
+export function authenticationResultsValues(headers: unknown): string[] | null {
+  if (!headers || typeof headers !== 'object') return [];
+  if (Array.isArray(headers)) {
+    const out: string[] = [];
+    for (const h of headers as { name?: unknown; value?: unknown }[]) {
+      if (typeof h?.name === 'string' && h.name.toLowerCase() === 'authentication-results' && typeof h.value === 'string' && h.value) {
+        out.push(h.value);
+      }
+    }
+    return out;
+  }
+  const keys = Object.keys(headers).filter((k) => k.toLowerCase() === 'authentication-results');
+  if (keys.length > 1) return null;
+  if (!keys.length) return [];
+  const v = (headers as Record<string, unknown>)[keys[0]];
+  if (typeof v === 'string') return v ? [v] : [];
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && !!x) : [];
+}
+
+/**
+ * Fork (Wnt/webmail): whether the receiving server's checks authenticate the
+ * visible From address well enough for the trusted-sender list or book to
+ * apply to it (lib/email-content-cache.ts shouldBlockExternalFor). Stricter
+ * than getSenderVerification, which only decides whether to warn:
+ * - `none`: no SPF, DKIM or DMARC results to judge by (mail the server did
+ *   not check, such as the user's own); trust applies as before.
+ * - `authenticated`: DMARC passes for the From domain, or a DKIM signature or
+ *   the SPF MAIL FROM check passes for a domain aligned with it (the same
+ *   domain, or one a subdomain of the other).
+ * - `unauthenticated`: anything else - a failure, a pass for an unrelated
+ *   domain, or only a HELO pass (which says nothing about the author).
+ */
+export type SenderTrustCheck = 'none' | 'authenticated' | 'unauthenticated';
+
+export function senderTrustCheck(auth: AuthenticationResults | undefined, fromEmail: string | undefined): SenderTrustCheck {
+  if (!auth || (!auth.spf && !auth.dkim && !auth.dmarc)) return 'none';
+  const domain = fromEmail ? domainOf(fromEmail) : undefined;
+  if (!domain || isAuthenticationSpoofed(auth)) return 'unauthenticated';
+  const aligned = (d: string | undefined) => {
+    const other = d ? domainOf(d.includes('@') ? d : `x@${d}`) : undefined;
+    return !!other && (other === domain || domain.endsWith(`.${other}`) || other.endsWith(`.${domain}`));
+  };
+  if (auth.dmarc?.result === 'pass' && (!auth.dmarc.domain || domainOf(`x@${auth.dmarc.domain}`) === domain)) return 'authenticated';
+  const dkim = auth.dkim?.all ?? (auth.dkim ? [auth.dkim] : []);
+  if (dkim.some((e) => e.result === 'pass' && aligned(e.domain))) return 'authenticated';
+  const spf = auth.spf?.all ?? (auth.spf ? [auth.spf] : []);
+  if (spf.some((e) => e.identity === 'mailfrom' && e.result === 'pass' && aligned(e.domain))) return 'authenticated';
+  return 'unauthenticated';
 }
 
 interface ResInfo {
@@ -230,6 +291,7 @@ export function parseAuthenticationResults(headers: string | readonly string[]):
     results.spf = {
       result: primary.result,
       domain: primary.domain,
+      ...(primary.identity ? { identity: primary.identity } : {}),
       ...(spfResults.length > 1 ? { all: spfResults } : {}),
     };
   }

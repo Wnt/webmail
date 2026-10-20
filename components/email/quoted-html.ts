@@ -8,6 +8,9 @@ import type { Editor } from "@tiptap/react";
 import { buildSignatureBlock } from "@/components/email/signature-block";
 import { parkRemoteResources, restoreRemoteResources } from "@/lib/email-sanitization";
 import { useSettingsStore } from "@/stores/settings-store";
+import { quotedHtmlStorageOf, type QuotedHtmlStorage } from "@/components/email/quoted-html-permission";
+
+export { setQuotedHtmlRemoteAllowed } from "@/components/email/quoted-html-permission";
 
 // Marker attribute that identifies the quoted-original wrapper in serialized
 // HTML, so parseHTML can recognise it on the way back in.
@@ -16,7 +19,7 @@ export const QUOTED_HTML_MARKER = "data-quoted-html";
 // Set on the wrapper the composer builds when the quoted message may load
 // remote content (policy "allow", or a trusted sender). Display hint only:
 // serializeEditorContent never emits it.
-const QUOTED_REMOTE_ALLOWED_ATTR = "data-quoted-remote";
+
 
 // Atom blocks typing must never replace just because they were left selected.
 const ATOM_BLOCKS = new Set(["quotedHtml", "signatureBlock"]);
@@ -63,16 +66,14 @@ export const QuotedHtml = TiptapNode.create({
         // custom serializer. renderHTML below only needs the wrapper.
         renderHTML: () => ({}),
       },
-      remoteAllowed: {
-        default: false,
-        parseHTML: (el) => el.getAttribute(QUOTED_REMOTE_ALLOWED_ATTR) === "allowed",
-        renderHTML: () => ({}),
-      },
     };
   },
 
   parseHTML() {
     return [{ tag: `div[${QUOTED_HTML_MARKER}]` }];
+  },
+  addStorage(): QuotedHtmlStorage {
+    return { remoteAllowed: false, listeners: new Set() };
   },
 
   addProseMirrorPlugins() {
@@ -148,8 +149,11 @@ export const QuotedHtml = TiptapNode.create({
       // content, its images and backgrounds are parked so opening a reply
       // doesn't fire the trackers the viewer held back. Parking is
       // display-only - the html attribute (what gets sent) keeps them.
-      const blockRemote =
-        !node.attrs.remoteAllowed && useSettingsStore.getState().externalContentPolicy !== "allow";
+      // The permission is the editor's (components/email/quoted-html-permission.ts).
+      const storage = quotedHtmlStorageOf(editor as unknown as { storage: unknown });
+      const remoteBlocked = () =>
+        !storage?.remoteAllowed && useSettingsStore.getState().externalContentPolicy !== "allow";
+      let blockRemote = remoteBlocked();
       let renderedHtml = "";
       const render = (html: string) => {
         renderedHtml = html;
@@ -158,6 +162,16 @@ export const QuotedHtml = TiptapNode.create({
       const readBack = () => (blockRemote ? restoreRemoteResources(inner.innerHTML) : inner.innerHTML);
       render(node.attrs.html || "");
       shadow.appendChild(inner);
+      // The permission changed: show the quote again under the new one (also
+      // while the user edits in it - a removed permission must apply now).
+      const onPermission = () => {
+        const next = remoteBlocked();
+        if (next === blockRemote) return;
+        const current = readBack();
+        blockRemote = next;
+        render(current);
+      };
+      storage?.listeners.add(onPermission);
 
       // Track focus via focusin/focusout: inside a shadow root,
       // document.activeElement is retargeted to the host, so we can't rely on
@@ -218,6 +232,7 @@ export const QuotedHtml = TiptapNode.create({
         destroy: () => {
           cancelAnimationFrame(frame);
           inner.removeEventListener("input", syncBack);
+          storage?.listeners.delete(onPermission);
         },
       };
     };
@@ -266,10 +281,6 @@ export function serializeEditorContent(editor: Editor): string {
  * The `data-quoted-html` marker is what parseHTML keys on, so this exact form
  * must be what serializeEditorContent emits too (round-trip consistency).
  */
-export function buildQuotedHtmlBlock(
-  sanitizedInnerHtml: string,
-  opts: { remoteAllowed?: boolean } = {},
-): string {
-  const remote = opts.remoteAllowed ? ` ${QUOTED_REMOTE_ALLOWED_ATTR}="allowed"` : "";
-  return `<div ${QUOTED_HTML_MARKER}${remote} style="${QUOTE_BAR_STYLE}">${sanitizedInnerHtml}</div>`;
+export function buildQuotedHtmlBlock(sanitizedInnerHtml: string): string {
+  return `<div ${QUOTED_HTML_MARKER} style="${QUOTE_BAR_STYLE}">${sanitizedInnerHtml}</div>`;
 }

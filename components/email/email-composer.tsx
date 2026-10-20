@@ -46,6 +46,8 @@ import { buildReplySubject, buildForwardSubject } from "@/lib/subject-prefix";
 import { isFilePreviewable } from "@/lib/file-preview";
 import { isEditableEventTarget } from "@/lib/keyboard";
 import { buildQuotedHtmlBlock, serializeEditorContent } from "@/components/email/quoted-html";
+import { setQuotedHtmlRemoteAllowed } from "@/components/email/quoted-html-permission";
+import { useBlockExternal } from "@/hooks/use-external-content";
 import { containsEmbeddedSignature } from "@/components/email/signature-block";
 import {
   buildEmbeddedSignatureHtml,
@@ -66,7 +68,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { FilePreviewModal } from "@/components/files/file-preview-modal";
 import { FilePickerDialog } from "@/components/files/file-picker-dialog";
 import type { IJMAPClient } from "@/lib/jmap/client-interface";
-import type { FileNode } from "@/lib/jmap/types";
+import type { AuthenticationResults, Email, FileNode } from "@/lib/jmap/types";
 import { useContactStore, getContactDisplayName, getContactPrimaryEmail } from "@/stores/contact-store";
 import { useTemplateStore } from "@/stores/template-store";
 import { SubAddressHelper } from "@/components/identity/sub-address-helper";
@@ -271,6 +273,11 @@ interface EmailComposerProps {
     quoteHeaderText?: string;
     /** Mirror of QuoteHeader.wrapInBlockquote. Defaults to true. */
     quoteWrapInBlockquote?: boolean;
+    /**
+     * Fork (Wnt/webmail): the original's Authentication-Results as getEmail
+     * parsed them, so its quote decides remote images as the reading pane does.
+     */
+    authenticationResults?: AuthenticationResults;
   };
 }
 
@@ -539,21 +546,13 @@ export function EmailComposer({
       separator: signatureSeparatorEnabled,
     });
 
-    // Whether the quoted original may show its remote images in the editor:
-    // the viewer's rule, minus the per-message "load" click it doesn't know.
-    const { externalContentPolicy, isSenderTrusted } = useSettingsStore.getState();
-    const quoteRemoteAllowed = externalContentPolicy === 'allow' || (!!from?.email && isSenderTrusted(from.email));
-
     // Plugin override (resolved at composer open via onBuildQuoteHeader).
     if (replyTo.quoteHeaderHtml !== undefined && (mode === 'reply' || mode === 'replyAll' || mode === 'forward')) {
       if (replyTo.htmlBody) {
         // Layout-heavy original: embed verbatim as a QuotedHtml island so
         // nested tables / MJML survive 1:1 (sanitize strips scripts/styles
         // first; cid rewrite runs after so its data-cid markers survive).
-        const island = buildQuotedHtmlBlock(
-          rewriteCidImagesForEditor(sanitizeEmailHtml(replyTo.htmlBody)),
-          { remoteAllowed: quoteRemoteAllowed },
-        );
+        const island = buildQuotedHtmlBlock(rewriteCidImagesForEditor(sanitizeEmailHtml(replyTo.htmlBody)));
         return `${prefix}${signatureBlock}<br>${replyTo.quoteHeaderHtml}${island}`;
       }
       const escaped = replyTo.body
@@ -577,10 +576,7 @@ export function EmailComposer({
       // its layout survives the editor round-trip. Sanitize first to strip
       // scripts/styles/head; cid rewrite afterwards so data-cid markers
       // aren't dropped by the sanitizer's ALLOW_DATA_ATTR:false.
-      const island = buildQuotedHtmlBlock(
-        rewriteCidImagesForEditor(sanitizeEmailHtml(replyTo.htmlBody)),
-        { remoteAllowed: quoteRemoteAllowed },
-      );
+      const island = buildQuotedHtmlBlock(rewriteCidImagesForEditor(sanitizeEmailHtml(replyTo.htmlBody)));
       return `${prefix}${signatureBlock}<br><div>${quoteHeader}</div>${island}`;
     }
 
@@ -877,6 +873,25 @@ export function EmailComposer({
   // when the user switches identity in "above quote" mode without rebuilding
   // the whole body (which would lose user edits to the surrounding draft).
   const editorRef = useRef<Editor | null>(null);
+  // Fork (Wnt/webmail): whether the quoted original may show its remote
+  // images in the editor - the reading pane's decision for that message
+  // (sender trust, its authentication results, the policy; not its one-off
+  // "Load images"), made again when trust or the policy changes, and handed
+  // to the editor's quotes (components/email/quoted-html.ts). No original
+  // (a reopened draft): blocked unless the policy allows.
+  const quoteSender = useMemo(
+    () => (replyTo && (mode === 'reply' || mode === 'replyAll' || mode === 'forward') && replyTo.from?.length
+      ? ({ from: replyTo.from, authenticationResults: replyTo.authenticationResults } as unknown as Pick<Email, 'from' | 'authenticationResults'>)
+      : null),
+    [mode, replyTo?.from, replyTo?.authenticationResults], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const quoteBlocked = useBlockExternal(quoteSender, false);
+  const quoteRemoteAllowed = !!quoteSender && !quoteBlocked;
+  const quoteRemoteAllowedRef = useRef(quoteRemoteAllowed);
+  quoteRemoteAllowedRef.current = quoteRemoteAllowed;
+  useEffect(() => {
+    setQuotedHtmlRemoteAllowed(editorRef.current, quoteRemoteAllowed);
+  }, [quoteRemoteAllowed]);
   // Set once a reply's body got its initial focus, so switching formats later
   // does not move the caret back to the start.
   const replyFocusedRef = useRef(false);
@@ -3508,6 +3523,7 @@ export function EmailComposer({
               toolbarPlacement={mvWindow ? (mvShowFormatting ? 'bottom' : 'hidden') : 'top'}
               onEditorReady={(ed) => {
                 editorRef.current = ed;
+                setQuotedHtmlRemoteAllowed(ed, quoteRemoteAllowedRef.current);
                 if (!replyFocusedRef.current && (mode === 'reply' || mode === 'replyAll')) {
                   replyFocusedRef.current = true;
                   ed.commands.focus('start');

@@ -8,7 +8,7 @@ import { emailExportFilename, attachmentDownloadFilename, attachmentsBundleFilen
 import { EML_IMPORT_ACCEPT, expandImportableEmails } from "@/lib/eml-import";
 import { applyEmailLinkPolicy, emailIframeCsp, escapeHtml, isInPlaceLinkHref, openableLinkHref, plainTextToSafeHtml, sanitizeEmailBodyForIframe, sanitizeEmailHtml, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
 import { getRenderableHtmlBody } from "@/lib/email-body-selection";
-import { cachedEmailContent, emailContentCacheKey, prepareEmailHtml, showsBlockedContentBanner, type EmailHtmlContent } from "@/lib/email-content-cache";
+import { cachedEmailContent, emailContentCacheKey, prepareEmailHtml, senderTrustable, showsBlockedContentBanner, type EmailHtmlContent } from "@/lib/email-content-cache";
 import { useBlockExternal } from "@/hooks/use-external-content";
 import { collectReferencedCids, isEmbeddedInBody } from "@/lib/attachment-visibility";
 import { collapsePlainTextQuotes, setupQuoteCollapse } from "@/lib/quote-collapse";
@@ -5064,8 +5064,9 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
                           </button>
                         )}
                         {/* Trusting a forged address would load remote content
-                            for the next forgery too. */}
-                        {email.from?.[0]?.email && !senderVerification && (
+                            for the next forgery too; and trust applies only to
+                            a sender the server's checks authenticate. */}
+                        {email.from?.[0]?.email && senderTrustable(email) && (
                           <button
                             onClick={() => {
                               const senderEmail = email.from?.[0]?.email;

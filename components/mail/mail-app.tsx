@@ -1221,6 +1221,8 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       quoteHeaderHtml: composerQuoteHeader?.html,
       quoteHeaderText: composerQuoteHeader?.text,
       quoteWrapInBlockquote: composerQuoteHeader?.wrapInBlockquote,
+      // The quote decides remote images as the reading pane does (fork).
+      authenticationResults: selectedEmail.authenticationResults,
     } : undefined);
 
     const effectiveMode = pendingDraft?.mode ?? composerMode;
@@ -4378,6 +4380,8 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
           quoteHeaderHtml: composerQuoteHeader?.html,
           quoteHeaderText: composerQuoteHeader?.text,
           quoteWrapInBlockquote: composerQuoteHeader?.wrapInBlockquote,
+          // The quote decides remote images as the reading pane does (fork).
+          authenticationResults: selectedEmail.authenticationResults,
         } : undefined)}
         initialDraftText={composerDraftText}
         initialData={pendingDraft}

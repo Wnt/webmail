@@ -66,6 +66,8 @@ function buildReplyContext(email: Email): ProReplyContext {
     messageId: email.messageId,
     inReplyTo: email.inReplyTo,
     references: email.references,
+    // The quote decides remote images as the reading pane does (fork).
+    authenticationResults: email.authenticationResults,
   };
 }
 

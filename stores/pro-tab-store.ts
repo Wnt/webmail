@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { ComposerDraftData } from '@/components/email/email-composer';
 import type { SearchScope } from '@/lib/global-search/query-parser';
+import type { AuthenticationResults } from '@/lib/jmap/types';
 
 export type ProTabKind =
   | 'mail' | 'calendar' | 'contacts' | 'files' | 'settings'
@@ -48,6 +49,8 @@ export interface ProReplyContext {
   quoteHeaderHtml?: string;
   quoteHeaderText?: string;
   quoteWrapInBlockquote?: boolean;
+  /** Fork (Wnt/webmail): the original's parsed Authentication-Results, for its quote's remote images. */
+  authenticationResults?: AuthenticationResults;
 }
 
 export interface ProComposeTabData {

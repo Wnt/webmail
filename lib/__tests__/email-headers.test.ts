@@ -14,7 +14,8 @@ import {
 describe('parseAuthenticationResults', () => {
   it('parses SPF pass with domain', () => {
     const result = parseAuthenticationResults('spf=pass smtp.mailfrom=example.com');
-    expect(result.spf).toEqual({ result: 'pass', domain: 'example.com' });
+    // The identity is kept for a single result too (fork: a HELO pass must not count as MAIL FROM).
+    expect(result.spf).toEqual({ result: 'pass', domain: 'example.com', identity: 'mailfrom' });
   });
 
   it('parses DKIM pass with domain and selector', () => {

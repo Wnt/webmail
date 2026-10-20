@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Email, ThreadGroup } from "@/lib/jmap/types";
 import { applyEmailLinkPolicy, emailIframeCsp, plainTextToSafeHtml, sanitizeEmailBodyForIframe, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
+import { senderTrustable } from "@/lib/email-content-cache";
 import { getRenderableHtmlBody } from "@/lib/email-body-selection";
 import { findVerificationCode, isFreshForVerificationCode, verificationCodeBodyText } from "@/lib/verification-code";
 import { VerificationCodeChip } from "./verification-code-chip";
@@ -242,6 +243,7 @@ function EmailCard({
   // Fork (Wnt/webmail): the reading pane's own decision (hooks/use-external-content.ts),
   // made again when the trust lists change, for this card's message.
   const allowExternal = !useBlockExternal(email, explicitAllow);
+  const externalContentPolicy = useSettingsStore((s) => s.externalContentPolicy);
   const t = useTranslations();
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const density = useSettingsStore((state) => state.density);
@@ -557,17 +559,21 @@ function EmailCard({
                 {t("email_viewer.external_content_warning")}
               </span>
               <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onAllowExternal();
-                  }}
-                >
-                  {t("email_viewer.load_external_content")}
-                </Button>
-                {onTrustSender && (
+                {/* As in the reading pane: one message's "Load images" exists
+                    under "ask" only ("block" blocks it too). */}
+                {externalContentPolicy === "ask" && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAllowExternal();
+                    }}
+                  >
+                    {t("email_viewer.load_external_content")}
+                  </Button>
+                )}
+                {onTrustSender && senderTrustable(email) && (
                   <Button
                     variant="ghost"
                     size="sm"

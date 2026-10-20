@@ -16,7 +16,7 @@
 // the server is never cached ahead: the open fetches the full value first.
 
 import type { Email } from '@/lib/jmap/types';
-import { getSenderVerification, parseAuthenticationResults, type SenderVerification } from '@/lib/email-headers';
+import { authenticationResultsValues, parseAuthenticationResults, senderTrustCheck, type SenderTrustCheck } from '@/lib/email-headers';
 import { getRenderableHtmlBody } from '@/lib/email-body-selection';
 import { sanitizeEmailBodyForIframe } from '@/lib/email-sanitization';
 import { useSettingsStore } from '@/stores/settings-store';
@@ -135,26 +135,23 @@ export function prepareEmailHtml(email: Email, blockExternal: boolean, cidBlobUr
 type SenderFacts = Pick<Email, 'from'> & Partial<Pick<Email, 'authenticationResults' | 'headers'>>;
 
 /**
- * The receiving server's verdict on the message's From address (its
- * Authentication-Results; the parsed ones getEmail sets, else the raw header
- * of a message fetched ahead): null when its checks back the address or there
- * are none to judge by, else unverified or failed (lib/email-headers.ts).
+ * Fork (Wnt/webmail): whether the receiving server's checks let the trusted-
+ * sender list or book apply to the message's From address
+ * (lib/email-headers.ts senderTrustCheck): from the results getEmail parsed,
+ * else from the raw header of a message fetched ahead. A header record whose
+ * order is unknown (the field under two spellings) is `unauthenticated`.
  */
-export function senderCheckFor(email: SenderFacts): SenderVerification | null {
-  let auth = email.authenticationResults;
-  if (!auth && email.headers) {
-    const raw: string[] = [];
-    if (Array.isArray(email.headers)) {
-      for (const h of email.headers as unknown as { name?: string; value?: string }[]) {
-        if (h?.name === 'Authentication-Results' && typeof h.value === 'string') raw.push(h.value);
-      }
-    } else {
-      const v = (email.headers as Record<string, string | string[]>)['Authentication-Results'];
-      if (typeof v === 'string') raw.push(v); else if (Array.isArray(v)) raw.push(...v);
-    }
-    if (raw.length) auth = parseAuthenticationResults(raw);
-  }
-  return getSenderVerification(auth, email.from?.[0]?.email);
+export function senderTrustFor(email: SenderFacts): SenderTrustCheck {
+  const from = email.from?.[0]?.email;
+  if (email.authenticationResults) return senderTrustCheck(email.authenticationResults, from);
+  const raw = authenticationResultsValues(email.headers);
+  if (raw === null) return 'unauthenticated';
+  return raw.length ? senderTrustCheck(parseAuthenticationResults(raw), from) : 'none';
+}
+
+/** Whether trusting the sender would let its messages load remote content: the trust buttons show only then. */
+export function senderTrustable(email: SenderFacts): boolean {
+  return senderTrustFor(email) !== 'unauthenticated';
 }
 
 export function shouldBlockExternalFor(
@@ -168,11 +165,12 @@ export function shouldBlockExternalFor(
   },
 ): boolean {
   const senderEmail = email.from?.[0]?.email?.toLowerCase();
-  // Fork (Wnt/webmail): a From address the receiving server's checks do not
-  // back (unverified or failed: possibly forged) gets no trust from the lists,
-  // so a forged trusted address cannot load remote content (review swipe-trust
-  // r1 R1). The "allow" setting and the message's own "Load images" still apply.
-  const senderIsTrusted = senderEmail && !senderCheckFor(email)
+  // Fork (Wnt/webmail): the lists apply only to a From address the receiving
+  // server's checks authenticate (or mail it did not check at all), so a
+  // forged trusted address cannot load remote content (reviews swipe-trust r1
+  // R1, r2 R2-1/R2-2). The "allow" setting and the message's own "Load images"
+  // still apply.
+  const senderIsTrusted = senderEmail && senderTrustFor(email) !== 'unauthenticated'
     ? opts.isSenderTrusted(senderEmail) || (!!opts.trustedSendersAddressBook && opts.isTrustedAddressBookSender(senderEmail))
     : false;
   return !senderIsTrusted && (

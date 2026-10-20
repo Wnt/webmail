@@ -107,6 +107,11 @@ vi.mock('@/stores/email-store', () => {
 
 vi.mock('@/stores/settings-store', () => {
   const state = {
+    // The quote's remote-image decision reads these (hooks/use-external-content.ts).
+    externalContentPolicy: 'ask',
+    trustedSenders: [],
+    isSenderTrusted: () => false,
+    trustedSendersAddressBook: false,
     timeFormat: '24h',
     plainTextMode: false,
     subAddressDelimiter: '+',

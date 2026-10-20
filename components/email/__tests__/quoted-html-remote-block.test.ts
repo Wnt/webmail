@@ -5,7 +5,7 @@ import Paragraph from '@tiptap/extension-paragraph';
 import Text from '@tiptap/extension-text';
 import type { Editor as ReactEditor } from '@tiptap/react';
 
-import { QuotedHtml, buildQuotedHtmlBlock, serializeEditorContent } from '../quoted-html';
+import { QuotedHtml, buildQuotedHtmlBlock, serializeEditorContent, setQuotedHtmlRemoteAllowed } from '../quoted-html';
 import { parkRemoteResources, restoreRemoteResources } from '@/lib/email-sanitization';
 import { useSettingsStore } from '@/stores/settings-store';
 
@@ -77,12 +77,33 @@ describe('QuotedHtml node view', () => {
   });
 
   it('shows remote resources for a trusted sender or under the allow policy', () => {
-    editor = mount(buildQuotedHtmlBlock(QUOTE, { remoteAllowed: true }));
+    editor = mount(buildQuotedHtmlBlock(QUOTE));
+    setQuotedHtmlRemoteAllowed(editor, true);
     expect(shadowInner(editor).innerHTML).toContain('src="https://t.example/pixel.gif"');
     editor.destroy();
 
     useSettingsStore.setState({ externalContentPolicy: 'allow' });
     editor = mount(buildQuotedHtmlBlock(QUOTE));
     expect(shadowInner(editor).innerHTML).toContain('src="https://t.example/pixel.gif"');
+  });
+
+  // Fork (Wnt/webmail), review swipe-trust r2 R2-3: the permission is the
+  // editor's (set by the composer from the reading pane's decision), applies
+  // at once when it changes, and nothing in the content can grant it.
+  it('takes a removed permission at once, also with the quote being edited, and sends the quote as written', () => {
+    editor = mount(buildQuotedHtmlBlock(QUOTE));
+    setQuotedHtmlRemoteAllowed(editor, true);
+    expect(shadowInner(editor).innerHTML).toContain('src="https://t.example/pixel.gif"');
+    shadowInner(editor).dispatchEvent(new FocusEvent('focusin', { bubbles: true, composed: true }));
+    setQuotedHtmlRemoteAllowed(editor, false);
+    expect(shadowInner(editor).innerHTML).not.toMatch(/\s(src|background)="https:/);
+    const sent = serializeEditorContent(editor as unknown as ReactEditor);
+    expect(sent).toContain('src="https://t.example/pixel.gif"');
+    expect(sent).not.toContain('data-bulwark-remote');
+  });
+
+  it('a quote marked "remote allowed" in the content (an old draft, or markup in the quoted message) stays blocked', () => {
+    editor = mount(`<div data-quoted-html data-quoted-remote="allowed">${QUOTE}</div>`);
+    expect(shadowInner(editor).innerHTML).not.toMatch(/\s(src|background)="https:/);
   });
 });

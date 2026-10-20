@@ -148,6 +148,8 @@ export interface AuthenticationResults {
     result: 'pass' | 'fail' | 'softfail' | 'neutral' | 'none' | 'temperror' | 'permerror';
     domain?: string;
     ip?: string;
+    /** The identity `result` is for (MAIL FROM or HELO), when the header names it. */
+    identity?: 'helo' | 'mailfrom';
     /**
      * All SPF results when the server evaluated multiple identities (HELO and
      * MAIL FROM). Present only when more than one result was found; `result`

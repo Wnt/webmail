@@ -2803,20 +2803,33 @@ export class JMAPClient implements IJMAPClient {
   }
 
   private async parseEmailHeaders(email: Email): Promise<void> {
-    const { parseAuthenticationResults, parseSpamScore, parseSpamLLM } = await import('@/lib/email-headers');
+    const { parseAuthenticationResults, parseSpamScore, parseSpamLLM, authenticationResultsValues } = await import('@/lib/email-headers');
+
+    // Keep the Authentication-Results headers apart and in message order: the
+    // topmost one is the receiving server's own, the rest may be forged by the
+    // sender. Read them from the ordered list, by name without regard to case
+    // (fork, Wnt/webmail: a receiver's `authentication-results` is still the
+    // topmost one), before the list is grouped into a record.
+    const authResults = authenticationResultsValues(email.headers);
 
     let headersRecord: Record<string, string | string[]>;
     if (Array.isArray(email.headers)) {
       headersRecord = {};
+      // Field names are case-insensitive: one group per name, under its
+      // first spelling, so occurrences stay in message order.
+      const keyOf = new Map<string, string>();
       for (const header of email.headers as unknown as JMAPEmailHeader[]) {
         if (!header?.name || !header?.value) continue;
-        const existing = headersRecord[header.name];
+        const lower = header.name.toLowerCase();
+        const name = keyOf.get(lower) ?? header.name;
+        keyOf.set(lower, name);
+        const existing = headersRecord[name];
         if (existing) {
-          headersRecord[header.name] = Array.isArray(existing)
+          headersRecord[name] = Array.isArray(existing)
             ? [...existing, header.value]
             : [existing, header.value];
         } else {
-          headersRecord[header.name] = header.value;
+          headersRecord[name] = header.value;
         }
       }
       email.headers = headersRecord;
@@ -2824,11 +2837,11 @@ export class JMAPClient implements IJMAPClient {
       headersRecord = email.headers as Record<string, string | string[]>;
     }
 
-    const authResultsHeader = headersRecord['Authentication-Results'];
-    if (authResultsHeader) {
-      // Keep the headers apart and in message order: the topmost one is the
-      // receiving server's own, the rest may be forged by the sender.
-      email.authenticationResults = parseAuthenticationResults(authResultsHeader);
+    // (null: a record holding the field under two spellings, order unknown;
+    // left unset, and the trust check reading the record treats the sender as
+    // unauthenticated - lib/email-content-cache.ts senderTrustFor.)
+    if (authResults?.length) {
+      email.authenticationResults = parseAuthenticationResults(authResults);
     }
 
     for (const headerName of ['X-Spam-Score', 'X-Spam-Status', 'X-Spam-Result', 'X-Rspamd-Score']) {

@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import type { Email } from "@/lib/jmap/types";
-import { senderCheckFor, shouldBlockExternalFor } from "@/lib/email-content-cache";
+import { senderTrustFor, shouldBlockExternalFor } from "@/lib/email-content-cache";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useContactStore } from "@/stores/contact-store";
 
@@ -32,7 +32,7 @@ export function useBlockExternal(
   const sender = email?.from?.[0]?.email?.toLowerCase() ?? "";
   // The receiving server's check of the From address is an input too: a
   // sender it does not back gets no automatic trust (shouldBlockExternalFor).
-  const senderCheck = useMemo(() => (email ? senderCheckFor(email)?.status ?? "ok" : ""),
+  const senderCheck = useMemo(() => (email ? senderTrustFor(email) : ""),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [email?.authenticationResults, email?.headers, sender]);
   return useMemo(() => {

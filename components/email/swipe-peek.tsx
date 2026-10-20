@@ -11,7 +11,7 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useThemeStore } from "@/stores/theme-store";
 import { applyEmailLinkPolicy, plainTextToSafeHtml, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
-import { cachedEmailContent, emailContentCacheKey, prepareEmailHtml, showsBlockedContentBanner } from "@/lib/email-content-cache";
+import { cachedEmailContent, emailContentCacheKey, prepareEmailHtml, senderTrustable, showsBlockedContentBanner } from "@/lib/email-content-cache";
 import { useBlockExternal } from "@/hooks/use-external-content";
 import { collapsePlainTextQuotes, setupQuoteCollapse } from "@/lib/quote-collapse";
 import { applyEmailDarkMode, emailColorScheme, emailHasNativeDarkMode } from "@/lib/email-dark-mode";
@@ -21,7 +21,7 @@ import { sizePeekFrame } from "@/lib/peek-frame-size";
 import { getRenderableHtmlBody } from "@/lib/email-body-selection";
 import { collectReferencedCids, isEmbeddedInBody } from "@/lib/attachment-visibility";
 import { findCalendarAttachment, isCalendarMimeType } from "@/lib/calendar-invitation";
-import { extractListHeaders, getSenderVerification, parseAuthenticationResults } from "@/lib/email-headers";
+import { extractListHeaders, getSenderVerification, authenticationResultsValues, parseAuthenticationResults } from "@/lib/email-headers";
 import { findVerificationCode, isFreshForVerificationCode, verificationCodeBodyText } from "@/lib/verification-code";
 import { getEmailTagIds } from "@/lib/thread-utils";
 import { NEIGHBOUR_LITE_PREVIEW_CHARS, addPeekCost, peekKind } from "@/lib/swipe-neighbours";
@@ -151,10 +151,11 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
     return list?.preferred ? list : null;
   }, [headers]);
   const senderVerification = useMemo(() => {
-    const auth = email?.authenticationResults
-      ?? (headers?.["Authentication-Results"] ? parseAuthenticationResults(headers["Authentication-Results"]) : undefined);
+    // As getEmail reads them for the reading pane: in order, by name without regard to case.
+    const raw = email?.authenticationResults ? null : authenticationResultsValues(email?.headers);
+    const auth = email?.authenticationResults ?? (raw?.length ? parseAuthenticationResults(raw) : undefined);
     return getSenderVerification(auth, sender?.email);
-  }, [email?.authenticationResults, headers, sender?.email]);
+  }, [email?.authenticationResults, email?.headers, sender?.email]);
 
   const attachments = useMemo(() => {
     if (!email?.attachments?.length) return [];
@@ -399,7 +400,7 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
                               {t("load_external_content")}
                             </span>
                           )}
-                          {sender?.email && !senderVerification && (
+                          {sender?.email && !!email && senderTrustable(email) && (
                             <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground px-3 py-1.5 rounded-md border border-border min-h-[36px]">
                               {t("trust_sender")}
                             </span>
