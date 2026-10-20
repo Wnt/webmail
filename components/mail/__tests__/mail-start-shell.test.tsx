@@ -21,7 +21,8 @@ describe('MailStartShell', () => {
     expect(html.match(/role="status"/g)).toHaveLength(1);
     expect(html).toContain('Loading...');
     // nothing to tap or read before the app runs: the outline is inert and hidden
-    expect(html).toMatch(/<div class="h-full motion-safe:animate-pulse" inert="" aria-hidden="true">/);
+    expect(html).toMatch(/<div class="h-full" inert="" aria-hidden="true">/);
+    expect(html, 'no animation while the app starts').not.toMatch(/animate-/);
     expect(html).not.toMatch(/<(button|a|input)\b/);
   });
 });
