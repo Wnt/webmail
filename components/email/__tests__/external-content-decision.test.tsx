@@ -213,3 +213,60 @@ it.each(['tnef', 'rfc822'])('%s extracted body derives banner and applies Load i
     view.unmount();
   } finally { fetch.mockRestore(); parse.mockRestore(); mimeParse.mockRestore(); client.disconnect(); }
 });
+
+// Review swipe-trust r1 R1, the other requested cases: trust already loaded, the raw header of a message fetched
+// ahead (no parsed results yet), a change of the same message's results, a trusted sender whose checks pass, and
+// the conversation cards.
+const FORGED = { dmarc: { result: 'fail', domain: 'trusted-sender.test' }, spf: { result: 'fail' }, dkim: { result: 'fail' } };
+
+it.each(['list', 'book'])('a forged trusted From stays blocked when the %s was loaded before', async source => {
+  useSettingsStore.setState({ trustedSendersAddressBook: source === 'book', trustedSenders: source === 'list' ? [TRUSTED] : [] });
+  useContactStore.setState({ trustedSenderEmails: source === 'book' ? [TRUSTED] : [], trustedSendersLoaded: true });
+  const email = mail(`forged-pre-${source}`, TRUSTED);
+  email.authenticationResults = FORGED as never;
+  const views = both(email);
+  await settle();
+  expect(state(views.peek.container)).toEqual(blocked);
+  expect(state(views.reader.container)).toEqual(blocked);
+});
+
+it('a message fetched ahead with only the raw header: its failed checks count in the pane as in the reader', async () => {
+  useSettingsStore.setState({ trustedSenders: [TRUSTED] });
+  const raw = ' mx.example.test; spf=fail smtp.mailfrom=trusted-sender.test; dkim=fail header.d=trusted-sender.test; dmarc=fail header.from=trusted-sender.test';
+  const ahead = mail('forged-raw', TRUSTED);
+  (ahead as unknown as { headers: unknown }).headers = [{ name: 'Authentication-Results', value: raw }];
+  const opened = { ...ahead, headers: { 'Authentication-Results': raw } } as unknown as Email;
+  const peek = render(<SwipePeek neighbour={{ row: { ...ahead, bodyValues: undefined } as unknown as Email, email: ahead }} isDark={false} />);
+  const reader = render(<EmailViewer email={opened} mailboxes={mailboxes} selectedMailbox="inbox" currentMailboxRole="inbox" />);
+  await settle();
+  expect(state(peek.container)).toEqual(blocked);
+  expect(state(reader.container)).toEqual(blocked);
+});
+
+it('the same message decided again when its results change; a trusted sender whose checks pass keeps its pictures', async () => {
+  useSettingsStore.setState({ trustedSenders: [TRUSTED] });
+  const email = mail('auth-change', TRUSTED);
+  email.authenticationResults = { dkim: { result: 'pass', domain: 'trusted-sender.test' } } as never;
+  const peek = render(<SwipePeek neighbour={{ row: { ...email, bodyValues: undefined } as unknown as Email, email }} isDark={false} />);
+  await settle();
+  expect(state(peek.container)).toEqual(allowed);
+  const forged = { ...email, authenticationResults: FORGED } as unknown as Email;
+  peek.rerender(<SwipePeek neighbour={{ row: { ...forged, bodyValues: undefined } as unknown as Email, email: forged }} isDark={false} />);
+  await settle();
+  expect(state(peek.container)).toEqual(blocked);
+});
+
+it.each(['list', 'book'])('conversation: a forged trusted From stays blocked when the %s arrives', async source => {
+  useSettingsStore.setState({ trustedSendersAddressBook: source === 'book' });
+  const email = mail(`thread-forged-${source}`, TRUSTED);
+  email.authenticationResults = FORGED as never;
+  const view = render(<ThreadConversationView thread={{ threadId: email.threadId, emails: [email], latestEmail: email } as never} emails={[email]} onBack={() => {}} />);
+  expect(state(view.container).remoteAllowed).toBe(false);
+  act(() => {
+    if (source === 'book') useContactStore.setState({ trustedSenderEmails: [TRUSTED], trustedSendersLoaded: true });
+    else useSettingsStore.setState({ trustedSenders: [TRUSTED] });
+  });
+  await settle();
+  expect(state(view.container).remoteAllowed).toBe(false);
+  expect(state(view.container).imageLive).toBe(false);
+});
