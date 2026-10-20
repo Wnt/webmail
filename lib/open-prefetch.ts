@@ -59,8 +59,7 @@ export function prefetchForOpen(client: IJMAPClient | null | undefined, row: Ema
  * The message of list row `row`, fetched ahead of its open: the push
  * worker's kept copy (with the row's current flags and folders) when it has
  * one, else one Email/get (JMAPClient.prefetchEmail; the open then takes it
- * within `maxAgeMs`). Null when the client cannot prefetch. Also used by the
- * phone swipe's neighbours (hooks/use-swipe-neighbours.ts).
+ * within `maxAgeMs`). Null when the client cannot prefetch.
  */
 export function fetchAhead(client: IJMAPClient, row: Email, maxAgeMs: number): Promise<Email | null> | null {
   if (!client.prefetchEmail || !row.id) return null;

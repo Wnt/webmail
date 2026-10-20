@@ -141,6 +141,25 @@ type MoreMenuSub = 'move' | 'tag' | 'rules';
 /** Whatever a sub-view offers to act on, in the order it is read out. */
 const SUB_MENU_ITEM_SELECTOR = '[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"]';
 
+/** No extracted parts: one shared array, so memoised values keep their identity. */
+const NO_PARTS: never[] = Object.freeze([]) as unknown as never[];
+
+/**
+ * Fork (Wnt/webmail): state that belongs to one message. It reads as `empty`
+ * for any other message from that message's first render on, so nothing of
+ * the last message carries over while the viewer's reset effect has not run
+ * yet. `set(value, forId)`: asynchronous work passes the id it started for.
+ */
+function useMessageScopedState<T>(messageId: string | null | undefined, empty: T): [T, (value: T, forId?: string | null) => void] {
+  const [state, setState] = useState<{ id: string | null; value: T } | null>(null);
+  const idRef = useRef<string | null>(messageId ?? null);
+  idRef.current = messageId ?? null;
+  const set = useCallback((value: T, forId?: string | null) => {
+    setState({ id: forId === undefined ? idRef.current : forId, value });
+  }, []);
+  return [state && state.id === (messageId ?? null) ? state.value : empty, set];
+}
+
 /** No inline image fetched (yet): one shared object, so memoised bodies keep their key. */
 const NO_CID_URLS: Record<string, string> = Object.freeze({}) as Record<string, string>;
 
@@ -1115,9 +1134,14 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // Crypto-plugin rendered body (S/MIME, PGP, …) — populated by the generic
   // onRenderEmailBody hook. Verification/decryption status UI is provided by the
   // crypto plugin's own email-banner slot, so the host keeps no S/MIME state.
-  const [pluginRenderedHtml, setPluginRenderedHtml] = useState<string | null>(null);
-  const [pluginRenderedText, setPluginRenderedText] = useState<string | null>(null);
-  const [pluginRenderedAttachments, setPluginRenderedAttachments] = useState<PostalMimeAttachment[]>([]);
+  // Fork (Wnt/webmail): the bodies below (plugin-decrypted, TNEF, unwrapped
+  // message/rfc822) and their parts belong to the message they were made
+  // from: message-scoped, so the next message's first renders (before the
+  // reset effect) never show or sanitize the last message's body under the
+  // next message's external-content permission.
+  const [pluginRenderedHtml, setPluginRenderedHtml] = useMessageScopedState<string | null>(email?.id, null);
+  const [pluginRenderedText, setPluginRenderedText] = useMessageScopedState<string | null>(email?.id, null);
+  const [pluginRenderedAttachments, setPluginRenderedAttachments] = useMessageScopedState<PostalMimeAttachment[]>(email?.id, NO_PARTS as PostalMimeAttachment[]);
   // Bumped when a plugin calls `api.ui.rerenderEmail` (e.g. the S/MIME plugin
   // after the user unlocks a key from the banner) to force the onRenderEmailBody
   // hook to run again for the open message so the body re-decrypts.
@@ -1129,14 +1153,14 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   }, []);
 
   // TNEF (winmail.dat) support
-  const [tnefHtml, setTnefHtml] = useState<string | null>(null);
-  const [tnefText, setTnefText] = useState<string | null>(null);
-  const [tnefAttachments, setTnefAttachments] = useState<TnefAttachment[]>([]);
+  const [tnefHtml, setTnefHtml] = useMessageScopedState<string | null>(email?.id, null);
+  const [tnefText, setTnefText] = useMessageScopedState<string | null>(email?.id, null);
+  const [tnefAttachments, setTnefAttachments] = useMessageScopedState<TnefAttachment[]>(email?.id, NO_PARTS as TnefAttachment[]);
 
   // Embedded message/rfc822 unwrapping (Outlook forward-as-attachment)
-  const [embeddedEmailHtml, setEmbeddedEmailHtml] = useState<string | null>(null);
-  const [embeddedEmailText, setEmbeddedEmailText] = useState<string | null>(null);
-  const [embeddedEmailAttachments, setEmbeddedEmailAttachments] = useState<PostalMimeAttachment[]>([]);
+  const [embeddedEmailHtml, setEmbeddedEmailHtml] = useMessageScopedState<string | null>(email?.id, null);
+  const [embeddedEmailText, setEmbeddedEmailText] = useMessageScopedState<string | null>(email?.id, null);
+  const [embeddedEmailAttachments, setEmbeddedEmailAttachments] = useMessageScopedState<PostalMimeAttachment[]>(email?.id, NO_PARTS as PostalMimeAttachment[]);
 
   // Plugin detail sidebar state. Collapsed/width persist across opens and
   // sessions so the panel reopens the way the user last left it.
@@ -1432,15 +1456,8 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     setIsQuickReplyFocused(false);
     setShowSourceModal(false);
     setDarkOverride(null);
-    setPluginRenderedHtml(null);
-    setPluginRenderedText(null);
-    setPluginRenderedAttachments([]);
-    setTnefHtml(null);
-    setTnefText(null);
-    setTnefAttachments([]);
-    setEmbeddedEmailHtml(null);
-    setEmbeddedEmailText(null);
-    setEmbeddedEmailAttachments([]);
+    // The extracted bodies (plugin, TNEF, message/rfc822) are message-scoped
+    // (useMessageScopedState): another message reads them as empty.
   }, [email?.id, externalContentPolicy]);
 
   // Crypto-plugin body takeover (S/MIME, PGP, …). A privileged crypto plugin
@@ -1451,6 +1468,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   useEffect(() => {
     if (!email) return;
     let cancelled = false;
+    const forId = email.id;
 
     const dataUrlToBytes = (dataUrl: string): Uint8Array | null => {
       try {
@@ -1492,13 +1510,13 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
         };
         if (cancelled) return;
         if (!result || !result.handledBy) {
-          setPluginRenderedHtml(null);
-          setPluginRenderedText(null);
-          setPluginRenderedAttachments([]);
+          setPluginRenderedHtml(null, forId);
+          setPluginRenderedText(null, forId);
+          setPluginRenderedAttachments(NO_PARTS as PostalMimeAttachment[], forId);
           return;
         }
-        setPluginRenderedHtml(typeof result.html === 'string' && result.html ? result.html : null);
-        setPluginRenderedText(typeof result.text === 'string' && result.text ? result.text : null);
+        setPluginRenderedHtml(typeof result.html === 'string' && result.html ? result.html : null, forId);
+        setPluginRenderedText(typeof result.text === 'string' && result.text ? result.text : null, forId);
         // Normalise the plugin's attachment shape into the PostalMime-like shape
         // the viewer's download / inline-image machinery already understands.
         const atts = Array.isArray(result.attachments) ? result.attachments : [];
@@ -1508,22 +1526,23 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
           contentId: a.cid,
           content: (a.dataUrl ? dataUrlToBytes(a.dataUrl) : null) ?? new Uint8Array(0),
         } as unknown as PostalMimeAttachment));
-        setPluginRenderedAttachments(decoded);
+        setPluginRenderedAttachments(decoded, forId);
       } catch (err) {
         if (cancelled) return;
         debug.error('onRenderEmailBody hook failed:', err);
-        setPluginRenderedHtml(null);
-        setPluginRenderedText(null);
-        setPluginRenderedAttachments([]);
+        setPluginRenderedHtml(null, forId);
+        setPluginRenderedText(null, forId);
+        setPluginRenderedAttachments(NO_PARTS as PostalMimeAttachment[], forId);
       }
     })();
 
     return () => { cancelled = true; };
-  }, [email, pluginRenderNonce]);
+  }, [email, pluginRenderNonce, setPluginRenderedHtml, setPluginRenderedText, setPluginRenderedAttachments]);
 
   // TNEF (winmail.dat) detection and processing
   useEffect(() => {
     if (!email?.attachments || !blobClient) return;
+    const forId = email.id;
 
     const tnefAtt = email.attachments.find(att => isTnefAttachment(att.name, att.type));
     if (!tnefAtt?.blobId) {
@@ -1584,13 +1603,13 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
         debug.log('email', 'TNEF parse result - htmlBody:', !!parsed.htmlBody, '(' + (parsed.htmlBody?.length ?? 0) + ' chars)', ', body:', !!parsed.body, '(' + (parsed.body?.length ?? 0) + ' chars)', ', attachments:', parsed.attachments.length);
 
         if (parsed.htmlBody && !hasRealHtmlBody) {
-          setTnefHtml(parsed.htmlBody);
+          setTnefHtml(parsed.htmlBody, forId);
         }
         if (parsed.body && !hasRealHtmlBody) {
-          setTnefText(parsed.body);
+          setTnefText(parsed.body, forId);
         }
         if (parsed.attachments.length > 0) {
-          setTnefAttachments(parsed.attachments);
+          setTnefAttachments(parsed.attachments, forId);
           debug.log('email', 'TNEF extracted attachments:', parsed.attachments.map(a => a.name + ' (' + a.mimeType + ', ' + a.data.byteLength + ' bytes)').join(', '));
         }
 
@@ -1608,7 +1627,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     processTnef();
 
     return () => { cancelled = true; };
-  }, [email, client, blobClient, blobAccountId]);
+  }, [email, client, blobClient, blobAccountId, setTnefHtml, setTnefText, setTnefAttachments]);
 
   // Embedded message/rfc822 unwrapping
   // When Outlook forwards an email as an attachment, the outer email body is
@@ -1617,6 +1636,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   useEffect(() => {
     if (!email?.attachments || !blobClient) return;
 
+    const forId = email.id;
     // Find message/rfc822 attachment
     const rfc822Att = email.attachments.find(
       att => att.type === 'message/rfc822' && att.blobId
@@ -1663,13 +1683,13 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
           ', attachments:', parsed.attachments?.length ?? 0);
 
         if (parsed.html) {
-          setEmbeddedEmailHtml(parsed.html);
+          setEmbeddedEmailHtml(parsed.html, forId);
         }
         if (parsed.text) {
-          setEmbeddedEmailText(parsed.text);
+          setEmbeddedEmailText(parsed.text, forId);
         }
         if (parsed.attachments && parsed.attachments.length > 0) {
-          setEmbeddedEmailAttachments(parsed.attachments as PostalMimeAttachment[]);
+          setEmbeddedEmailAttachments(parsed.attachments as PostalMimeAttachment[], forId);
           debug.log('email', 'Embedded RFC822 attachments:', parsed.attachments.map(
             a => (a.filename || 'unnamed') + ' (' + a.mimeType + ')'
           ).join(', '));
@@ -1684,7 +1704,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     unwrapEmbedded();
 
     return () => { cancelled = true; };
-  }, [email, client, blobClient, blobAccountId]);
+  }, [email, client, blobClient, blobAccountId, setEmbeddedEmailHtml, setEmbeddedEmailText, setEmbeddedEmailAttachments]);
 
   // Fetch inline CID images with authentication to prevent browser auth dialogs
   useEffect(() => {
@@ -1934,7 +1954,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // repeat open skips the pass (EMAIL_CONTENT_CACHE).
   const emailContent = useMemo(() => {
     if (!email) return { html: "", isHtml: false, hasStyleTag: false, externalBlocked: false };
-    const cached = cachedEmailContent(emailContentCacheKey(email, shouldBlockExternal, cidBlobUrls));
+    const cached = cachedEmailContent(emailContentCacheKey(email, shouldBlockExternal, cidBlobUrls), email);
     if (cached) {
       if (cached.blockedExternalContent && !hasBlockedContent) setHasBlockedContent(true);
       return cached.content;

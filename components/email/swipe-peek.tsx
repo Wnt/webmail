@@ -3,7 +3,7 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import { useTranslations } from "next-intl";
 import type { Email } from "@/lib/jmap/types";
-import { ChevronLeft, Image, ShieldAlert, Star } from "@/components/icons";
+import { ChevronDown, ChevronLeft, Image, ShieldAlert, Star } from "@/components/icons";
 import { Avatar } from "@/components/ui/avatar";
 import { cn, formatDate, formatDateTime, formatFileSize } from "@/lib/utils";
 import { emailDisplayDate } from "@/lib/email-date";
@@ -118,7 +118,7 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
   };
   const prepared = useMemo(() => {
     if (!email || kind !== "full") return null;
-    return timed(() => cachedEmailContent(emailContentCacheKey(email, blockExternal, NO_CIDS)) ?? prepareEmailHtml(email, blockExternal, NO_CIDS));
+    return timed(() => cachedEmailContent(emailContentCacheKey(email, blockExternal, NO_CIDS), email) ?? prepareEmailHtml(email, blockExternal, NO_CIDS));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email, kind, blockExternal]);
   const content = useMemo<EmailFrameContent | null>(() => {
@@ -140,10 +140,13 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
   );
   const plainHtml = useMemo(() => (content && !content.isHtml ? sanitizePlainTextRenderedHtml(content.html) : ""), [content]);
 
+  // Everything that reads the body runs for a `full` pane only, inside the
+  // size caps (lib/swipe-neighbours.ts peekKind); a lite pane reads nothing of
+  // it but its first characters.
   const code = useMemo(
-    () => (showVerificationCodes && email ? timed(() => findVerificationCode(email.subject, verificationCodeBodyText(email))) : null),
+    () => (showVerificationCodes && email && kind === "full" ? timed(() => findVerificationCode(email.subject, verificationCodeBodyText(email))) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [showVerificationCodes, email],
+    [showVerificationCodes, email, kind],
   );
   const codeBar = code && isFreshForVerificationCode(email?.receivedAt) ? code : null;
 
@@ -162,12 +165,17 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
   const attachments = useMemo(() => {
     if (!email?.attachments?.length) return [];
     const hasInvite = calendarInvitationParsingEnabled && !!findCalendarAttachment(email);
-    const bodyCids = collectReferencedCids(hideInlineImageAttachments ? getRenderableHtmlBody(email) : null);
+    // Parts the body embeds by cid: from the body for a full pane (as the
+    // reading pane does); for a lite one from the parts' own headers only
+    // (an inline image with a Content-ID counts as embedded).
+    const bodyCids = kind === "full"
+      ? collectReferencedCids(hideInlineImageAttachments ? getRenderableHtmlBody(email) : null)
+      : new Set(email.attachments.filter((a) => a.cid && (a.type || "").toLowerCase().startsWith("image/")).map((a) => a.cid!.replace(/^<|>$/g, "")));
     return email.attachments
       .filter((a) => !hasInvite || !isCalendarMimeType(a.type))
       .filter((a) => !(hideInlineImageAttachments && isEmbeddedInBody(a, bodyCids)))
       .filter((a) => a.type !== "message/disposition-notification" && a.type !== "message/delivery-status");
-  }, [email, calendarInvitationParsingEnabled, hideInlineImageAttachments]);
+  }, [email, kind, calendarInvitationParsingEnabled, hideInlineImageAttachments]);
 
   const tagIds = sortTagIds(getEmailTagIds(shown.keywords));
   const isImportant = shown.keywords?.["$important"];
@@ -330,7 +338,10 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
                       {shown.cc.length > 2 && <span>+{shown.cc.length - 2}</span>}
                     </>
                   )}
-                  <span className="text-xs text-muted-foreground flex items-center gap-0.5 ms-1">{t("show_details")}</span>
+                  <span className="text-xs text-muted-foreground flex items-center gap-0.5 ms-1">
+                    <ChevronDown className="w-3 h-3" />
+                    {t("show_details")}
+                  </span>
                 </div>
               </div>
               <div className="sm:hidden flex-shrink-0 text-end ms-2">

@@ -33,7 +33,23 @@ export interface CachedEmailContent {
   blockedExternalContent: boolean;
 }
 
-const EMAIL_CONTENT_CACHE = new Map<string, CachedEmailContent>();
+/**
+ * The body text a result was made from (the shown HTML and text parts'
+ * values). A hit must have been made from exactly this text: the key's ids
+ * name a message only within one session and account, so another message
+ * that happens to share them (another login, a replaced session) never gets
+ * this body (review swipe-preload R4; audit/FOLLOWUPS.md pwa-start N4).
+ */
+type BodyInputs = readonly [string | undefined, string | undefined];
+
+function bodyInputs(email: Email): BodyInputs {
+  const values = email.bodyValues ?? {};
+  const html = email.htmlBody?.[0]?.partId;
+  const text = email.textBody?.[0]?.partId;
+  return [html ? values[html]?.value : undefined, text ? values[text]?.value : undefined];
+}
+
+const EMAIL_CONTENT_CACHE = new Map<string, CachedEmailContent & { inputs: BodyInputs }>();
 /** The last few bodies shown or sanitized ahead (a repeat open, a re-render after a keyword change). */
 export const EMAIL_CONTENT_CACHE_SIZE = 12;
 const INERT_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
@@ -46,13 +62,18 @@ export function emailContentCacheKey(email: Email, blockExternal: boolean, cidBl
   return `${account}\u0000${email.id}\u0000${blockExternal ? 1 : 0}\u0000${cids}`;
 }
 
-export function cachedEmailContent(key: string | null): CachedEmailContent | undefined {
-  return key ? EMAIL_CONTENT_CACHE.get(key) : undefined;
+/** `email`'s sanitized body under `key`, if it was made from this very body text. */
+export function cachedEmailContent(key: string | null, email: Email): CachedEmailContent | undefined {
+  const entry = key ? EMAIL_CONTENT_CACHE.get(key) : undefined;
+  if (!entry) return undefined;
+  const [html, text] = bodyInputs(email);
+  if (entry.inputs[0] !== html || entry.inputs[1] !== text) return undefined;
+  return { content: entry.content, blockedExternalContent: entry.blockedExternalContent };
 }
 
-function remember(key: string, value: CachedEmailContent): void {
+function remember(key: string, value: CachedEmailContent, email: Email): void {
   EMAIL_CONTENT_CACHE.delete(key);
-  EMAIL_CONTENT_CACHE.set(key, value);
+  EMAIL_CONTENT_CACHE.set(key, { ...value, inputs: bodyInputs(email) });
   while (EMAIL_CONTENT_CACHE.size > EMAIL_CONTENT_CACHE_SIZE) {
     const oldest = EMAIL_CONTENT_CACHE.keys().next().value;
     if (oldest === undefined) break;
@@ -92,7 +113,7 @@ export function prepareEmailHtml(email: Email, blockExternal: boolean, cidBlobUr
     blockedExternalContent,
   };
   const key = emailContentCacheKey(email, blockExternal, cidBlobUrls);
-  if (key) remember(key, value);
+  if (key) remember(key, value, email);
   return value;
 }
 
@@ -152,7 +173,7 @@ export function prewarmEmailContent(email: Email | null | undefined): void {
         isTrustedAddressBookSender: contacts.isTrustedAddressBookSender,
       });
       const key = emailContentCacheKey(email, blockExternal, {});
-      if (!key || EMAIL_CONTENT_CACHE.has(key)) return;
+      if (!key || cachedEmailContent(key, email)) return;
       prepareEmailHtml(email, blockExternal, {});
     } catch {
       // Best effort: the open sanitizes it as before.

@@ -83,7 +83,7 @@ describe('a message is fetched and sanitized before its open', () => {
     prefetchForOpen(c, row('m1'));
     await idle();
     expect(gets).toEqual(['m1']);
-    expect(cachedEmailContent(emailContentCacheKey(full('m1'), false, {})) ?? cachedEmailContent(emailContentCacheKey(full('m1'), true, {}))).toBeDefined();
+    expect(cachedEmailContent(emailContentCacheKey(full('m1'), false, {}), full('m1')) ?? cachedEmailContent(emailContentCacheKey(full('m1'), true, {}), full('m1'))).toBeDefined();
     const before = sanitize.calls;
     const email = await c.getEmail('m1');
     expect(email?.id).toBe('m1');

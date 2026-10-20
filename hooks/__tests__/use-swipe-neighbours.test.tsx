@@ -159,3 +159,46 @@ describe('swipe neighbours: fetched ahead, never marked read', () => {
     expect(view.result.current.prime(row('m7'))).toBe('full');
   });
 });
+
+describe('swipe neighbours: what the JMAP client keeps', () => {
+  const primed = () => (client as unknown as { primedEmails: Map<string, unknown> }).primedEmails;
+
+  it('neighbours that are never opened leave nothing in the client (review swipe-preload R3)', async () => {
+    const view = mount(full('open-0'), null, row('peek-0'));
+    for (let i = 0; i < 10; i++) {
+      view.rerender({ current: full(`open-${i}`), prevRow: null, nextRow: row(`peek-${i}`) });
+      act(() => bodyReady(`open-${i}`));
+      await settle(300);
+    }
+    expect(emailGets('peek-9')).toBe(1);
+    expect(primed().size).toBe(0);
+  });
+
+  it('a swipe while its neighbour is still being fetched waits for that fetch: one Email/get', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    fetchSpy.mockImplementation((async (url: string, init?: RequestInit) => { await gate; return fakeJmap(url, init); }) as never);
+    const view = mount(full('m2'), null, row('m3'));
+    act(() => bodyReady('m2'));
+    await settle(300);
+    expect(view.result.current.prime(row('m3'))).toBe('none');
+    const opening = client.getEmail('m3');
+    release();
+    expect((await opening)?.id).toBe('m3');
+    expect(emailGets('m3')).toBe(1);
+  });
+
+  it('another session starts empty: nothing fetched in the old one is handed over', async () => {
+    const view = mount(full('m2'), null, row('m3'));
+    act(() => bodyReady('m2'));
+    await settle(300);
+    expect(view.result.current.prime(row('m3'))).toBe('full');
+    await client.getEmail('m3');
+    // The session is replaced (another API URL): the same client, another scope.
+    (client as unknown as { apiUrl: string }).apiUrl = 'https://other.example.test/jmap/api';
+    view.rerender({ current: full('m2'), prevRow: null, nextRow: row('m3') });
+    expect(view.result.current.neighbours?.next?.email).toBeNull();
+    expect(view.result.current.prime(row('m3'))).toBe('none');
+  });
+});
+

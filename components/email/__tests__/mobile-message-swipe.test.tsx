@@ -476,6 +476,17 @@ describe('previous / next on the phone', () => {
     expect(parts(container).prev?.querySelector('[data-swipe-peek-subject]')?.textContent).toBe('Planning notes');
   });
 
+  it('opens as soon as the pane is in place, without waiting for the engine to report the end of the scroll', () => {
+    const onNext = vi.fn();
+    const { container } = renderViewer({ onNavigateNext: onNext, swipeNeighbours: { prev: null, next: { row: htmlRow, email: htmlEmail } } });
+    pan(container, 'next', W - 6, { settle: false }); // still creeping in
+    expect(onNext).not.toHaveBeenCalled();
+    pan(container, 'next', W - 3, { settle: false }); // in place (4 px slack)
+    expect(onNext).toHaveBeenCalledTimes(1);
+    pan(container, 'next', W); // the late scrollend opens nothing more
+    expect(onNext).toHaveBeenCalledTimes(1);
+  });
+
   it('an open that fails (no new message) puts the track back on the page at once', () => {
     const onNext = vi.fn();
     const neighbours = { prev: null, next: { row: htmlRow, email: null } };

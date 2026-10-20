@@ -12,9 +12,10 @@
 // - A neighbour is fetched with the Email/get an open sends (no Email/set:
 //   fetching never marks it read; only the message actually opened is marked,
 //   by the reading pane's own rule), or taken from memory: the message just
-//   left, the push worker's kept copy.
-// - The last few full messages stay in memory (NEIGHBOUR_CACHE_SIZE), so a
-//   swipe back needs no fetch either.
+//   left.
+// - The last few full messages stay in memory (NEIGHBOUR_CACHE_SIZE, none
+//   over NEIGHBOUR_REMEMBER_MAX_CHARS), for one session, so a swipe back
+//   needs no fetch either; the JMAP client keeps none of them.
 // - A neighbour is rendered in full (the sanitized body in the same
 //   sandboxed, script-free frame and CSP as the reading pane) only below the
 //   size caps; a bigger one, a cut body, or one the reading pane would first
@@ -24,15 +25,10 @@ import type { Email } from '@/lib/jmap/types';
 
 /** Full messages kept for the swipe (the open one, its neighbours, the one before). */
 export const NEIGHBOUR_CACHE_SIZE = 4;
-/**
- * How long the client keeps a neighbour's fetch for the open's getEmail. The
- * copy itself lives in the swipe's own memory (NEIGHBOUR_CACHE_SIZE); the
- * client only holds it until it is used or this passes, so unopened
- * neighbours do not pile up there.
- */
-export const NEIGHBOUR_FETCH_MAX_AGE_MS = 20_000;
 /** A neighbour handed to the client right before the swipe opens it (taken at once). */
 export const NEIGHBOUR_PRIME_MAX_AGE_MS = 10_000;
+/** A message whose body values hold more than this (UTF-16 code units) is not kept in memory for the swipe. */
+export const NEIGHBOUR_REMEMBER_MAX_CHARS = 1_000_000;
 /** A shown body larger than this (UTF-16 code units of its value) is previewed light, not rendered. */
 export const NEIGHBOUR_FULL_MAX_CHARS = 200_000;
 /** An HTML body with more elements than this is previewed light, not rendered. */
@@ -41,6 +37,13 @@ export const NEIGHBOUR_FULL_MAX_TAGS = 6_000;
 export const NEIGHBOUR_LITE_PREVIEW_CHARS = 400;
 
 export type PeekKind = 'full' | 'lite';
+
+/** UTF-16 code units in all of a message's body values. */
+export function bodyChars(email: Pick<Email, 'bodyValues'>): number {
+  let n = 0;
+  for (const v of Object.values(email.bodyValues ?? {})) n += v?.value?.length ?? 0;
+  return n;
+}
 
 /** Rows whose message the swipe may fetch ahead: the open login's own, not drafts (they open in the composer). */
 export function neighbourFetchable(row: Pick<Email, 'id' | 'keywords' | 'sourceAccountId' | 'sourceClientAccountId'> | null | undefined): boolean {

@@ -189,7 +189,13 @@ export interface IJMAPClient {
   /** Fork (Wnt/webmail): a message fetched elsewhere (the push worker) for the next getEmail of it. */
   primeEmail?(email: Email, accountId?: string): void;
   /** Fork (Wnt/webmail): see JMAPClient.prefetchEmail. */
-  prefetchEmail?(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number; replace?: boolean }): Promise<Email | null> | null;
+  prefetchEmail?(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number }): Promise<Email | null> | null;
+  /** Fork (Wnt/webmail): see JMAPClient.getSessionScope. */
+  getSessionScope?(): string;
+  /** Fork (Wnt/webmail): see JMAPClient.fetchEmailAhead. */
+  fetchEmailAhead?(emailId: string): Promise<Email | null>;
+  /** Fork (Wnt/webmail): see JMAPClient.primeEmailForOpen. */
+  primeEmailForOpen?(emailId: string, copy: Email | Promise<Email | null>, maxAgeMs: number): void;
   /** Fork (Wnt/webmail): see JMAPClient.setSessionListener / getSessionSnapshot (the session cache). */
   setSessionListener?(listener: ((session: Record<string, unknown>) => void) | null): void;
   getSessionSnapshot?(): Record<string, unknown> | null;

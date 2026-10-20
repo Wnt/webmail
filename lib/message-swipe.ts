@@ -24,8 +24,9 @@
  */
 
 /**
- * - `go`: a message on that side; the gutter is a snap point and settling
- *   there opens it.
+ * - `go`: a message on that side; the gutter is a pane as wide as the page
+ *   showing that message (components/email/swipe-peek.tsx), a snap point, and
+ *   the track coming to rest on it opens it.
  * - `bounce`: nothing to open (the end of the list, or an unsent quick reply
  *   that would be lost): a short gutter without a snap point, so the message
  *   moves a little and springs back.
@@ -82,9 +83,9 @@ export function swipeProgress(visible: number, gutterWidth: number): number {
 /** Px of slack when deciding whether a gutter is wholly on screen. */
 export const REVEAL_SLACK = 2;
 
-/** The track has settled with this gutter wholly on screen. */
-export function isRevealed(visible: number, gutterWidth: number): boolean {
-  return gutterWidth > 0 && visible >= gutterWidth - REVEAL_SLACK;
+/** The track has settled with this gutter wholly on screen (within `slack` px). */
+export function isRevealed(visible: number, gutterWidth: number, slack: number = REVEAL_SLACK): boolean {
+  return gutterWidth > 0 && visible >= gutterWidth - slack;
 }
 
 /**

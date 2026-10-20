@@ -71,6 +71,8 @@ export interface UseMessageSwipeOptions {
 const COMMIT_FALLBACK_MS = 6000;
 /** The longest the track waits on the pane for the page's body to be on screen. */
 const BODY_WAIT_MS = 1200;
+/** A neighbour pane this close to wholly in view (px) is in place: the swipe opens it. */
+const COMMIT_SLACK_PX = 4;
 /** A blocked swipe this far into a gutter says why it does not navigate. */
 const BLOCKED_NOTICE_PX = 16;
 /** Without `scrollend` (older engines): settled after this long without a scroll event. */
@@ -329,6 +331,19 @@ export function useMessageSwipe({
       window.clearTimeout(settleTimer.current);
       settleTimer.current = window.setTimeout(onScrollEnd, SETTLE_MS);
     }
+    // The pane is in place (within COMMIT_SLACK_PX): open it now. WebKit's
+    // snap creeps over the last pixels and reports `scrollend` ~0.1-0.2 s
+    // after the motion is over; the pane is the page's next state either way.
+    // (A pane is wholly in view only at the track's end, so only a finished
+    // swipe gets here, even with the finger still down.)
+    if (phase.current === "idle" && performance.now() >= guardUntil.current) {
+      for (const g of gutters()) {
+        if (live.current.modes[g.dir] === "go" && isRevealed(g.visible, g.width, COMMIT_SLACK_PX)) {
+          commit(g.dir);
+          return;
+        }
+      }
+    }
     if (phase.current !== "idle" || frame.current || !live.current.blocked || noticed.current) return;
     const raf = typeof window.requestAnimationFrame === "function"
       ? window.requestAnimationFrame.bind(window)
@@ -344,7 +359,7 @@ export function useMessageSwipe({
         }
       }
     });
-  }, [gutters, onScrollEnd]);
+  }, [gutters, onScrollEnd, commit]);
 
   // Listen to the track's own scrolling (passive; nothing is ever prevented).
   useEffect(() => {

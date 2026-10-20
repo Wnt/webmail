@@ -359,6 +359,8 @@ const THREAD_FETCH_REUSE_MS = 5_000;
 // Fork (Wnt/webmail): how long a primed message (primeEmail) stands in for an
 // Email/get - only for the open that primed it.
 const PRIMED_EMAIL_MAX_AGE_MS = 60_000;
+/** Fork (Wnt/webmail): at most this many messages wait in primedEmails (each holds a whole message). */
+const PRIMED_EMAIL_MAX_ENTRIES = 8;
 const threadFetchKey = (accountId: string, threadId: string) => `${accountId}\u0000${threadId}`;
 
 const EMAIL_LIST_PROPERTIES = [
@@ -1650,6 +1652,8 @@ export class JMAPClient implements IJMAPClient {
     this.session = null;
     this.sessionRaw = null;
     this.capabilities = {};
+    // Fork (Wnt/webmail): copies kept for an open belong to the session that is gone.
+    this.primedEmails.clear();
   }
 
   private rewriteSessionUrl(url: string): string {
@@ -2491,7 +2495,61 @@ export class JMAPClient implements IJMAPClient {
    */
   primeEmail(email: Email, accountId?: string): void {
     if (!email?.id || !email.bodyValues) return;
-    this.primedEmails.set(`${accountId || this.accountId}\u0000${email.id}`, { email, at: Date.now(), maxAgeMs: PRIMED_EMAIL_MAX_AGE_MS });
+    this.putPrimed(`${accountId || this.accountId}\u0000${email.id}`, { email, at: Date.now(), maxAgeMs: PRIMED_EMAIL_MAX_AGE_MS });
+  }
+
+  /**
+   * Fork (Wnt/webmail): who the session is - its API URL and mail account.
+   * A copy of a message made in one session is never handed out in another
+   * (primedEmails), and callers keeping copies of their own key them by it
+   * (the phone swipe's neighbours, hooks/use-swipe-neighbours.ts).
+   */
+  getSessionScope(): string {
+    return this.apiUrl ? `${this.apiUrl}\u0000${this.accountId}` : '';
+  }
+
+  /** Adds a primed entry for this session: expired and other sessions' entries go, and the oldest past the cap. */
+  private putPrimed(key: string, entry: { email?: Email; pending?: Promise<Email | null>; at: number; maxAgeMs: number }): void {
+    const scope = this.getSessionScope();
+    const now = Date.now();
+    for (const [k, e] of this.primedEmails) {
+      if (now - e.at >= e.maxAgeMs || e.scope !== scope) this.primedEmails.delete(k);
+    }
+    this.primedEmails.delete(key);
+    this.primedEmails.set(key, { ...entry, scope });
+    while (this.primedEmails.size > PRIMED_EMAIL_MAX_ENTRIES) {
+      const oldest = this.primedEmails.keys().next().value;
+      if (oldest === undefined) break;
+      this.primedEmails.delete(oldest);
+    }
+  }
+
+  /**
+   * Fork (Wnt/webmail): the Email/get getEmail would send for `emailId`, for
+   * a caller that keeps the result itself (the phone swipe's neighbours):
+   * nothing is kept here. Null when the session changed meanwhile.
+   */
+  async fetchEmailAhead(emailId: string): Promise<Email | null> {
+    if (!emailId || !this.apiUrl) return null;
+    const scope = this.getSessionScope();
+    const email = await this.fetchFullEmail(this.accountId, emailId).catch(() => null);
+    return email && email.id === emailId && this.getSessionScope() === scope ? email : null;
+  }
+
+  /**
+   * Fork (Wnt/webmail): hands the open that follows at once the copy of
+   * `emailId` the caller holds, or its fetch still under way (the phone
+   * swipe: hooks/use-swipe-neighbours.ts). getEmail takes it once, within
+   * `maxAgeMs`, in this session only; it replaces an earlier entry.
+   */
+  primeEmailForOpen(emailId: string, copy: Email | Promise<Email | null>, maxAgeMs: number): void {
+    if (!emailId || !this.apiUrl) return;
+    const key = `${this.accountId}\u0000${emailId}`;
+    if (copy instanceof Promise) {
+      this.putPrimed(key, { pending: copy.then((e) => (e && e.id === emailId && e.bodyValues ? e : null), () => null), at: Date.now(), maxAgeMs });
+    } else if (copy.id === emailId && copy.bodyValues) {
+      this.putPrimed(key, { email: copy, at: Date.now(), maxAgeMs });
+    }
   }
 
   /**
@@ -2501,33 +2559,25 @@ export class JMAPClient implements IJMAPClient {
    * drawing; a list row asks for its message while the pointer rests on it.
    * With `kept` (the push worker's copy of it) nothing is sent. getEmail then
    * takes this (or waits for it) instead of asking again. Used once, within
-   * `maxAgeMs` (default PRIMED_EMAIL_MAX_AGE_MS); a second call meanwhile
-   * returns the first one's, unless `replace` hands in a newer copy of the
-   * message (`kept`: the phone swipe's copy with the list row's current
-   * flags). The request leaves before this returns.
+   * `maxAgeMs` (default PRIMED_EMAIL_MAX_AGE_MS), in this session only
+   * (getSessionScope); a second call meanwhile returns the first one's. At
+   * most PRIMED_EMAIL_MAX_ENTRIES wait. The request leaves before this returns.
    */
-  prefetchEmail(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number; replace?: boolean }): Promise<Email | null> | null {
+  prefetchEmail(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number }): Promise<Email | null> | null {
     if (!emailId || !this.apiUrl) return null;
     const accountId = this.accountId;
     const key = `${accountId}\u0000${emailId}`;
     const maxAgeMs = opts?.maxAgeMs ?? PRIMED_EMAIL_MAX_AGE_MS;
-    // Copies nobody opened in time go (each holds a whole message).
-    const now = Date.now();
-    for (const [k, entry] of this.primedEmails) if (now - entry.at >= entry.maxAgeMs) this.primedEmails.delete(k);
-    if (opts?.replace && kept?.id === emailId && kept.bodyValues) {
-      this.primedEmails.set(key, { email: kept, at: now, maxAgeMs });
-      return Promise.resolve(kept);
-    }
     const existing = this.primedEmails.get(key);
-    if (existing && Date.now() - existing.at < existing.maxAgeMs) {
+    if (existing && Date.now() - existing.at < existing.maxAgeMs && existing.scope === this.getSessionScope()) {
       return existing.email ? Promise.resolve(existing.email) : existing.pending ?? null;
     }
     if (kept?.id === emailId && kept.bodyValues) {
-      this.primedEmails.set(key, { email: kept, at: Date.now(), maxAgeMs });
+      this.putPrimed(key, { email: kept, at: Date.now(), maxAgeMs });
       return Promise.resolve(kept);
     }
     const pending = this.fetchFullEmail(accountId, emailId).catch(() => null);
-    this.primedEmails.set(key, { pending, at: Date.now(), maxAgeMs });
+    this.putPrimed(key, { pending, at: Date.now(), maxAgeMs });
     return pending;
   }
 
@@ -2573,8 +2623,11 @@ export class JMAPClient implements IJMAPClient {
       const primed = this.primedEmails.get(primedKey);
       this.primedEmails.delete(primedKey);
       let email: Email | null | undefined;
-      if (primed && Date.now() - primed.at < primed.maxAgeMs) {
+      const scope = this.getSessionScope();
+      if (primed && Date.now() - primed.at < primed.maxAgeMs && primed.scope === scope) {
         email = primed.email ?? (primed.pending ? await primed.pending : null);
+        // A copy made in a session replaced meanwhile is not this session's.
+        if (this.getSessionScope() !== scope) email = null;
       }
       if (!email) {
         const response = await this.request([
@@ -8872,7 +8925,7 @@ export class JMAPClient implements IJMAPClient {
   /** getThreadEmails calls getEmail may reuse (see getEmail), by account and thread. */
   private threadFetches = new Map<string, { at: number; promise: Promise<Email[]> }>();
   // Fork (Wnt/webmail): messages handed in by primeEmail, keyed by account and id.
-  private primedEmails = new Map<string, { email?: Email; pending?: Promise<Email | null>; at: number; maxAgeMs: number }>();
+  private primedEmails = new Map<string, { email?: Email; pending?: Promise<Email | null>; at: number; maxAgeMs: number; scope?: string }>();
   // Shared/secondary accounts get no SSE push (Stalwart pushes the primary
   // account only), so poll them on a slow cadence alongside SSE to keep their
   // folder + unified/All-Mail counters from going stale between focus events.
