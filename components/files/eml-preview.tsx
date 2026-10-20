@@ -5,6 +5,7 @@ import { Paperclip, Download } from "@/components/icons";
 import { emailIframeCsp, sanitizeEmailBodyForIframe } from "@/lib/email-sanitization";
 import { getEffectiveTimeZone } from "@/lib/timezone";
 import { useSettingsStore } from "@/stores/settings-store";
+import { stripBidiControls } from "@/lib/bidi";
 
 // A parsed message/rfc822 (.eml), as produced by postal-mime. Only the fields
 // this preview renders are typed.
@@ -63,7 +64,7 @@ export function EmlPreview({ message }: { message: ParsedEml }) {
     const url = URL.createObjectURL(new Blob([att.content as BlobPart], { type: att.mimeType || "application/octet-stream" }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = att.filename || "attachment";
+    a.download = stripBidiControls(att.filename || "") || "attachment";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -108,7 +109,7 @@ export function EmlPreview({ message }: { message: ParsedEml }) {
                 className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm bg-muted text-foreground hover:bg-muted/70"
               >
                 <Paperclip className="w-3 h-3 flex-shrink-0" />
-                <span className="max-w-[200px] truncate">{att.filename || "attachment"}</span>
+                <span className="max-w-[200px] truncate">{stripBidiControls(att.filename || "") || "attachment"}</span>
                 <Download className="w-3 h-3 flex-shrink-0 text-muted-foreground" />
               </button>
             ))}

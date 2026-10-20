@@ -111,6 +111,7 @@ import { htmlToPlainText as htmlToPlainTextShared } from "@/lib/html-to-text";
 import { fileStorage } from "@/lib/plugin-storage";
 import { usePolicyStore } from "@/stores/policy-store";
 import { toUnicodeEmail } from "@/lib/idn";
+import { stripBidiControls } from "@/lib/bidi";
 
 /**
  * Derives the text/plain alternative from the composer's HTML body, preserving
@@ -3582,7 +3583,7 @@ export function EmailComposer({
                   && isFilePreviewable(att.name, att.type);
                 const label = (
                   <>
-                    <span className="max-w-[150px] md:max-w-[200px] truncate">{att.name}</span>
+                    <span className="max-w-[150px] md:max-w-[200px] truncate">{stripBidiControls(att.name) || att.name}</span>
                     <span className="text-xs text-muted-foreground whitespace-nowrap">
                       ({formatFileSize(att.size)})
                     </span>
@@ -3623,7 +3624,7 @@ export function EmailComposer({
                       <button
                         type="button"
                         onClick={() => setPreviewAttachment(att)}
-                        title={att.name}
+                        title={stripBidiControls(att.name) || att.name}
                         className="flex items-center gap-2 min-w-0 hover:underline"
                       >
                         {label}

@@ -9,6 +9,7 @@ import { getFilePreviewKind, imageBlobUrl, isMimeTypeSafeForInlinePreview, previ
 import dynamic from "next/dynamic";
 import { EmlPreview, type ParsedEml } from "@/components/files/eml-preview";
 import { decodeHtmlAttachment, HtmlAttachmentPreview } from "@/components/files/html-attachment-preview";
+import { stripBidiControls } from "@/lib/bidi";
 
 // pdf.js-based inline viewer for mobile (no native inline PDF viewer). Loaded
 // only on the mobile PDF path so pdfjs-dist + its worker never reach the
@@ -117,6 +118,9 @@ function processInline(text: string): React.ReactNode {
 }
 
 export function FilePreviewModal({ name, onClose, onDownload, getFileContent }: FilePreviewModalProps) {
+  // Shown without directional formatting characters (upstream 29b33eb4): a
+  // sender's `report\u202Efdp.exe` must not read as `reportexe.pdf` here either.
+  const shownName = stripBidiControls(name) || name;
   const t = useTranslations("files");
   const [content, setContent] = useState<string | null>(null);
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
@@ -267,7 +271,7 @@ export function FilePreviewModal({ name, onClose, onDownload, getFileContent }: 
   }, [onClose]);
 
   return (
-    <div role="dialog" aria-label={name} className="fixed inset-0 z-50 flex flex-col bg-black/80" onClick={onClose}>
+    <div role="dialog" aria-label={shownName} className="fixed inset-0 z-50 flex flex-col bg-black/80" onClick={onClose}>
       {/* The dialog is `fixed inset-0` under `viewport-fit=cover`, so in an
           installed iOS PWA (no browser chrome above it) the header would sit
           underneath the status bar and its buttons - including the close
@@ -275,7 +279,7 @@ export function FilePreviewModal({ name, onClose, onDownload, getFileContent }: 
           background still bleeds behind the status bar / notch. The insets are
           physical, so pl/pr (not ps/pe) is correct in RTL too. */}
       <div className="flex items-center justify-between gap-2 pl-[calc(1rem+env(safe-area-inset-left))] pr-[calc(1rem+env(safe-area-inset-right))] pt-[calc(0.75rem+env(safe-area-inset-top))] pb-3 bg-background/90 backdrop-blur border-b border-border" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-sm font-medium truncate">{name}</h3>
+        <h3 className="text-sm font-medium truncate">{shownName}</h3>
         <div className="flex items-center gap-2">
           {objectUrl && canOpenInNewTab && (
             <Button
@@ -333,12 +337,12 @@ export function FilePreviewModal({ name, onClose, onDownload, getFileContent }: 
 
         {!loading && !error && fileType === "image" && objectUrl && (
           <div className="absolute inset-0">
-            <ZoomableImage src={objectUrl} alt={name} onBackgroundClick={onClose} />
+            <ZoomableImage src={objectUrl} alt={shownName} onBackgroundClick={onClose} />
           </div>
         )}
 
         {!loading && !error && fileType === "html" && content !== null && (
-          <HtmlAttachmentPreview html={content} title={name} />
+          <HtmlAttachmentPreview html={content} title={shownName} />
         )}
 
         {!loading && !error && fileType === "pdf" && objectUrl && pdfInlineSupported && (
@@ -348,7 +352,7 @@ export function FilePreviewModal({ name, onClose, onDownload, getFileContent }: 
           <iframe
             src={objectUrl}
             className="w-full max-w-5xl h-full rounded-lg bg-white"
-            title={name}
+            title={shownName}
             onClick={(e) => e.stopPropagation()}
           />
         )}
@@ -368,7 +372,7 @@ export function FilePreviewModal({ name, onClose, onDownload, getFileContent }: 
 
         {!loading && !error && fileType === "audio" && objectUrl && (
           <div className="bg-background rounded-lg p-8 max-w-lg w-full" onClick={(e) => e.stopPropagation()}>
-            <p className="text-sm font-medium mb-4 text-center">{name}</p>
+            <p className="text-sm font-medium mb-4 text-center">{shownName}</p>
             <audio controls className="w-full" src={objectUrl} />
           </div>
         )}

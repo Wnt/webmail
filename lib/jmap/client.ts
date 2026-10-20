@@ -22,6 +22,7 @@ import { acceptedFileName, fileNameRulesFrom, type FileNameRules } from "@/lib/f
 import { getEffectiveTimeZone, toLocalDateTime } from "@/lib/timezone";
 import { buildEmailSort, compareEmails, hasKeywordLevels, type KeywordSortPolarity, type SortLevel } from "@/lib/message-list-order";
 import { toInertBlob } from "@/lib/file-preview";
+import { stripBidiControls } from "@/lib/bidi";
 
 // Cap for the follow-up Email/get issued when a displayed body part comes
 // back truncated at the normal 256000-byte limit (see refetchTruncatedBodyValues
@@ -8923,7 +8924,7 @@ export class JMAPClient implements IJMAPClient {
 
     const a = document.createElement('a');
     a.href = blobUrl;
-    a.download = name || 'download';
+    a.download = stripBidiControls(name || '') || 'download';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
