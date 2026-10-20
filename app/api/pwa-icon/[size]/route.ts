@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import sharp from 'sharp';
 import { configManager } from '@/lib/admin/config-manager';
 import { fetchBrandingAsset } from '@/lib/admin/branding-asset';
+import { brandingSourceRevision, cachedImage, imageErrorStatus } from '@/lib/admin/generated-image-cache';
 import {
   matchDomainBranding,
   parseDomainBranding,
@@ -10,9 +11,8 @@ import {
 
 const VALID_SIZES = new Set([192, 512]);
 
-// Cache resized images keyed by (size, source URL) so admin re-uploads or URL
-// changes invalidate the prior render instead of serving stale bytes forever.
-const cache = new Map<string, Blob>();
+// Renders are shared, bounded and expire (lib/admin/generated-image-cache.ts);
+// the key carries the source URL and its revision, so a re-upload renders again.
 
 export async function GET(
   req: NextRequest,
@@ -49,27 +49,22 @@ export async function GET(
     Vary: 'Host, X-Forwarded-Host',
   };
 
-  const cacheKey = `${size}|${iconUrl}`;
+  const cacheKey = `pwa-icon|${size}|${iconUrl}|${await brandingSourceRevision(iconUrl)}`;
 
   try {
-    if (cache.has(cacheKey)) {
-      return new NextResponse(cache.get(cacheKey)!, { headers: pngHeaders });
-    }
-
-    const sourceBuffer = await fetchBrandingAsset(iconUrl, 'PWA icon');
-    const resized = await sharp(sourceBuffer)
-      .resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-      .png()
-      .toBuffer();
-
-    const ab = new ArrayBuffer(resized.byteLength);
-    new Uint8Array(ab).set(resized);
-    const blob = new Blob([ab], { type: 'image/png' });
-    cache.set(cacheKey, blob);
-
+    const blob = await cachedImage(cacheKey, async () => {
+      const sourceBuffer = await fetchBrandingAsset(iconUrl, 'PWA icon');
+      const resized = await sharp(sourceBuffer)
+        .resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+        .png()
+        .toBuffer();
+      const ab = new ArrayBuffer(resized.byteLength);
+      new Uint8Array(ab).set(resized);
+      return new Blob([ab], { type: 'image/png' });
+    });
     return new NextResponse(blob, { headers: pngHeaders });
   } catch (err) {
     console.error('Failed to generate PWA icon:', err);
-    return new NextResponse('Failed to generate icon', { status: 500 });
+    return new NextResponse('Failed to generate icon', { status: imageErrorStatus(err) });
   }
 }

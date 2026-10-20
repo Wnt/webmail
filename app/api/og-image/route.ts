@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import sharp from 'sharp';
 import { configManager } from '@/lib/admin/config-manager';
 import { fetchBrandingAsset } from '@/lib/admin/branding-asset';
+import { brandingSourceRevision, cachedImage, imageErrorStatus } from '@/lib/admin/generated-image-cache';
 import {
   matchDomainBranding,
   parseDomainBranding,
@@ -61,9 +62,8 @@ function isDarkColor({ r, g, b }: Rgb): boolean {
   return 0.299 * r + 0.587 * g + 0.114 * b < 128;
 }
 
-// Cache rendered cards keyed by (source logo, background) so a branding change
-// invalidates the previous render instead of serving stale bytes forever.
-const cache = new Map<string, Blob>();
+// Renders are shared, bounded and expire (lib/admin/generated-image-cache.ts);
+// the key carries the logo URL, its revision and the background.
 
 export async function GET(req: NextRequest) {
   await configManager.ensureLoaded();
@@ -100,46 +100,42 @@ export async function GET(req: NextRequest) {
     'Cache-Control': 'public, max-age=86400',
     Vary: 'Host, X-Forwarded-Host',
   };
-  const cacheKey = `${logoUrl}|${background.r},${background.g},${background.b}`;
+  const cacheKey = `og-image|${logoUrl}|${await brandingSourceRevision(logoUrl)}|${background.r},${background.g},${background.b}`;
 
   try {
-    if (cache.has(cacheKey)) {
-      return new NextResponse(cache.get(cacheKey)!, { headers: pngHeaders });
-    }
+    const blob = await cachedImage(cacheKey, async () => {
+      const sourceBuffer = await fetchBrandingAsset(logoUrl, 'OG image logo');
+      // 'contain' pads the logo out to exactly CONTENT_WIDTH x CONTENT_HEIGHT with
+      // transparency, so compositing it centre-gravity keeps the original aspect
+      // ratio without any arithmetic on the intrinsic size. withoutEnlargement is
+      // off deliberately: a small favicon should still fill the card.
+      const logo = await sharp(sourceBuffer)
+        .resize(CONTENT_WIDTH, CONTENT_HEIGHT, {
+          fit: 'contain',
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+        })
+        .png()
+        .toBuffer();
 
-    const sourceBuffer = await fetchBrandingAsset(logoUrl, 'OG image logo');
-    // 'contain' pads the logo out to exactly CONTENT_WIDTH x CONTENT_HEIGHT with
-    // transparency, so compositing it centre-gravity keeps the original aspect
-    // ratio without any arithmetic on the intrinsic size. withoutEnlargement is
-    // off deliberately: a small favicon should still fill the card.
-    const logo = await sharp(sourceBuffer)
-      .resize(CONTENT_WIDTH, CONTENT_HEIGHT, {
-        fit: 'contain',
-        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      const card = await sharp({
+        create: {
+          width: OG_WIDTH,
+          height: OG_HEIGHT,
+          channels: 4,
+          background: { ...background, alpha: 1 },
+        },
       })
-      .png()
-      .toBuffer();
+        .composite([{ input: logo, gravity: 'center' }])
+        .png()
+        .toBuffer();
 
-    const card = await sharp({
-      create: {
-        width: OG_WIDTH,
-        height: OG_HEIGHT,
-        channels: 4,
-        background: { ...background, alpha: 1 },
-      },
-    })
-      .composite([{ input: logo, gravity: 'center' }])
-      .png()
-      .toBuffer();
-
-    const ab = new ArrayBuffer(card.byteLength);
-    new Uint8Array(ab).set(card);
-    const blob = new Blob([ab], { type: 'image/png' });
-    cache.set(cacheKey, blob);
-
+      const ab = new ArrayBuffer(card.byteLength);
+      new Uint8Array(ab).set(card);
+      return new Blob([ab], { type: 'image/png' });
+    });
     return new NextResponse(blob, { headers: pngHeaders });
   } catch (err) {
     console.error('Failed to generate OG image:', err);
-    return new NextResponse('Failed to generate OG image', { status: 500 });
+    return new NextResponse('Failed to generate OG image', { status: imageErrorStatus(err) });
   }
 }

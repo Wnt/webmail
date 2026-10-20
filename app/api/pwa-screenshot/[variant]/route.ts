@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import sharp from 'sharp';
 import { configManager } from '@/lib/admin/config-manager';
 import { fetchBrandingAsset } from '@/lib/admin/branding-asset';
+import { brandingSourceRevision, cachedImage, imageErrorStatus } from '@/lib/admin/generated-image-cache';
 import {
   matchDomainBranding,
   parseDomainBranding,
@@ -20,8 +21,8 @@ const VARIANTS = {
 
 type Variant = keyof typeof VARIANTS;
 
-// Cache resized images keyed by (variant, source URL).
-const cache = new Map<string, Blob>();
+// Renders are shared, bounded and expire (lib/admin/generated-image-cache.ts);
+// the key carries the source URL and its revision, so a re-upload renders again.
 
 export async function GET(
   req: NextRequest,
@@ -53,30 +54,25 @@ export async function GET(
     'Cache-Control': 'public, max-age=86400',
     Vary: 'Host, X-Forwarded-Host',
   };
-  const cacheKey = `${variantParam}|${screenshotUrl}`;
+  const cacheKey = `pwa-screenshot|${variantParam}|${screenshotUrl}|${await brandingSourceRevision(screenshotUrl)}`;
 
   try {
-    if (cache.has(cacheKey)) {
-      return new NextResponse(cache.get(cacheKey)!, { headers: pngHeaders });
-    }
-
-    const sourceBuffer = await fetchBrandingAsset(screenshotUrl, 'PWA screenshot');
-    // 'cover' fills the target box without letterboxing - screenshots benefit
-    // more from cropping than from a transparent frame around them. Users get
-    // a hint about the recommended aspect ratio in the admin UI.
-    const resized = await sharp(sourceBuffer)
-      .resize(width, height, { fit: 'cover', position: 'center' })
-      .png()
-      .toBuffer();
-
-    const ab = new ArrayBuffer(resized.byteLength);
-    new Uint8Array(ab).set(resized);
-    const blob = new Blob([ab], { type: 'image/png' });
-    cache.set(cacheKey, blob);
-
+    const blob = await cachedImage(cacheKey, async () => {
+      const sourceBuffer = await fetchBrandingAsset(screenshotUrl, 'PWA screenshot');
+      // 'cover' fills the target box without letterboxing - screenshots benefit
+      // more from cropping than from a transparent frame around them. Users get
+      // a hint about the recommended aspect ratio in the admin UI.
+      const resized = await sharp(sourceBuffer)
+        .resize(width, height, { fit: 'cover', position: 'center' })
+        .png()
+        .toBuffer();
+      const ab = new ArrayBuffer(resized.byteLength);
+      new Uint8Array(ab).set(resized);
+      return new Blob([ab], { type: 'image/png' });
+    });
     return new NextResponse(blob, { headers: pngHeaders });
   } catch (err) {
     console.error('Failed to generate PWA screenshot:', err);
-    return new NextResponse('Failed to generate screenshot', { status: 500 });
+    return new NextResponse('Failed to generate screenshot', { status: imageErrorStatus(err) });
   }
 }
