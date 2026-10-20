@@ -2499,14 +2499,20 @@ export class JMAPClient implements IJMAPClient {
    * `emailId`, ahead of the code that shows it - a page opened at a message
    * link asks for it as soon as the session is up, while the app is still
    * drawing; a list row asks for its message while the pointer rests on it.
-   * With `kept` (the push worker's copy of it) nothing is sent. getEmail then
+   * With `kept` (the push worker's copy of it, looked up for `opts.keptAccountId`,
+   * which must be this client's account now) nothing is sent. getEmail then
    * takes this (or waits for it) instead of asking again. Used once, within
    * `maxAgeMs` (default PRIMED_EMAIL_MAX_AGE_MS); a second call meanwhile
    * returns the first one's. The request leaves before this returns.
    */
-  prefetchEmail(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number }): Promise<Email | null> | null {
+  prefetchEmail(emailId: string, kept?: Email | null, opts?: { maxAgeMs?: number; keptAccountId?: string }): Promise<Email | null> | null {
     if (!emailId || !this.apiUrl) return null;
     const accountId = this.accountId;
+    // Fork (Wnt/webmail): a kept copy counts only for the mail account it was
+    // looked up for. The session can change the account while the lookup is
+    // out (a revalidation naming another primary account): then it is
+    // another account's message and the current one is fetched instead.
+    if (kept && opts?.keptAccountId !== accountId) kept = null;
     const key = `${accountId}\u0000${emailId}`;
     const maxAgeMs = opts?.maxAgeMs ?? PRIMED_EMAIL_MAX_AGE_MS;
     // Copies nobody opened in time go (each holds a whole message).

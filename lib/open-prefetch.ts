@@ -57,7 +57,8 @@ export function prefetchForOpen(client: IJMAPClient | null | undefined, row: Ema
     void peekPrefetchedEmail(accountId, row.id).then((copy) => {
       // The kept copy is from the push; the row's flags and folders are current.
       const current = copy ? { ...copy, keywords: row.keywords ?? copy.keywords, mailboxIds: row.mailboxIds ?? copy.mailboxIds } : null;
-      void client.prefetchEmail?.(row.id, current, { maxAgeMs: OPEN_PREFETCH_MAX_AGE_MS })?.then(prewarm);
+      // Looked up for `accountId`: the client ignores it if its account changed meanwhile.
+      void client.prefetchEmail?.(row.id, current, { maxAgeMs: OPEN_PREFETCH_MAX_AGE_MS, keptAccountId: accountId })?.then(prewarm);
     });
     return;
   }

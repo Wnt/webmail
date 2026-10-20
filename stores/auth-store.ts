@@ -1013,13 +1013,13 @@ const KEPT_COPY_WAIT_MS = 150;
  * mail account id, which the session kept from the last visit names; without
  * one the lookup waits for the session (prefetchStartMessage).
  */
-function lookUpStartMessage(account: AccountEntry | undefined): { id: string; kept: Promise<Email | null> | null } | null {
+function lookUpStartMessage(account: AccountEntry | undefined): { id: string; kept: Promise<Email | null> | null; accountId?: string } | null {
   if (!account) return null;
   const link = startMessageLink();
   if (!link || (link.slot !== undefined && link.slot !== account.cookieSlot)) return null;
   const saved = account.authMode === 'oauth' ? readCachedSession(account.id, account.serverUrl, account.username) : null;
   const mailAccountId = (saved?.primaryAccounts as Record<string, string> | undefined)?.['urn:ietf:params:jmap:mail'];
-  return { id: link.id, kept: mailAccountId ? takePrefetchedEmail(mailAccountId, link.id) : null };
+  return { id: link.id, kept: mailAccountId ? takePrefetchedEmail(mailAccountId, link.id) : null, accountId: mailAccountId };
 }
 
 /**
@@ -1063,13 +1063,16 @@ function withinMs<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
  * asking again (JMAPClient.prefetchEmail). Once per page, for the login the
  * link is for.
  */
-async function prefetchStartMessage(client: IJMAPClient, slot: number | undefined, early: { id: string; kept: Promise<Email | null> | null } | null): Promise<void> {
+async function prefetchStartMessage(client: IJMAPClient, slot: number | undefined, early: { id: string; kept: Promise<Email | null> | null; accountId?: string } | null): Promise<void> {
   const link = takeStartMessageLink(slot);
   if (!link || !client.prefetchEmail) return;
   startMessagePrefetched = link.id;
-  const lookup = early?.id === link.id && early.kept ? early.kept : takePrefetchedEmail(client.getAccountId(), link.id);
+  // The account each lookup is for: the client takes the copy only if that is still its account.
+  const fromEarly = early?.id === link.id && !!early.kept;
+  const keptAccountId = fromEarly ? early!.accountId : client.getAccountId();
+  const lookup = fromEarly ? early!.kept! : takePrefetchedEmail(keptAccountId!, link.id);
   const kept = await withinMs(lookup.catch(() => null), KEPT_COPY_WAIT_MS, null);
-  client.prefetchEmail(link.id, kept);
+  client.prefetchEmail(link.id, kept, { keptAccountId });
 }
 
 function initializeFeatureStores(client: IJMAPClient): void {
@@ -2957,15 +2960,21 @@ export const useAuthStore = create<AuthState>()(
                   // URL starts the page again with the server's session.
                   keepSessionFor(client, account.id, account.serverUrl, account.username);
                   const saved = readCachedSession(account.id, account.serverUrl, account.username);
+                  // Fork (Wnt/webmail): a replaced session restarts the page, also
+                  // when the check answers before this client is registered below.
+                  let sessionReplaced = false;
                   if (saved && client.adoptSession(saved)) {
                     void client.revalidateSession().then((check) => {
-                      if (check === 'replaced' && clients.get(account.id) === client) restartWithNewSession();
+                      if (check !== 'replaced') return;
+                      sessionReplaced = true;
+                      if (clients.get(account.id) === client) restartWithNewSession();
                     });
                   } else {
                     await client.connect();
                   }
                   if (account.id === targetId) await prefetchStartMessage(client, account.cookieSlot, startLookup);
                   clients.set(account.id, client);
+                  if (sessionReplaced) restartWithNewSession();
                   scheduleRefresh(expires_in, get().refreshAccessToken, account.id);
                   // Fork (Wnt/webmail): not waited for here - the session is up;
                   // the settings sync that reads this context waits for it.
