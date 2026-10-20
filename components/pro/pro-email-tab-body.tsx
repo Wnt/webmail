@@ -82,7 +82,6 @@ export function ProEmailView({ emailId, client: clientOverride, accountId, onLoa
 
   const activeClient = useAuthStore((s) => s.client);
   const client = clientOverride ?? activeClient;
-  const blobSource = useMemo(() => ({ client: client ?? null, accountId }), [client, accountId]);
   const fetchEmailContent = useEmailStore((s) => s.fetchEmailContent);
   const deleteEmail = useEmailStore((s) => s.deleteEmail);
   const markAsRead = useEmailStore((s) => s.markAsRead);
@@ -96,6 +95,11 @@ export function ProEmailView({ emailId, client: clientOverride, accountId, onLoa
   const openComposeTab = useProTabStore((s) => s.openComposeTab);
 
   const [email, setEmail] = useState<Email | null>(null);
+  // Fork (Wnt/webmail): the client and account the shown message was read
+  // with, set together with it when its fetch completes - never the route
+  // of a fetch still under way paired with the last message (review
+  // swipe-preload r4 R4-A). The reading pane's owner and blob routing.
+  const [blobSource, setBlobSource] = useState<{ client: IJMAPClient | null; accountId?: string }>(() => ({ client: client ?? null, accountId }));
   const [isLoading, setIsLoading] = useState(true);
   const composerSessionIdRef = useRef(0);
 
@@ -111,6 +115,7 @@ export function ProEmailView({ emailId, client: clientOverride, accountId, onLoa
     (accountId ? client.getEmail(emailId, accountId) : fetchEmailContent(client, emailId))
       .then((loaded) => {
         if (cancelled) return;
+        setBlobSource({ client: client ?? null, accountId });
         setEmail(loaded);
         if (loaded) onLoadedRef.current?.(loaded);
       })

@@ -1400,6 +1400,10 @@ export class JMAPClient implements IJMAPClient {
     this.apiUrl = session.apiUrl;
     this.downloadUrl = session.downloadUrl;
     this.accounts = session.accounts || {};
+    // Fork (Wnt/webmail): the refreshed session's own mail account, as connect()
+    // takes it (review swipe-preload r4 R4-B: the old account id stayed, so
+    // the session's identity - and copies kept for it - looked unchanged).
+    this.accountId = session.primaryAccounts?.["urn:ietf:params:jmap:mail"] || Object.keys(this.accounts)[0] || this.accountId;
     this.noteSessionIdentity();
     this.noteSession(raw);
   }

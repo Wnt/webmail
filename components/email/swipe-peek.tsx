@@ -17,6 +17,7 @@ import { collapsePlainTextQuotes, setupQuoteCollapse } from "@/lib/quote-collaps
 import { applyEmailDarkMode, emailColorScheme, emailHasNativeDarkMode } from "@/lib/email-dark-mode";
 import { buildEmailFrameSrcDoc, type EmailFrameContent } from "@/lib/email-frame-doc";
 import { fitEmailBodyWidth } from "@/lib/email-fit-width";
+import { sizePeekFrame } from "@/lib/peek-frame-size";
 import { getRenderableHtmlBody } from "@/lib/email-body-selection";
 import { collectReferencedCids, isEmbeddedInBody } from "@/lib/attachment-visibility";
 import { findCalendarAttachment, isCalendarMimeType } from "@/lib/calendar-invitation";
@@ -191,7 +192,7 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
     if (!iframe || !srcDoc) return;
     let done: Document | null = null;
     let raf = 0;
-    let resize: ResizeObserver | null = null;
+    let stopSizing: (() => void) | null = null;
     const setup = (): boolean => {
       try {
         const doc = iframe.contentDocument;
@@ -201,22 +202,13 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
         const t0 = performance.now();
         setupQuoteCollapse(doc, { show: t("show_quoted_text"), hide: t("hide_quoted_text") });
         if (isDark) applyEmailDarkMode(doc, { remoteContentAllowed: !content?.externalBlocked });
-        // The pane shows the first screen only: the frame grows to two window
-        // heights at most. That also ends the feedback of a body sized by the
-        // frame's own viewport (`height: 100vh`, review swipe-preload r3 R3-E):
-        // at the cap the frame no longer grows, so the body stops growing.
-        const maxHeight = Math.max(1600, 2 * (window.innerHeight || 0));
-        const applyHeight = () => {
-          if (iframe.contentDocument !== doc) return;
-          const scale = fitEmailBodyWidth(doc, { enabled: true });
-          const height = Math.min(maxHeight, Math.ceil(Math.max(doc.documentElement.scrollHeight, doc.body.scrollHeight) * scale));
-          if (iframe.style.height !== height + "px") iframe.style.height = height + "px";
-        };
-        applyHeight();
-        if (typeof ResizeObserver !== "undefined") {
-          resize = new ResizeObserver(applyHeight);
-          resize.observe(doc.body);
-        }
+        // The first screen only: the frame grows to two window heights at most,
+        // and stops adjusting when a body sized by the frame grows or cycles
+        // (lib/peek-frame-size.ts).
+        stopSizing = sizePeekFrame(iframe, doc, {
+          maxHeight: Math.max(1600, 2 * (window.innerHeight || 0)),
+          fit: (d) => fitEmailBodyWidth(d, { enabled: true }),
+        });
         doc.querySelectorAll("img").forEach((el) => {
           const img = el as HTMLImageElement;
           const hide = () => { if (img.complete && img.naturalWidth === 0 && img.getAttribute("src")) img.style.display = "none"; };
@@ -238,7 +230,7 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
       if (raf) window.cancelAnimationFrame(raf);
       window.clearInterval(poll);
       window.clearTimeout(stop);
-      resize?.disconnect();
+      stopSizing?.();
     };
   }, [srcDoc, isDark, content?.externalBlocked, t, peekId]);
 

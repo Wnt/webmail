@@ -277,3 +277,40 @@ it('a new session (sign-out and in) restarts body extraction for the same email 
     view.unmount();
   } finally {plugin.mockRestore(); c.disconnect();}
 });
+
+it('the Pro tab keeps the shown message with the route it was read by until the next fetch completes (review swipe-preload r4 R4-A)', async () => {
+  const { ProEmailView } = await import('@/components/pro/pro-email-tab-body');
+  const { useAuthStore } = await import('@/stores/auth-store');
+  const { JMAPClient } = await import('@/lib/jmap/client');
+  const oldAuth = useAuthStore.getState();
+  const c = new JMAPClient('https://mail.example.test', 'owner', 'p');
+  const a = htmlEmail('shared-collision', true);
+  a.blobId = 'blob-A'; a.mailboxIds = {'shared-a:inbox':true};
+  const b = htmlEmail('shared-collision', true);
+  b.blobId = 'blob-B'; b.mailboxIds = {'shared-b:inbox':true};
+  b.from = [{email:'trusted@example.test'}];
+  b.bodyValues!['1'].value = '<p>BODY-B</p>';
+  let finishB!: (email: Email) => void;
+  const pendingB = new Promise<Email>(resolve => {finishB = resolve;});
+  const get = vi.spyOn(c,'getEmail').mockImplementation(async (_id, account)=>account==='shared-a'?a:pendingB);
+  const plugin = vi.spyOn(renderHooks.onRenderEmailBody, 'transform').mockImplementation(async (_value, ctx) =>
+    (ctx as {blobId?: string}).blobId === 'blob-A'
+      ? {html:'<p>PRIVATE-EXTRACTED-A</p><img src="https://tracker.example.test/old-A">',text:'',attachments:[],handledBy:'test'}
+      : new Promise(() => {}));
+  try {
+    useAuthStore.setState({client:c,activeAccountId:'owner-login'});
+    const close=()=>{};
+    const view=render(<ProEmailView emailId={a.id} client={c} accountId="shared-a" onClose={close}/>);
+    await act(async()=>{await new Promise(resolve=>setTimeout(resolve,100));});
+    await waitFor(()=>expect(view.container.querySelector('iframe')?.getAttribute('srcdoc')).toContain('PRIVATE-EXTRACTED-A'), {timeout:10000});
+    view.rerender(<ProEmailView emailId={a.id} client={c} accountId="shared-b" onClose={close}/>);
+    await act(async()=>{await new Promise(resolve=>setTimeout(resolve,100));});
+    await act(async()=>{await Promise.resolve();});
+    await act(async()=>{finishB(b);await pendingB;});
+    const srcdoc = view.container.querySelector('iframe')?.getAttribute('srcdoc');
+    expect(get).toHaveBeenLastCalledWith(a.id, 'shared-b');
+    expect({staleHtml:srcdoc?.includes('PRIVATE-EXTRACTED-A'),permissive:srcdoc?.includes('img-src data: blob: http: https:')}).toEqual({staleHtml:false,permissive:true});
+    expect(sanitize.inputs.filter(x=>x.html.includes('PRIVATE-EXTRACTED-A') && !x.block)).toEqual([]);
+    view.unmount();
+  } finally {plugin.mockRestore();get.mockRestore();c.disconnect();useAuthStore.setState(oldAuth);}
+});

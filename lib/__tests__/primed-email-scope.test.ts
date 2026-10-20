@@ -170,3 +170,21 @@ describe('an open checks its session again before it returns (review swipe-prelo
   });
 });
 
+it('a 401 session refresh to another primary account makes earlier copies stale (review swipe-preload r4 R4-B)', async () => {
+  const before = client.getSessionScope();
+  client.primeEmailForOpen('old-ready', full('old-ready', 'PRIVATE-OLD-ACCOUNT'), 10_000, before);
+  const next = session();
+  const replacement = { ...next, accounts: { 'acct-2': next.accounts['acct-1'] }, primaryAccounts: {'urn:ietf:params:jmap:mail': 'acct-2'} };
+  fetchSpy.mockReset();
+  fetchSpy.mockResolvedValueOnce(new Response('', {status:401}));
+  fetchSpy.mockResolvedValueOnce(json(replacement));
+  // A genuine server can reject the old account on the retried request. The
+  // stale ready primer must still become inaccessible without any server read.
+  fetchSpy.mockResolvedValueOnce(json({methodResponses:[['error',{type:'accountNotFound'},'0']]}));
+  fetchSpy.mockResolvedValueOnce(json({methodResponses:[['Email/get',{accountId:'acct-2',list:[],notFound:['old-ready']},'0']]}));
+  expect(await client.getEmail('trigger-refresh')).toBeNull();
+  expect(client.getSessionSnapshot()?.primaryAccounts).toEqual(replacement.primaryAccounts);
+  const opened = await client.getEmail('old-ready');
+  expect({sameScope:client.getSessionScope()===before,returnedOld:opened?.bodyValues?.['1']?.value==='PRIVATE-OLD-ACCOUNT'})
+    .toEqual({sameScope:false,returnedOld:false});
+});
