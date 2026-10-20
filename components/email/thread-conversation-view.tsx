@@ -45,6 +45,7 @@ import { useWopiStatus, canWopiOpen } from "@/hooks/use-wopi-status";
 import { useOwnDomainAddress } from "@/hooks/use-own-domain-address";
 import { bodyReady } from "@/lib/open-timing";
 import { stripBidiControls } from "@/lib/bidi";
+import { isInlineCidPart } from "@/lib/inline-cid-parts";
 
 interface ThreadConversationViewProps {
   thread: ThreadGroup;
@@ -306,7 +307,7 @@ function EmailCard({
       return;
     }
 
-    const cidAttachments = email.attachments.filter(att => att.cid && att.blobId);
+    const cidAttachments = email.attachments.filter(isInlineCidPart);
     if (cidAttachments.length === 0) {
       setCidBlobUrls({});
       return;

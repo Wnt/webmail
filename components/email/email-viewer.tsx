@@ -16,6 +16,7 @@ import { applyEmailDarkMode, emailColorScheme, emailHasNativeDarkMode as htmlHas
 import { buildEmailFrameSrcDoc } from "@/lib/email-frame-doc";
 import { readReceiptRequestAddress } from "@/lib/read-receipt-request";
 import { isHtmlBodyEffectivelyEmpty } from "@/lib/strip-html-tags";
+import { isInlineCidPart } from "@/lib/inline-cid-parts";
 import { fitEmailBodyWidth } from "@/lib/email-fit-width";
 import { withBasePath } from "@/lib/browser-navigation";
 import { buildContactsPath, buildMailPath } from "@/lib/deep-links";
@@ -1764,7 +1765,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
       return;
     }
 
-    const cidAttachments = email.attachments.filter(att => att.cid && att.blobId);
+    const cidAttachments = email.attachments.filter(isInlineCidPart);
     if (cidAttachments.length === 0) {
       setCidBlobUrls({});
       return;
