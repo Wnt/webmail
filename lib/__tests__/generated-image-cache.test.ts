@@ -44,6 +44,30 @@ describe('generated image cache', () => {
     expect(peak).toBe(MAX_RENDERS);
   });
 
+  it('a freed permit goes to the waiting render, not to a newcomer (review r4 N5)', async () => {
+    let active = 0;
+    let peak = 0;
+    const releases: (() => void)[] = [];
+    const render = () => new Promise<Blob>((resolve) => {
+      active++;
+      peak = Math.max(peak, active);
+      releases.push(() => { active--; resolve(blob('ok')); });
+    });
+    const a = cachedImage('a', render);
+    const b = cachedImage('b', render);
+    const c = cachedImage('c', render);
+    await tick();
+    let d!: Promise<Blob>;
+    releases.shift()!();
+    // Another request arrives just as the slot is freed.
+    queueMicrotask(() => { d = cachedImage('d', render); });
+    await tick();
+    const observed = { active, peak };
+    while (active || releases.length) { releases.shift()?.(); await tick(); }
+    await Promise.all([a, b, c, d]);
+    expect(observed).toEqual({ active: MAX_RENDERS, peak: MAX_RENDERS });
+  });
+
   it('a failed render is not retried within the back-off, then is', async () => {
     let t = 1_000_000;
     const now = () => t;

@@ -16,6 +16,49 @@ const ADMIN_BRANDING_PREFIX = '/api/admin/branding/';
 
 const REMOTE_TIMEOUT_MS = 10_000;
 const MAX_REDIRECTS = 5;
+/**
+ * Fork (Wnt/webmail): the most a remote branding source may send (admin
+ * uploads are capped at 2 MiB). A public image route renders from it, so an
+ * oversized or endless body is refused while reading, not buffered whole.
+ */
+export const MAX_REMOTE_ASSET_BYTES = 4 * 1024 * 1024;
+
+/** Reads at most `max` bytes of `res`, or throws (cancelling the rest). */
+async function readCapped(res: PublicFetchResponse, max: number, label: string): Promise<Buffer> {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > max) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`${label} is larger than ${max} bytes`);
+  }
+  if (!res.body) return Buffer.from(await res.arrayBuffer());
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`${label} is larger than ${max} bytes`);
+    }
+    parts.push(value);
+  }
+  return Buffer.concat(parts);
+}
+
+/**
+ * Fork (Wnt/webmail): the file behind a local branding URL - an admin upload
+ * or a path inside public/ - or null when it would leave its directory.
+ */
+export function localBrandingPath(url: string): string | null {
+  if (url.startsWith(ADMIN_BRANDING_PREFIX)) {
+    return path.join(getConfigDir(), 'branding', path.basename(url.slice(ADMIN_BRANDING_PREFIX.length)));
+  }
+  const root = path.resolve(process.cwd(), 'public');
+  const file = path.resolve(root, url.replace(/^\/+/, ''));
+  return file.startsWith(root + path.sep) ? file : null;
+}
 
 /**
  * Remote branding URLs come from admin config, but they are still fetched by
@@ -41,7 +84,7 @@ async function fetchRemoteAsset(url: string, label: string): Promise<Buffer> {
   if (!res || !res.ok) {
     throw new Error(`Failed to fetch ${label}: ${res?.status ?? 'too many redirects'}`);
   }
-  return Buffer.from(await res.arrayBuffer());
+  return readCapped(res, MAX_REMOTE_ASSET_BYTES, label);
 }
 
 /**
@@ -56,12 +99,8 @@ export async function fetchBrandingAsset(url: string, label = 'branding asset'):
     return fetchRemoteAsset(url, label);
   }
 
-  if (url.startsWith(ADMIN_BRANDING_PREFIX)) {
-    const filename = path.basename(url.slice(ADMIN_BRANDING_PREFIX.length));
-    return readFile(path.join(getConfigDir(), 'branding', filename));
-  }
-
-  // Path relative to public/ directory
-  const publicPath = path.join(process.cwd(), 'public', url.replace(/^\//, ''));
-  return readFile(publicPath);
+  // An admin upload, or a path inside public/ (never outside it).
+  const file = localBrandingPath(url);
+  if (!file) throw new Error(`${label} path leaves the public directory`);
+  return readFile(file);
 }

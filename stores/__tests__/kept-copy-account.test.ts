@@ -7,7 +7,9 @@ import { createConfig } from '@/lib/__tests__/fixtures/config';
 // revalidation), and the copy of account A was then handed to the client as
 // account B's message - at a page start within the 150 ms wait, and for a row
 // the pointer rests on. The harness is auth-store-cold-start's; the page
-// starts at a message link (read when lib/start-link loads).
+// starts at a message link (read when lib/start-link loads). Review r4: the
+// same for a session whose API URL changes under the same account ID - copies
+// are bound to the client's session generation.
 vi.mock('@/lib/stalwart/principal', () => ({ fetchPrincipalDisplayName: async () => null }));
 
 import type { useAuthStore as AuthStore } from '@/stores/auth-store';
@@ -52,7 +54,7 @@ let holdSessionGet: Promise<void> | null = null;
 function describeCall(input: unknown, init?: RequestInit): string {
   const url = String(input);
   const method = init?.method ?? 'GET';
-  if (url.endsWith('/jmap') && method === 'POST') {
+  if ((url.endsWith('/jmap') || url.endsWith('/new-jmap')) && method === 'POST') {
     const body = JSON.parse(String(init?.body ?? '{}')) as { methodCalls?: [string, Record<string, unknown>][] };
     return (body.methodCalls ?? []).map(([name, args]) => (name === 'Email/get' && Array.isArray(args.ids) && args.ids.includes('m-linked') ? 'Email/get(linked)' : name)).join('+');
   }
@@ -69,7 +71,7 @@ const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
     if (holdSessionGet) await holdSessionGet;
     return json(serverSession);
   }
-  if (url.endsWith('/jmap') && init?.method === 'POST') {
+  if ((url.endsWith('/jmap') || url.endsWith('/new-jmap')) && init?.method === 'POST') {
     const body = JSON.parse(String(init.body)) as { methodCalls: [string, Record<string, unknown>, string][] };
     return json({
       sessionState: serverSession.state,
@@ -123,7 +125,7 @@ vi.mock('@/lib/push-prefetch', async (importOriginal) => ({
   keptEmailKeys: async () => new Set(['acct-a\u0000m-hover']),
 }));
 let releaseCopy!: (email: unknown) => void;
-beforeEach(() => { copies.take.mockReset(); copies.take.mockReturnValue(new Promise((r) => { releaseCopy = r; })); copies.peek.mockReset(); });
+beforeEach(() => { sessionStorage.clear(); copies.take.mockReset(); copies.take.mockReturnValue(new Promise((r) => { releaseCopy = r; })); copies.peek.mockReset(); });
 afterEach(() => { vi.restoreAllMocks(); });
 const keptCopy = (id: string) => ({
   id, threadId: 't', subject: 'Kept copy of account A', bodyValues: { 1: { value: 'old body', isTruncated: false } },
@@ -184,5 +186,81 @@ describe('kept copies and the mail account', { timeout: 30_000 }, () => {
     releaseHover(keptCopy('m-hover'));
     await settle();
     expect((await client.getEmail('m-hover'))?.subject).toBe('Invented');
+  });
+});
+
+describe('kept copies when the API changes with the same mail account ID', { timeout: 30_000 }, () => {
+  it("a page start: the API changes during the wait while the account ID stays the same", async () => {
+    const { JMAPClient } = await import('@/lib/jmap/client');
+    const original = JMAPClient.prototype.revalidateSession;
+    // Cache Storage answers just after the session check, inside the 150 ms wait.
+    vi.spyOn(JMAPClient.prototype, 'revalidateSession').mockImplementation(function (this: InstanceType<typeof JMAPClient>) {
+      const pending = original.call(this);
+      void pending.then(() => releaseCopy(keptCopy('m-linked')));
+      return pending;
+    });
+    writeCachedSession(account.id, SERVER, account.username, session('acct-a'));
+    serverSession = { ...session('acct-a', 's2'), apiUrl: `${SERVER}/new-jmap` };
+    await useAuthStore.getState().checkAuth();
+    await settle();
+    const client = useAuthStore.getState().client!;
+    expect(copies.take).toHaveBeenCalledWith('acct-a', 'm-linked');
+    expect(client.getAccountId()).toBe('acct-a');
+    expect(reload, 'replacement before client registration still restarts').toHaveBeenCalled();
+    expect(client.getSessionSnapshot?.()?.apiUrl).toBe(`${SERVER}/new-jmap`);
+    expect((await client.getEmail('m-linked'))?.subject, "the replacement API's message, fetched").toBe('Invented');
+    expect(reload, 'the page starts again with the new session').toHaveBeenCalled();
+  });
+
+  it('a row the pointer rests on: the API changes while its copy is read', async () => {
+    writeCachedSession(account.id, SERVER, account.username, session('acct-a'));
+    copies.take.mockResolvedValue(null);
+    await useAuthStore.getState().checkAuth();
+    await settle();
+    const client = useAuthStore.getState().client!;
+    let releaseHover!: (email: unknown) => void;
+    copies.peek.mockReturnValue(new Promise((r) => { releaseHover = r; }));
+    const { watchKeptEmails, prefetchForOpen } = await import('@/lib/open-prefetch');
+    watchKeptEmails();
+    await Promise.resolve();
+    prefetchForOpen(client, { id: 'm-hover', keywords: {}, mailboxIds: { inbox: true } } as never);
+    expect(copies.peek).toHaveBeenCalledWith('acct-a', 'm-hover');
+    serverSession = { ...session('acct-a', 's2'), apiUrl: `${SERVER}/new-jmap` };
+    await client.getEmail('m-trigger'); // a response naming a new session state: the client revalidates
+    await settle();
+    expect(client.getAccountId()).toBe('acct-a');
+    expect(client.getSessionSnapshot?.()?.apiUrl).toBe(`${SERVER}/new-jmap`);
+    releaseHover(keptCopy('m-hover'));
+    await settle();
+    expect((await client.getEmail('m-hover'))?.subject).toBe('Invented');
+  });
+});
+
+describe('client insertion APIs across a session replacement (same account ID, new API URL)', { timeout: 30_000 }, () => {
+  it('a copy looked up before the replacement is not primed after it (the running app\'s deep link)', async () => {
+    writeCachedSession(account.id, SERVER, account.username, session('acct-a'));
+    copies.take.mockResolvedValue(null);
+    await useAuthStore.getState().checkAuth();
+    await settle();
+    const client = useAuthStore.getState().client!;
+    const capturedAccount = client.getAccountId();
+    const capturedGeneration = client.getSessionGeneration?.();
+    const copy = keptCopy('m-prime');
+    serverSession = { ...session('acct-a', 's2'), apiUrl: `${SERVER}/new-jmap` };
+    expect(await (client as unknown as { revalidateSession: () => Promise<string> }).revalidateSession()).toBe('replaced');
+    client.primeEmail?.(copy as never, capturedAccount, { generation: capturedGeneration });
+    expect((await client.getEmail('m-prime'))?.subject).toBe('Invented');
+  });
+  it('an already primed entry is not reused after an API replacement', async () => {
+    writeCachedSession(account.id, SERVER, account.username, session('acct-a'));
+    copies.take.mockResolvedValue(null);
+    await useAuthStore.getState().checkAuth();
+    await settle();
+    const client = useAuthStore.getState().client!;
+    await client.prefetchEmail?.('m-existing', keptCopy('m-existing') as never, { keptAccountId: client.getAccountId(), keptGeneration: client.getSessionGeneration?.() });
+    expect(calls.filter((c) => c.what.includes('m-existing')), 'primed, not fetched').toHaveLength(0);
+    serverSession = { ...session('acct-a', 's2'), apiUrl: `${SERVER}/new-jmap` };
+    expect(await (client as unknown as { revalidateSession: () => Promise<string> }).revalidateSession()).toBe('replaced');
+    expect((await client.getEmail('m-existing'))?.subject).toBe('Invented');
   });
 });

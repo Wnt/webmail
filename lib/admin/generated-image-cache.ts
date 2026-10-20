@@ -12,17 +12,20 @@
 //  - a failed render is not retried for FAILURE_BACKOFF_MS;
 //  - a render is kept TTL_MS at most, MAX_ENTRIES entries in all, and the key
 //    carries the source's revision (a local file's size and modification
-//    time), so a re-upload under the same URL renders again at once.
+//    time), so a re-upload under the same URL renders again at once;
+//  - sources are read with a byte cap (lib/admin/branding-asset.ts) and decoded
+//    with a pixel cap (SOURCE_PIXEL_LIMIT).
 
 import { stat } from 'node:fs/promises';
-import path from 'node:path';
-import { getConfigDir } from '@/lib/admin/paths';
+import { localBrandingPath } from '@/lib/admin/branding-asset';
 
 export const TTL_MS = 60 * 60 * 1000;
 export const FAILURE_BACKOFF_MS = 30 * 1000;
 export const MAX_ENTRIES = 64;
 export const MAX_RENDERS = 2;
 export const MAX_WAITING = 16;
+/** sharp's limitInputPixels for branding sources (sharp's own default is ~268 Mpx). */
+export const SOURCE_PIXEL_LIMIT = 40_000_000;
 
 export class ImageOverloadError extends Error {
   constructor() { super('Too many image renders at once'); }
@@ -41,13 +44,14 @@ const waiting: (() => void)[] = [];
 async function acquire(): Promise<void> {
   if (running < MAX_RENDERS) { running++; return; }
   if (waiting.length >= MAX_WAITING) throw new ImageOverloadError();
+  // The permit is handed over by release(), already counted in `running`.
   await new Promise<void>((resolve) => waiting.push(resolve));
-  running++;
 }
 
 function release(): void {
-  running--;
-  waiting.shift()?.();
+  const next = waiting.shift();
+  if (next) next(); // the permit passes straight to the next waiter: no gap for a newcomer
+  else running--;
 }
 
 function remember(key: string, entry: Entry): void {
@@ -95,9 +99,8 @@ export function cachedImage(key: string, render: () => Promise<Blob>, now: () =>
  */
 export async function brandingSourceRevision(url: string): Promise<string> {
   if (url.startsWith('http://') || url.startsWith('https://')) return '';
-  const file = url.startsWith('/api/admin/branding/')
-    ? path.join(getConfigDir(), 'branding', path.basename(url.slice('/api/admin/branding/'.length)))
-    : path.join(process.cwd(), 'public', url.replace(/^\//, ''));
+  const file = localBrandingPath(url);
+  if (!file) return '';
   try {
     const s = await stat(file);
     return `${s.size}:${s.mtimeMs}`;

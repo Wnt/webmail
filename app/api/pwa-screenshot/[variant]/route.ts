@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import sharp from 'sharp';
 import { configManager } from '@/lib/admin/config-manager';
 import { fetchBrandingAsset } from '@/lib/admin/branding-asset';
-import { brandingSourceRevision, cachedImage, imageErrorStatus } from '@/lib/admin/generated-image-cache';
+import { brandingSourceRevision, cachedImage, imageErrorStatus, SOURCE_PIXEL_LIMIT } from '@/lib/admin/generated-image-cache';
 import {
   matchDomainBranding,
   parseDomainBranding,
@@ -62,7 +62,7 @@ export async function GET(
       // 'cover' fills the target box without letterboxing - screenshots benefit
       // more from cropping than from a transparent frame around them. Users get
       // a hint about the recommended aspect ratio in the admin UI.
-      const resized = await sharp(sourceBuffer)
+      const resized = await sharp(sourceBuffer, { limitInputPixels: SOURCE_PIXEL_LIMIT })
         .resize(width, height, { fit: 'cover', position: 'center' })
         .png()
         .toBuffer();

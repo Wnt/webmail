@@ -1070,9 +1070,11 @@ async function prefetchStartMessage(client: IJMAPClient, slot: number | undefine
   // The account each lookup is for: the client takes the copy only if that is still its account.
   const fromEarly = early?.id === link.id && !!early.kept;
   const keptAccountId = fromEarly ? early!.accountId : client.getAccountId();
+  // The session this lookup belongs to: the one adopted or connected just now.
+  const keptGeneration = client.getSessionGeneration?.();
   const lookup = fromEarly ? early!.kept! : takePrefetchedEmail(keptAccountId!, link.id);
   const kept = await withinMs(lookup.catch(() => null), KEPT_COPY_WAIT_MS, null);
-  client.prefetchEmail(link.id, kept, { keptAccountId });
+  client.prefetchEmail(link.id, kept, { keptAccountId, keptGeneration });
 }
 
 function initializeFeatureStores(client: IJMAPClient): void {

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import sharp from 'sharp';
 import { configManager } from '@/lib/admin/config-manager';
 import { fetchBrandingAsset } from '@/lib/admin/branding-asset';
-import { brandingSourceRevision, cachedImage, imageErrorStatus } from '@/lib/admin/generated-image-cache';
+import { brandingSourceRevision, cachedImage, imageErrorStatus, SOURCE_PIXEL_LIMIT } from '@/lib/admin/generated-image-cache';
 import {
   matchDomainBranding,
   parseDomainBranding,
@@ -54,7 +54,7 @@ export async function GET(
   try {
     const blob = await cachedImage(cacheKey, async () => {
       const sourceBuffer = await fetchBrandingAsset(iconUrl, 'PWA icon');
-      const resized = await sharp(sourceBuffer)
+      const resized = await sharp(sourceBuffer, { limitInputPixels: SOURCE_PIXEL_LIMIT })
         .resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
         .png()
         .toBuffer();

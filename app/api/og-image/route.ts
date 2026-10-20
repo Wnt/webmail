@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import sharp from 'sharp';
 import { configManager } from '@/lib/admin/config-manager';
 import { fetchBrandingAsset } from '@/lib/admin/branding-asset';
-import { brandingSourceRevision, cachedImage, imageErrorStatus } from '@/lib/admin/generated-image-cache';
+import { brandingSourceRevision, cachedImage, imageErrorStatus, SOURCE_PIXEL_LIMIT } from '@/lib/admin/generated-image-cache';
 import {
   matchDomainBranding,
   parseDomainBranding,
@@ -109,7 +109,7 @@ export async function GET(req: NextRequest) {
       // transparency, so compositing it centre-gravity keeps the original aspect
       // ratio without any arithmetic on the intrinsic size. withoutEnlargement is
       // off deliberately: a small favicon should still fill the card.
-      const logo = await sharp(sourceBuffer)
+      const logo = await sharp(sourceBuffer, { limitInputPixels: SOURCE_PIXEL_LIMIT })
         .resize(CONTENT_WIDTH, CONTENT_HEIGHT, {
           fit: 'contain',
           background: { r: 0, g: 0, b: 0, alpha: 0 },

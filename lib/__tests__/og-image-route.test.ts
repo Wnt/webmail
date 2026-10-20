@@ -14,7 +14,7 @@ vi.mock('@/lib/admin/config-manager', () => ({
     getAllWithSources: vi.fn(),
   },
 }));
-vi.mock('@/lib/admin/branding-asset', () => ({ fetchBrandingAsset: vi.fn() }));
+vi.mock('@/lib/admin/branding-asset', () => ({ fetchBrandingAsset: vi.fn(), localBrandingPath: () => null }));
 
 import { GET } from '@/app/api/og-image/route';
 import { configManager } from '@/lib/admin/config-manager';
