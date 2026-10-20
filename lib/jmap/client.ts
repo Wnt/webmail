@@ -360,16 +360,23 @@ const THREAD_FETCH_REUSE_MS = 5_000;
 // Email/get - only for the open that primed it.
 const PRIMED_EMAIL_MAX_AGE_MS = 60_000;
 /**
- * Fork (Wnt/webmail): the session's mail account - its primary one, else its
- * first - and only an account the session itself lists (an own property of
- * `accounts`, not an inherited name); '' when there is none.
+ * Fork (Wnt/webmail): the session's mail account, and only one the session
+ * itself lists (an own property of `accounts`, not an inherited name): the
+ * account the server names as its primary mail account, else the first
+ * listed account that advertises mail (`accountCapabilities`); '' when there
+ * is none - a session without a mail account (review swipe-preload r7 R7-A).
  */
 function mailAccountOf(session: { accounts?: Record<string, unknown> | null; primaryAccounts?: Record<string, string> | null }): string {
+  const MAIL = "urn:ietf:params:jmap:mail";
   const accounts = session.accounts && typeof session.accounts === 'object' ? session.accounts : {};
   const listed = (id: unknown): id is string => typeof id === 'string' && !!id && Object.prototype.hasOwnProperty.call(accounts, id);
-  const primary = session.primaryAccounts?.["urn:ietf:params:jmap:mail"];
+  const primary = session.primaryAccounts?.[MAIL];
   if (listed(primary)) return primary;
-  return Object.keys(accounts).find(listed) ?? '';
+  const hasMail = (id: string) => {
+    const caps = (accounts[id] as { accountCapabilities?: Record<string, unknown> } | null)?.accountCapabilities;
+    return !!caps && typeof caps === 'object' && Object.prototype.hasOwnProperty.call(caps, MAIL);
+  };
+  return Object.keys(accounts).find((id) => listed(id) && hasMail(id)) ?? '';
 }
 
 /** Fork (Wnt/webmail): at most this many messages wait in primedEmails (each holds a whole message). */
