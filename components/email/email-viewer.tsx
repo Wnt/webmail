@@ -8,7 +8,8 @@ import { emailExportFilename, attachmentDownloadFilename, attachmentsBundleFilen
 import { EML_IMPORT_ACCEPT, expandImportableEmails } from "@/lib/eml-import";
 import { applyEmailLinkPolicy, emailIframeCsp, escapeHtml, isInPlaceLinkHref, openableLinkHref, plainTextToSafeHtml, sanitizeEmailBodyForIframe, sanitizeEmailHtml, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
 import { getRenderableHtmlBody } from "@/lib/email-body-selection";
-import { cachedEmailContent, emailContentCacheKey, prepareEmailHtml, shouldBlockExternalFor } from "@/lib/email-content-cache";
+import { cachedEmailContent, emailContentCacheKey, prepareEmailHtml, showsBlockedContentBanner, type EmailHtmlContent } from "@/lib/email-content-cache";
+import { useBlockExternal } from "@/hooks/use-external-content";
 import { collectReferencedCids, isEmbeddedInBody } from "@/lib/attachment-visibility";
 import { collapsePlainTextQuotes, setupQuoteCollapse } from "@/lib/quote-collapse";
 import { applyEmailDarkMode, emailColorScheme, emailHasNativeDarkMode as htmlHasNativeDarkMode } from "@/lib/email-dark-mode";
@@ -831,9 +832,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   mailAttachmentActionRef.current = mailAttachmentAction;
   const attachmentPosition = useSettingsStore((state) => state.attachmentPosition);
   const addTrustedSender = useSettingsStore((state) => state.addTrustedSender);
-  const isSenderTrusted = useSettingsStore((state) => state.isSenderTrusted);
   const trustedSendersAddressBook = useSettingsStore((state) => state.trustedSendersAddressBook);
-  const isTrustedAddressBookSender = useContactStore((state) => state.isTrustedAddressBookSender);
   const addToTrustedSendersBook = useContactStore((state) => state.addToTrustedSendersBook);
   const emailKeywords = useSettingsStore((state) => state.emailKeywords);
   const { sortTagIds, tagColor } = useKeywordFormat();
@@ -1013,7 +1012,6 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   const setAllowExternalContent = useCallback((allow: boolean) => {
     setExternalAllowedFor(allow ? messageKeyRef.current : null);
   }, []);
-  const [hasBlockedContent, setHasBlockedContent] = useState(false);
   // Fork (Wnt/webmail): the inline images' blob URLs belong to one message.
   // Tagged with its id, so the first render of the next message (before the
   // effect below runs again) neither uses the last message's URLs - revoked
@@ -1468,7 +1466,6 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     // 'allow' = always allow, 'block' = always block, 'ask' = user decides per email
     // (allowExternalContent is derived from the policy and this message's id).
     setExternalAllowedFor(null);
-    setHasBlockedContent(false);
     setQuickReplyText("");
     setIsQuickReplyFocused(false);
     setShowSourceModal(false);
@@ -1946,22 +1943,9 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // preference is enforced no matter which one produces the HTML (#797).
   //   'allow' = never block, 'block' = always block (unless trusted),
   //   'ask'   = block until the user allows this message or trusts the sender.
-  const shouldBlockExternal = useMemo(() => {
-    if (!email) return false;
-    // Fork (Wnt/webmail): shared with the sanitizing ahead of an open
-    // (lib/email-content-cache.ts), so both decide alike.
-    return shouldBlockExternalFor(email, {
-      externalContentPolicy,
-      allowExternalContent,
-      isSenderTrusted,
-      trustedSendersAddressBook,
-      isTrustedAddressBookSender,
-    });
-    // Trust selectors are read inside and re-read whenever the message or the
-    // permission changes, so they're deliberately omitted from deps (matches
-    // the srcDoc rebuild contract described on `emailContent`).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [email, externalContentPolicy, allowExternalContent]);
+  // Fork (Wnt/webmail): the same decision as the swipe's neighbour panes
+  // (hooks/use-external-content.ts), made again when the trust lists change.
+  const shouldBlockExternal = useBlockExternal(email, allowExternalContent);
 
   // Sanitize and prepare email HTML content.
   // Fork (Wnt/webmail): keyed on the parts of the message the body is made
@@ -1969,13 +1953,15 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   // replaces the object, which re-ran the whole sanitize pass right after the
   // open. The sanitized result is also kept for the last few messages, so a
   // repeat open skips the pass (EMAIL_CONTENT_CACHE).
-  const emailContent = useMemo(() => {
-    if (!email) return { html: "", isHtml: false, hasStyleTag: false, externalBlocked: false };
+  // Fork (Wnt/webmail): with whether anything was blocked in it, derived
+  // here rather than set as state during render (a reset effect after the
+  // commit could clear that flag for good: the banner then vanished while the
+  // pictures stayed blocked).
+  const emailContentResult = useMemo((): { content: EmailHtmlContent; blocked: boolean } => {
+    const plain = (content: EmailHtmlContent) => ({ content, blocked: false });
+    if (!email) return plain({ html: "", isHtml: false, hasStyleTag: false, externalBlocked: false });
     const cached = cachedEmailContent(emailContentCacheKey(email, shouldBlockExternal, cidBlobUrls), email);
-    if (cached) {
-      if (cached.blockedExternalContent && !hasBlockedContent) setHasBlockedContent(true);
-      return cached.content;
-    }
+    if (cached) return { content: cached.content, blocked: cached.blockedExternalContent };
 
     // Check if we have body values
     if (email.bodyValues) {
@@ -1983,19 +1969,13 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
       // Sanitized (cid: references resolved, the external-content policy
       // applied) and cached by lib/email-content-cache.ts.
       const prepared = prepareEmailHtml(email, shouldBlockExternal, cidBlobUrls);
-      if (prepared) {
-        // Update blocked content state
-        if (prepared.blockedExternalContent && !hasBlockedContent) {
-          setHasBlockedContent(true);
-        }
-        return prepared.content;
-      }
+      if (prepared) return { content: prepared.content, blocked: prepared.blockedExternalContent };
 
       // Use text content if available (either as fallback or when HTML is minimal)
       if (email.textBody?.[0]?.partId && email.bodyValues[email.textBody[0].partId]) {
         const textContent = email.bodyValues[email.textBody[0].partId].value;
 
-        return {
+        return plain({
           // Trailing ">"-quoted block collapses behind a <details> toggle (#480).
           html: collapsePlainTextQuotes(plainTextToSafeHtml(textContent), {
             show: t('show_quoted_text'),
@@ -2004,7 +1984,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
           isHtml: false,
           hasStyleTag: false,
           externalBlocked: false,
-        };
+        });
       }
     }
 
@@ -2015,20 +1995,20 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
 
-      return {
+      return plain({
         html: `<div style="color: var(--color-muted-foreground); font-style: italic;">${previewHtml}</div>`,
         isHtml: false,
         hasStyleTag: false,
         externalBlocked: false,
-      };
+      });
     }
 
-    return {
+    return plain({
       html: `<p style="color: var(--color-muted-foreground); font-style: italic;">${t('no_body_content')}</p>`,
       isHtml: false,
       hasStyleTag: false,
       externalBlocked: false,
-    };
+    });
     // Recompute when permission changes so the srcDoc rebuilds with the
     // unblocked content AND the permissive CSP. The strict blocking-mode CSP
     // can't be relaxed in place (a document's CSP is fixed at load), so the
@@ -2039,12 +2019,13 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
   }, [email?.id, email?.bodyValues, email?.htmlBody, email?.textBody, email?.attachments, email?.preview, shouldBlockExternal, cidBlobUrls, t]);
 
   // Override email content with S/MIME decrypted content when available
-  const effectiveEmailContent = useMemo(() => {
+  const effectiveContentResult = useMemo((): { content: EmailHtmlContent; blocked: boolean } => {
     const plainToHtml = (text: string) =>
       collapsePlainTextQuotes(plainTextToSafeHtml(text), {
         show: t('show_quoted_text'),
         hide: t('hide_quoted_text'),
       });
+    const plain = (text: string) => ({ content: { html: plainToHtml(text), isHtml: false, hasStyleTag: false, externalBlocked: false }, blocked: false });
     // Bodies that bypass `emailContent` (plugin-decrypted, TNEF, unwrapped
     // message/rfc822) are still email content the user never asked to trust, so
     // they get the same external-resource treatment - blocking walk, blocked
@@ -2052,14 +2033,14 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
     const renderHtml = (html: string) => {
       const { html: cleanHtml, blockedExternalContent } =
         sanitizeEmailBodyForIframe(html, shouldBlockExternal);
-      if (blockedExternalContent && !hasBlockedContent) {
-        setHasBlockedContent(true);
-      }
       return {
-        html: cleanHtml,
-        isHtml: true,
-        hasStyleTag: /<style[\s>]/i.test(html),
-        externalBlocked: shouldBlockExternal,
+        content: {
+          html: cleanHtml,
+          isHtml: true,
+          hasStyleTag: /<style[\s>]/i.test(html),
+          externalBlocked: shouldBlockExternal,
+        },
+        blocked: blockedExternalContent,
       };
     };
     if (pluginRenderedHtml) {
@@ -2071,28 +2052,18 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
       );
       return renderHtml(htmlWithCidUrls);
     }
-    if (pluginRenderedText) {
-      return { html: plainToHtml(pluginRenderedText), isHtml: false, hasStyleTag: false, externalBlocked: false };
-    }
+    if (pluginRenderedText) return plain(pluginRenderedText);
     // TNEF (winmail.dat) extracted content
-    if (tnefHtml) {
-      return renderHtml(tnefHtml);
-    }
-    if (tnefText) {
-      return { html: plainToHtml(tnefText), isHtml: false, hasStyleTag: false, externalBlocked: false };
-    }
+    if (tnefHtml) return renderHtml(tnefHtml);
+    if (tnefText) return plain(tnefText);
     // Embedded message/rfc822 unwrapped content
-    if (embeddedEmailHtml) {
-      return renderHtml(embeddedEmailHtml);
-    }
-    if (embeddedEmailText) {
-      return { html: plainToHtml(embeddedEmailText), isHtml: false, hasStyleTag: false, externalBlocked: false };
-    }
-    return emailContent;
-    // `hasBlockedContent` is only read to avoid a redundant setState; including
-    // it would re-run the whole sanitize pass the moment the banner appears.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cidBlobUrls, emailContent, shouldBlockExternal, pluginRenderedHtml, pluginRenderedText, tnefHtml, tnefText, embeddedEmailHtml, embeddedEmailText, t]);
+    if (embeddedEmailHtml) return renderHtml(embeddedEmailHtml);
+    if (embeddedEmailText) return plain(embeddedEmailText);
+    return emailContentResult;
+  }, [cidBlobUrls, emailContentResult, shouldBlockExternal, pluginRenderedHtml, pluginRenderedText, tnefHtml, tnefText, embeddedEmailHtml, embeddedEmailText, t]);
+  const effectiveEmailContent = effectiveContentResult.content;
+  // Something in the body shown was blocked (the banner's "Load images").
+  const hasBlockedContent = effectiveContentResult.blocked;
 
   const resolveAttachmentName = useCallback(
     (attachment: EffectiveAttachment) => {
@@ -5038,7 +5009,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
 
         {/* Unified Notification Banner - External Content + Calendar Invitation + Read Receipt */}
         {(senderVerification ||
-          (hasBlockedContent && !allowExternalContent) ||
+          showsBlockedContentBanner({ blockedExternalContent: hasBlockedContent, allowExternalContent, externalContentPolicy }) ||
           hasCalendarInvitation ||
           (readReceiptResponse === 'ask' && shouldOfferReadReceipt)) && (
           <div className="border-b border-border bg-muted/30 isolate">
@@ -5068,7 +5039,7 @@ const EmailViewerMemo = memo(function EmailViewerImpl({
                 )}
 
                 {/* External Content Controls */}
-                {hasBlockedContent && !allowExternalContent && (
+                {showsBlockedContentBanner({ blockedExternalContent: hasBlockedContent, allowExternalContent, externalContentPolicy }) && (
                   <div className="flex items-start gap-3 py-1">
                     <div className="w-10 h-10 rounded-full bg-info/15 text-info flex items-center justify-center flex-shrink-0 shadow-sm">
                       <Image className="w-5 h-5" />

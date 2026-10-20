@@ -8,11 +8,11 @@ import { Avatar } from "@/components/ui/avatar";
 import { cn, formatDate, formatDateTime, formatFileSize } from "@/lib/utils";
 import { emailDisplayDate } from "@/lib/email-date";
 import { useSettingsStore } from "@/stores/settings-store";
-import { useContactStore } from "@/stores/contact-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useThemeStore } from "@/stores/theme-store";
 import { applyEmailLinkPolicy, plainTextToSafeHtml, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
-import { cachedEmailContent, emailContentCacheKey, prepareEmailHtml, shouldBlockExternalFor } from "@/lib/email-content-cache";
+import { cachedEmailContent, emailContentCacheKey, prepareEmailHtml, showsBlockedContentBanner } from "@/lib/email-content-cache";
+import { useBlockExternal } from "@/hooks/use-external-content";
 import { collapsePlainTextQuotes, setupQuoteCollapse } from "@/lib/quote-collapse";
 import { applyEmailDarkMode, emailColorScheme, emailHasNativeDarkMode } from "@/lib/email-dark-mode";
 import { buildEmailFrameSrcDoc, type EmailFrameContent } from "@/lib/email-frame-doc";
@@ -86,9 +86,6 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
   const kind = email ? peekKind(email) : "lite";
 
   const externalContentPolicy = useSettingsStore((s) => s.externalContentPolicy);
-  const isSenderTrusted = useSettingsStore((s) => s.isSenderTrusted);
-  const trustedSendersAddressBook = useSettingsStore((s) => s.trustedSendersAddressBook);
-  const isTrustedAddressBookSender = useContactStore((s) => s.isTrustedAddressBookSender);
   const messageSpacing = useSettingsStore((s) => s.messageSpacing);
   const plainTextFont = useSettingsStore((s) => s.plainTextFont);
   const toolbarPosition = useSettingsStore((s) => s.toolbarPosition);
@@ -104,14 +101,10 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
   const { variant: tagVariant } = useMeasuredTagDisplay(tagsRef);
   const mvMobileViewer = interfaceLayout === "mountain-view";
 
-  // The body, as the reading pane prepares it when it opens the message.
-  const blockExternal = useMemo(() => !!email && shouldBlockExternalFor(email, {
-    externalContentPolicy,
-    allowExternalContent: false,
-    isSenderTrusted,
-    trustedSendersAddressBook,
-    isTrustedAddressBookSender,
-  }), [email, externalContentPolicy, isSenderTrusted, trustedSendersAddressBook, isTrustedAddressBookSender]);
+  // The body, as the reading pane prepares it when it opens the message: the
+  // same blocking decision (hooks/use-external-content.ts), made again when
+  // the trust lists change (a trusted-senders address book that loads later).
+  const blockExternal = useBlockExternal(email, false);
   // The main-thread cost of preparing it, for the open-speed beacon.
   const timed = <T,>(fn: () => T): T => {
     const t0 = performance.now();
@@ -178,6 +171,11 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
       .filter((a) => a.type !== "message/disposition-notification" && a.type !== "message/delivery-status");
   }, [email, kind, calendarInvitationParsingEnabled, hideInlineImageAttachments]);
 
+  // The reading pane's banner rule (lib/email-content-cache.ts), for this
+  // message as it opens (no "Load images" pressed for it yet).
+  const showBanner = showsBlockedContentBanner({
+    blockedExternalContent: !!prepared?.blockedExternalContent, allowExternalContent: false, externalContentPolicy,
+  });
   const tagIds = sortTagIds(getEmailTagIds(shown.keywords));
   const isImportant = shown.keywords?.["$important"];
   const isStarred = shown.keywords?.$flagged;
@@ -355,7 +353,7 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
             </div>
           </div>
 
-          {(senderVerification || (prepared?.blockedExternalContent && externalContentPolicy !== "allow")) && (
+          {(senderVerification || showBanner) && (
             <div className="border-b border-border bg-muted/30 isolate">
               <div className="px-6 py-1.5">
                 <div className="flex flex-col gap-3 isolate">
@@ -384,7 +382,7 @@ export const SwipePeek = memo(function SwipePeek({ neighbour, isDark, currentUse
                       </div>
                     </div>
                   )}
-                  {prepared?.blockedExternalContent && externalContentPolicy !== "allow" && (
+                  {showBanner && (
                     <div className="flex items-start gap-3 py-1">
                       <div className="w-10 h-10 rounded-full bg-info/15 text-info flex items-center justify-center flex-shrink-0 shadow-sm">
                         <Image className="w-5 h-5" />

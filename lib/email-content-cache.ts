@@ -151,6 +151,20 @@ export function shouldBlockExternalFor(
   );
 }
 
+/**
+ * Whether the reading view shows its "Images and external content have been
+ * blocked" banner: something was actually blocked in the prepared body, the
+ * user has not allowed this message's external content, and the policy is not
+ * "allow". One rule for the reading pane and the swipe's neighbour panes.
+ */
+export function showsBlockedContentBanner(opts: {
+  blockedExternalContent: boolean;
+  allowExternalContent: boolean;
+  externalContentPolicy: string;
+}): boolean {
+  return opts.blockedExternalContent && !opts.allowExternalContent && opts.externalContentPolicy !== 'allow';
+}
+
 function hasTruncatedShownBody(email: Email): boolean {
   const values = email.bodyValues;
   if (!values) return false;
