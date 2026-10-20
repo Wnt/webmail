@@ -633,6 +633,76 @@ type StoreSet = (partial: Partial<EmailStore> | ((state: EmailStore) => Partial<
  * reading the top unread mail over and over ran out of unread mail after the
  * first page while more waited on the server.
  */
+/**
+ * Fork (Wnt/webmail): read states the server confirmed for a message that was
+ * not in the loaded list when it was marked (see markAsRead), by id. A list
+ * page fetched before that write landed can still show it unread; the first
+ * list that holds the message after the write takes the confirmed state
+ * (the subscription at the end of this file), for READ_OUTSIDE_LIST_HOLD_MS.
+ */
+const READ_OUTSIDE_LIST_HOLD_MS = 20_000;
+// `owner`: the login the message belongs to; `epoch`: the stores' account
+// epoch at the write (ids are only unique within an account).
+const confirmedReadOutsideList = new Map<string, { read: boolean; until: number; owner: string | null; epoch: number }>();
+
+/**
+ * Fork (Wnt/webmail): after the server confirmed a read state for the open
+ * message while the loaded list did not hold it: the open copy and any row
+ * that has landed since take it, and the counters come from the server again
+ * (a folder list fetched alongside the write may predate it, so a local -1
+ * could count it twice or not at all).
+ */
+function settleReadOutsideList(
+  get: StoreGet,
+  set: StoreSet,
+  client: IJMAPClient,
+  email: Email,
+  read: boolean,
+  processingKey: string,
+): void {
+  const emailId = email.id;
+  const withSeen = (e: Email): Email => ({ ...e, keywords: { ...e.keywords, $seen: read } });
+  set((state) => {
+    const processingReadStatus = new Set(state.processingReadStatus);
+    processingReadStatus.delete(processingKey);
+    const idx = state.emails.findIndex((e) => e.id === emailId);
+    let threadEmailsCache = state.threadEmailsCache;
+    for (const [tid, cached] of state.threadEmailsCache) {
+      const at = cached.findIndex((e) => e.id === emailId);
+      if (at === -1) continue;
+      threadEmailsCache = new Map(state.threadEmailsCache);
+      threadEmailsCache.set(tid, cached.map((e, i) => (i === at ? withSeen(e) : e)));
+      break;
+    }
+    return {
+      processingReadStatus,
+      selectedEmail: state.selectedEmail?.id === emailId ? withSeen(state.selectedEmail) : state.selectedEmail,
+      emails: idx === -1 || (state.emails[idx].keywords?.$seen ?? false) === read
+        ? state.emails
+        : state.emails.map((e, i) => (i === idx ? withSeen(e) : e)),
+      threadEmailsCache,
+    };
+  });
+  const activeId = useAuthStore.getState().activeAccountId;
+  confirmedReadOutsideList.set(emailId, {
+    read,
+    until: Date.now() + READ_OUTSIDE_LIST_HOLD_MS,
+    owner: email.sourceClientAccountId ?? activeId,
+    epoch: currentStoreEpoch(),
+  });
+
+  // The counters (folders, the Inbox badge, tags) of the active login's
+  // folders: fetched again if they are loaded or on their way (a run in
+  // flight queues one more); not yet asked for, the start's own fetch comes
+  // after the write.
+  if (email.sourceClientAccountId && email.sourceClientAccountId !== activeId) return;
+  const s = get();
+  const inFlight = inFlightRefreshes.get(client);
+  if (s.mailboxes.length > 0 || inFlight?.has('mailboxes')) void s.fetchMailboxes(client);
+  const tagged = Object.keys(email.keywords ?? {}).some((k) => k.startsWith('$label:'));
+  if (tagged && (Object.keys(s.tagCounts).length > 0 || inFlight?.has('tagCounts'))) void s.fetchTagCounts(client);
+}
+
 function refillAfterKeywordChange(get: StoreGet, client: IJMAPClient, changed: Iterable<string>): void {
   const s = get();
   if (s.isUnifiedView || s.isScheduledView || s.selectedKeyword || s.searchQuery || !isFilterEmpty(s.searchFilters)) return;
@@ -2847,7 +2917,16 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       }
 
       // Get the email to check its current state and mailboxes
-      const email = get().emails.find(e => e.id === emailId);
+      const listEmail = get().emails.find(e => e.id === emailId);
+      // Fork (Wnt/webmail): the message on screen may not be in the loaded
+      // list. A notification tap opens its message before the folder list and
+      // the Inbox page are fetched (a cold start loads them once the body is
+      // on screen), or while the list still lacks a message that came in with
+      // the app in the background - and the read mark, also sent once the
+      // body is on screen, was dropped here: the message stayed unread.
+      // Only the open message qualifies, never a kept or prepared copy.
+      const selected = get().selectedEmail;
+      const email = listEmail ?? (selected?.id === emailId ? selected : undefined);
       if (!email) return;
 
       // Check if already in the desired state
@@ -2866,6 +2945,11 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       const { client: actionClient, accountId } = resolveEmailActionContext(email, client);
 
       await actionClient.markAsRead(emailId, read, accountId);
+
+      if (!listEmail) {
+        settleReadOutsideList(get, set, client, email, read, processingKey);
+        return;
+      }
 
       // Update local state including mailbox counters
       set((state) => {
@@ -6073,6 +6157,29 @@ useEmailStore.subscribe((state, prev) => {
     });
   if (sameCross && sameUnified) return;
   useEmailStore.setState(projected);
+});
+
+// Fork (Wnt/webmail): a message marked while the loaded list did not hold it
+// (confirmedReadOutsideList): the first list that holds it afterwards shows
+// the state the server confirmed, even when that page was fetched before the
+// write landed. Later lists are the server's again.
+useEmailStore.subscribe((state, prev) => {
+  if (confirmedReadOutsideList.size === 0 || state.emails === prev.emails) return;
+  const now = Date.now();
+  const epoch = currentStoreEpoch();
+  const login = useAuthStore.getState().activeAccountId;
+  let emails: Email[] | null = null;
+  for (const [id, confirmed] of confirmedReadOutsideList) {
+    if (confirmed.until < now || confirmed.epoch !== epoch) { confirmedReadOutsideList.delete(id); continue; }
+    const idx = state.emails.findIndex((e) => e.id === id && (e.sourceClientAccountId ?? login) === confirmed.owner);
+    if (idx === -1) continue;
+    confirmedReadOutsideList.delete(id);
+    const row = (emails ?? state.emails)[idx];
+    if ((row.keywords?.$seen ?? false) === confirmed.read) continue;
+    emails ??= [...state.emails];
+    emails[idx] = { ...row, keywords: { ...row.keywords, $seen: confirmed.read } };
+  }
+  if (emails) useEmailStore.setState({ emails });
 });
 
 // Opening a message holds its list row (see listHold), however it was opened:
