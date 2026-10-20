@@ -16,6 +16,7 @@ import type { Email } from "@/lib/jmap/types";
 import type { IJMAPClient } from "@/lib/jmap/client-interface";
 import { buildReplySubject, buildForwardSubject } from "@/lib/subject-prefix";
 import { getQuoteBodies } from "@/lib/email-composer-utils";
+import { senderTrustFor } from "@/lib/email-content-cache";
 import { buildForwardAsAttachmentPayload } from "@/lib/forward-as-attachment";
 import { KEYWORD_PREFIX, KEYWORD_PREFIX_LEGACY } from "@/lib/thread-utils";
 import { cn } from "@/lib/utils";
@@ -68,6 +69,7 @@ function buildReplyContext(email: Email): ProReplyContext {
     references: email.references,
     // The quote decides remote images as the reading pane does (fork).
     authenticationResults: email.authenticationResults,
+    senderTrust: senderTrustFor(email),
   };
 }
 

@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import type { Email } from "@/lib/jmap/types";
 import { senderTrustFor, shouldBlockExternalFor } from "@/lib/email-content-cache";
+import type { SenderTrustCheck } from "@/lib/email-headers";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useContactStore } from "@/stores/contact-store";
 
@@ -22,7 +23,7 @@ import { useContactStore } from "@/stores/contact-store";
  * blocked" while the reading pane, deciding later, loaded its pictures).
  */
 export function useBlockExternal(
-  email: (Pick<Email, "from"> & Partial<Pick<Email, "authenticationResults" | "headers">>) | null | undefined,
+  email: (Pick<Email, "from"> & Partial<Pick<Email, "authenticationResults" | "headers">> & { senderTrust?: SenderTrustCheck }) | null | undefined,
   allowExternalContent: boolean,
 ): boolean {
   const externalContentPolicy = useSettingsStore((s) => s.externalContentPolicy);
@@ -34,7 +35,7 @@ export function useBlockExternal(
   // sender it does not back gets no automatic trust (shouldBlockExternalFor).
   const senderCheck = useMemo(() => (email ? senderTrustFor(email) : ""),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [email?.authenticationResults, email?.headers, sender]);
+    [email?.senderTrust, email?.authenticationResults, email?.headers, sender]);
   return useMemo(() => {
     if (!email) return false;
     return shouldBlockExternalFor(email, {

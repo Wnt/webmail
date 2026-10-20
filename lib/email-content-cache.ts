@@ -132,7 +132,14 @@ export function prepareEmailHtml(email: Email, blockExternal: boolean, cidBlobUr
  * trusted-senders address book when that is on) and the policy is 'block', or
  * 'ask' before the user allowed it.
  */
-type SenderFacts = Pick<Email, 'from'> & Partial<Pick<Email, 'authenticationResults' | 'headers'>>;
+type SenderFacts = Pick<Email, 'from'> & Partial<Pick<Email, 'authenticationResults' | 'headers'>> & {
+  /**
+   * The check already made for the message (senderTrustFor), carried where
+   * the message itself is not (a reply's or forward's context): it keeps a
+   * rejected or order-unknown result from turning into "no checks".
+   */
+  senderTrust?: SenderTrustCheck;
+};
 
 /**
  * Fork (Wnt/webmail): whether the receiving server's checks let the trusted-
@@ -143,6 +150,7 @@ type SenderFacts = Pick<Email, 'from'> & Partial<Pick<Email, 'authenticationResu
  */
 export function senderTrustFor(email: SenderFacts): SenderTrustCheck {
   const from = email.from?.[0]?.email;
+  if (email.senderTrust) return email.senderTrust;
   if (email.authenticationResults) return senderTrustCheck(email.authenticationResults, from);
   const raw = authenticationResultsValues(email.headers);
   if (raw === null) return 'unauthenticated';

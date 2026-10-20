@@ -1,4 +1,4 @@
-import { act, render, fireEvent, waitFor } from '@testing-library/react';
+import { render, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { Email, Mailbox } from '@/lib/jmap/types';
 
@@ -68,7 +68,6 @@ beforeEach(() => {
 const { ThreadConversationView } = await import('../thread-conversation-view');
 const blocked = { banner: true, remoteAllowed: false, imageLive: false };
 const allowed = { banner: false, remoteAllowed: true, imageLive: true };
-const settle = async () => { await act(async () => { await Promise.resolve(); }); };
 
 
 const { shouldBlockExternalFor, prewarmEmailContent, cachedEmailContent, emailContentCacheKey } = await import('@/lib/email-content-cache');
@@ -203,4 +202,28 @@ it('no results at all (mail the server did not check): trust applies as before; 
   const reader = render(<EmailViewer email={forged} mailboxes={mailboxes} selectedMailbox="inbox" currentMailboxRole="inbox" />);
   expect(reader.queryByRole('button', {name: 'trust_sender'})).toBeNull();
   expect(reader.getByRole('button', {name: 'load_external_content'})).toBeTruthy();
+});
+
+// Owner decision 2026-10-20: passing the receiving server's checks is never
+// consent. An unknown sender whose DMARC, DKIM and SPF all pass for its own
+// domain stays blocked everywhere a message is drawn - the reading pane, the
+// swipe's neighbour pane, a conversation card, and the body prepared ahead.
+it('an unknown sender that passes every check stays blocked in the reader, the swipe pane, the card and the body prepared ahead', async () => {
+  const pass = 'receiver.test; dmarc=pass header.from=unknown-sender.test; dkim=pass header.d=unknown-sender.test; spf=pass smtp.mailfrom=unknown-sender.test';
+  const parsed = mail('authenticated-unknown', UNKNOWN);
+  parsed.authenticationResults = parseAuthenticationResults(pass);
+  const raw = mail('authenticated-unknown-raw', UNKNOWN);
+  raw.headers = [{ name: 'Authentication-Results', value: pass }] as never;
+  for (const email of [parsed, raw]) {
+    const views = both(email); const card = render(conversation(email));
+    expect(state(views.reader.container)).toEqual(blocked);
+    expect(state(views.peek.container)).toEqual(blocked);
+    expect(state(card.container).remoteAllowed).toBe(false);
+    expect(state(card.container).imageLive).toBe(false);
+    views.reader.unmount(); views.peek.unmount(); card.unmount();
+    prewarmEmailContent(email);
+    await waitFor(() => expect(cachedEmailContent(emailContentCacheKey(email, true, {}), email)?.content.externalBlocked).toBe(true));
+    expect(cachedEmailContent(emailContentCacheKey(email, false, {}), email)).toBeUndefined();
+    expect(shouldBlockExternalFor(email, { ...options, isSenderTrusted: () => false })).toBe(true);
+  }
 });

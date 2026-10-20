@@ -2809,27 +2809,22 @@ export class JMAPClient implements IJMAPClient {
     // topmost one is the receiving server's own, the rest may be forged by the
     // sender. Read them from the ordered list, by name without regard to case
     // (fork, Wnt/webmail: a receiver's `authentication-results` is still the
-    // topmost one), before the list is grouped into a record.
+    // topmost one), before the list is grouped into a record. The record keeps
+    // each spelling as it was, for the readers of other headers.
     const authResults = authenticationResultsValues(email.headers);
 
     let headersRecord: Record<string, string | string[]>;
     if (Array.isArray(email.headers)) {
       headersRecord = {};
-      // Field names are case-insensitive: one group per name, under its
-      // first spelling, so occurrences stay in message order.
-      const keyOf = new Map<string, string>();
       for (const header of email.headers as unknown as JMAPEmailHeader[]) {
         if (!header?.name || !header?.value) continue;
-        const lower = header.name.toLowerCase();
-        const name = keyOf.get(lower) ?? header.name;
-        keyOf.set(lower, name);
-        const existing = headersRecord[name];
+        const existing = headersRecord[header.name];
         if (existing) {
-          headersRecord[name] = Array.isArray(existing)
+          headersRecord[header.name] = Array.isArray(existing)
             ? [...existing, header.value]
             : [existing, header.value];
         } else {
-          headersRecord[name] = header.value;
+          headersRecord[header.name] = header.value;
         }
       }
       email.headers = headersRecord;
@@ -4076,6 +4071,14 @@ export class JMAPClient implements IJMAPClient {
 
         if (accountId && accountId !== this.accountId) {
           namespaceMailboxIds(emails, accountId);
+        }
+
+        // Fork (Wnt/webmail): the same header reading as getEmail, so a
+        // conversation's messages carry their parsed Authentication-Results
+        // (and spam/list facts) into everything that uses them - a reply's
+        // quote among them (review swipe-trust r3 R3-1).
+        for (const email of emails) {
+          if (email.headers) await this.parseEmailHeaders(email);
         }
 
         return emails.sort((a: Email, b: Email) =>

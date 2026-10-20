@@ -1079,12 +1079,10 @@ function initializeFeatureStores(client: IJMAPClient): void {
     contactStore.fetchAddressBooks(client).catch((err) => debug.error('Failed to fetch address books:', err));
     contactStore.fetchContacts(client).catch((err) => debug.error('Failed to fetch contacts:', err));
 
-    // Default trusted-sender syncing on when contacts are available, unless the
-    // user has already made an explicit choice (`null` = not yet decided).
-    const settings = useSettingsStore.getState();
-    if (settings.trustedSendersAddressBook === null) {
-      settings.updateSetting('trustedSendersAddressBook', true);
-    }
+    // Fork (Wnt/webmail): the trusted-senders book is never switched on
+    // automatically (upstream did when contacts were available): trust for
+    // remote content comes only from the user, and the book, found by its
+    // name, can be filled by anything with access to the contacts.
   } else {
     useContactStore.getState().setSupportsSync(false);
   }

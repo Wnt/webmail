@@ -116,6 +116,7 @@ import { useThemeStore } from "@/stores/theme-store";
 import { consumePendingMailto, subscribeToPendingMailto } from "@/lib/protocol-handlers/session";
 import { INTERNAL_MAILTO_EVENT, type ParsedMailto } from "@/lib/protocol-handlers/mailto";
 import { plainTextToComposerBody, getQuoteBodies } from "@/lib/email-composer-utils";
+import { senderTrustFor } from "@/lib/email-content-cache";
 import { appLifecycleHooks, uiHooks, routerHooks, toastHooks, emailHooks } from "@/lib/plugin-hooks";
 import { emailToReadView } from "@/lib/plugin-projection";
 import { buildQuoteHeader } from "@/lib/quote-header";
@@ -1223,6 +1224,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
       quoteWrapInBlockquote: composerQuoteHeader?.wrapInBlockquote,
       // The quote decides remote images as the reading pane does (fork).
       authenticationResults: selectedEmail.authenticationResults,
+      senderTrust: senderTrustFor(selectedEmail),
     } : undefined);
 
     const effectiveMode = pendingDraft?.mode ?? composerMode;
@@ -4382,6 +4384,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
           quoteWrapInBlockquote: composerQuoteHeader?.wrapInBlockquote,
           // The quote decides remote images as the reading pane does (fork).
           authenticationResults: selectedEmail.authenticationResults,
+          senderTrust: senderTrustFor(selectedEmail),
         } : undefined)}
         initialDraftText={composerDraftText}
         initialData={pendingDraft}

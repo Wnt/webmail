@@ -465,7 +465,22 @@ interface SettingsState {
   // devices. `null` means "not yet decided": resolved on first connect to
   // `true` when the server supports contacts, otherwise left off. Once the user
   // toggles it, it holds a concrete boolean and is never auto-changed again.
+  // Fork (Wnt/webmail): never resolved automatically - `null` stays off until
+  // the user turns it on in Settings (the book is found by its name, so
+  // anything with access to the contacts can fill it).
   trustedSendersAddressBook: boolean | null;
+  /**
+   * Fork (Wnt/webmail), owner decision 2026-10-20: trust for remote content
+   * comes only from the user's own "Always trust this sender" or a sender
+   * added in Settings. Trust held before that rule (the list, or the book
+   * option resolved on automatically, possibly filled by the automatic
+   * "trust every reply recipient" feature) is kept here, unused, for the user
+   * to look at: it grants nothing (settings migration v8, importSettings).
+   */
+  unconfirmedTrustedSenders: string[];
+  unconfirmedTrustedSendersAddressBook: boolean;
+  /** 'explicit': this record follows the rule above (a settings blob without it is from before it). */
+  trustModel: 'explicit';
 
   // Filters
   expandedFilterView: boolean;
@@ -727,6 +742,9 @@ const DEFAULT_SETTINGS = {
   sessionTimeout: 0, // Never
   trustedSenders: [] as string[],
   trustedSendersAddressBook: null as boolean | null,
+  unconfirmedTrustedSenders: [] as string[],
+  unconfirmedTrustedSendersAddressBook: false,
+  trustModel: 'explicit' as const,
 
   // Filters
   expandedFilterView: false,
@@ -978,6 +996,8 @@ export const useSettingsStore = create<SettingsState>()(
           swipeLeftAction: state.swipeLeftAction,
           disableThreading: state.disableThreading,
           trustedSenders: state.trustedSenders,
+          unconfirmedTrustedSenders: state.unconfirmedTrustedSenders,
+          trustModel: 'explicit',
           autoSaveDraftInterval: state.autoSaveDraftInterval,
           sendConfirmation: state.sendConfirmation,
           defaultReplyMode: state.defaultReplyMode,
@@ -1081,6 +1101,25 @@ export const useSettingsStore = create<SettingsState>()(
 
           if (typeof settings.protocolOpenMode !== 'string' && typeof settings.protocolMailtoOpenMode === 'string') {
             settings.protocolOpenMode = settings.protocolMailtoOpenMode;
+          }
+
+          // Fork (Wnt/webmail): a settings blob from before the explicit-trust
+          // rule (an older server copy or export file) grants no trust: its
+          // list and book choice are kept as unconfirmed, like migration v8.
+          if (settings.trustModel !== 'explicit') {
+            const current = get();
+            const old = Array.isArray(settings.trustedSenders)
+              ? settings.trustedSenders.filter((e: unknown): e is string => typeof e === 'string')
+              : [];
+            const merged = [...current.unconfirmedTrustedSenders, ...old.filter((e: string) => !current.unconfirmedTrustedSenders.includes(e))];
+            set({
+              unconfirmedTrustedSenders: merged,
+              unconfirmedTrustedSendersAddressBook: current.unconfirmedTrustedSendersAddressBook || settings.trustedSendersAddressBook === true,
+            });
+            delete settings.trustedSenders;
+            delete settings.trustedSendersAddressBook;
+            delete settings.unconfirmedTrustedSenders;
+            delete settings.unconfirmedTrustedSendersAddressBook;
           }
 
           // Apply settings
@@ -1412,7 +1451,7 @@ export const useSettingsStore = create<SettingsState>()(
     },
     {
       name: 'settings-storage',
-      version: 7,
+      version: 8,
       migrate: migrateSettings,
       onRehydrateStorage: () => {
         return (state) => {
@@ -1503,6 +1542,19 @@ export function migrateSettings(persisted: unknown, version: number): SettingsSt
         // already received it via main's v6 bump keep their populated map.
         if (version < 6 || !isPlainRecord(state.preferredIdentityIds)) {
           state.preferredIdentityIds = {};
+        }
+        // v8 (fork, Wnt/webmail; owner decision 2026-10-20): trust comes only
+        // from the user's own "Always trust" or Settings. The trusted senders
+        // held so far - possibly added automatically for every reply's
+        // recipients - and a trusted-senders book option that was switched on
+        // automatically are kept, unused, as unconfirmed.
+        if (version < 8) {
+          const old = Array.isArray(state.trustedSenders) ? (state.trustedSenders as unknown[]).filter((e): e is string => typeof e === 'string') : [];
+          state.unconfirmedTrustedSenders = old;
+          state.trustedSenders = [];
+          state.unconfirmedTrustedSendersAddressBook = state.trustedSendersAddressBook === true;
+          state.trustedSendersAddressBook = null;
+          state.trustModel = 'explicit';
         }
         return state as unknown as SettingsState;
 }

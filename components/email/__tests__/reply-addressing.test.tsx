@@ -111,7 +111,6 @@ vi.mock('@/stores/settings-store', () => {
     externalContentPolicy: 'ask',
     trustedSenders: [],
     isSenderTrusted: () => false,
-    trustedSendersAddressBook: false,
     timeFormat: '24h',
     plainTextMode: false,
     subAddressDelimiter: '+',

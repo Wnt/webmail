@@ -69,6 +69,7 @@ import { FilePreviewModal } from "@/components/files/file-preview-modal";
 import { FilePickerDialog } from "@/components/files/file-picker-dialog";
 import type { IJMAPClient } from "@/lib/jmap/client-interface";
 import type { AuthenticationResults, Email, FileNode } from "@/lib/jmap/types";
+import type { SenderTrustCheck } from "@/lib/email-headers";
 import { useContactStore, getContactDisplayName, getContactPrimaryEmail } from "@/stores/contact-store";
 import { useTemplateStore } from "@/stores/template-store";
 import { SubAddressHelper } from "@/components/identity/sub-address-helper";
@@ -278,6 +279,12 @@ interface EmailComposerProps {
      * parsed them, so its quote decides remote images as the reading pane does.
      */
     authenticationResults?: AuthenticationResults;
+    /**
+     * Fork (Wnt/webmail): the original's sender check as the reading pane made
+     * it (lib/email-content-cache.ts senderTrustFor). With neither this nor
+     * parsed results, the sender gets no automatic trust in the quote.
+     */
+    senderTrust?: SenderTrustCheck;
   };
 }
 
@@ -877,16 +884,23 @@ export function EmailComposer({
   // images in the editor - the reading pane's decision for that message
   // (sender trust, its authentication results, the policy; not its one-off
   // "Load images"), made again when trust or the policy changes, and handed
-  // to the editor's quotes (components/email/quoted-html.ts). No original
-  // (a reopened draft): blocked unless the policy allows.
+  // to the editor's quotes (components/email/quoted-html.ts). The sender's
+  // check comes with the context (senderTrust) or from its parsed results;
+  // with neither, no automatic trust. No original (a reopened draft):
+  // blocked unless the policy allows - following the policy while open.
   const quoteSender = useMemo(
     () => (replyTo && (mode === 'reply' || mode === 'replyAll' || mode === 'forward') && replyTo.from?.length
-      ? ({ from: replyTo.from, authenticationResults: replyTo.authenticationResults } as unknown as Pick<Email, 'from' | 'authenticationResults'>)
+      ? ({
+          from: replyTo.from,
+          authenticationResults: replyTo.authenticationResults,
+          senderTrust: replyTo.senderTrust ?? (replyTo.authenticationResults ? undefined : 'unauthenticated'),
+        } as unknown as Pick<Email, 'from' | 'authenticationResults'> & { senderTrust?: SenderTrustCheck })
       : null),
-    [mode, replyTo?.from, replyTo?.authenticationResults], // eslint-disable-line react-hooks/exhaustive-deps
+    [mode, replyTo?.from, replyTo?.authenticationResults, replyTo?.senderTrust], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const quoteBlocked = useBlockExternal(quoteSender, false);
-  const quoteRemoteAllowed = !!quoteSender && !quoteBlocked;
+  const quotePolicy = useSettingsStore((s) => s.externalContentPolicy);
+  const quoteRemoteAllowed = quotePolicy === 'allow' || (!!quoteSender && !quoteBlocked);
   const quoteRemoteAllowedRef = useRef(quoteRemoteAllowed);
   quoteRemoteAllowedRef.current = quoteRemoteAllowed;
   useEffect(() => {
@@ -1228,9 +1242,6 @@ export function EmailComposer({
   // Whether a Sent mailbox is known so the on-demand server search is worth
   // offering (falls back to hiding the "search the server" row otherwise).
   const canSearchServer = useContactStore((s) => s.sentMailboxId != null);
-  const addToTrustedSendersBook = useContactStore((s) => s.addToTrustedSendersBook);
-  const addTrustedSender = useSettingsStore((s) => s.addTrustedSender);
-  const trustedSendersAddressBook = useSettingsStore((s) => s.trustedSendersAddressBook);
   const addTemplate = useTemplateStore((s) => s.addTemplate);
   // Sign/encrypt is provided by crypto plugins (S/MIME, PGP) via the
   // composer-toolbar slot + the onComposeSend hook — the host stays
@@ -2763,17 +2774,10 @@ export function EmailComposer({
           delayedUntil: effectiveDelayedUntil,
         });
 
-        if (mode === 'reply' || mode === 'replyAll') {
-          for (const recipient of [...outgoing.to, ...outgoing.cc].filter(Boolean)) {
-            if (trustedSendersAddressBook && client) {
-              addToTrustedSendersBook(client, recipient).catch(err => {
-                debug.error('Failed to add trusted sender to address book:', err);
-              });
-            } else {
-              addTrustedSender(recipient);
-            }
-          }
-        }
+        // Fork (Wnt/webmail): a reply no longer makes its recipients trusted
+        // senders (upstream did, for every To and Cc): trust for remote
+        // content comes only from the user's own "Always trust this sender" or
+        // Settings (owner decision 2026-10-20).
       }
 
       setTo([]);
