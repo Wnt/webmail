@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetOpenTiming, afterBodyPainted, beginOpen, bodyReady, markOpen } from '../open-timing';
+import { __resetOpenTiming, afterBodyPainted, beginOpen, bodyReady, markOpen, markSwipeDone, noteSwipeCommit } from '../open-timing';
 import { parseOpenBeacon } from '../perf-beacon';
 
 // Fork (Wnt/webmail): the open timing behind the speed beacon. The beacon
@@ -104,6 +104,43 @@ describe('page start stages (an open timed from the page start)', () => {
     }
   });
 
+  it('a swipe open is timed from the release: settle, data, painted, at rest; and says what was preloaded', async () => {
+    const release = performance.now() - 300;
+    noteSwipeCommit({ release, snap: release + 120, pre: 'full' });
+    beginOpen('m3', 'list', { t0: performance.now(), unread: true });
+    markOpen('m3', 'data');
+    bodyReady('m3');
+    await vi.advanceTimersByTimeAsync(50);
+    markSwipeDone('m3');
+    await flush();
+    const body = JSON.parse(sent[0].body);
+    expect(body).toMatchObject({ src: 'swipe', pre: 'full', unread: true });
+    expect(Object.keys(body.st).sort()).toEqual(['data', 'done', 'painted', 'snap']);
+    expect(body.st.snap).toBe(120);
+    expect(body.st.done).toBeGreaterThanOrEqual(body.st.painted);
+    expect(parseOpenBeacon(body)).toMatchObject({ src: 'swipe', pre: 'full' });
+  });
+
+  it('a swipe whose release the page did not see is timed from the settle; a stale note is a list open', async () => {
+    noteSwipeCommit({ snap: performance.now(), pre: 'none' });
+    beginOpen('m4', 'list');
+    bodyReady('m4');
+    await flush();
+    let body = JSON.parse(sent[0].body);
+    expect(body.src).toBe('swipe');
+    expect(body.st.snap).toBeUndefined();
+    const at = performance.now();
+    noteSwipeCommit({ snap: at, pre: 'lite' });
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(at + 500);
+    beginOpen('m5', 'list');
+    clock.mockRestore();
+    bodyReady('m5');
+    await flush();
+    body = JSON.parse(sent[1].body);
+    expect(body.src).toBe('list');
+    expect(body.pre).toBeUndefined();
+  });
+
   it('a list open carries no page start stages', async () => {
     beginOpen('m2', 'list', { t0: performance.now() });
     bodyReady('m2');
@@ -126,6 +163,8 @@ describe('beacon validation (server side)', () => {
     ['a free-text device', { ...ok, dev: 'iPhone 15 Pro' }],
     ['a free-text build', { ...ok, build: 'not a commit' }],
     ['another version', { ...ok, v: 2 }],
+    ['a preload note on a non-swipe open', { ...ok, pre: 'full' }],
+    ['an unknown preload note', { ...ok, src: 'swipe', pre: 'cached' }],
   ])('refuses %s', (_what, body) => {
     expect(parseOpenBeacon(body)).toBeNull();
   });

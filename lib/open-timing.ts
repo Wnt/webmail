@@ -11,8 +11,21 @@
 // names with their times in ms, where the open came from, and a coarse device
 // class. Never a message id, address, subject or any content. The id passed
 // in here only matches the stages of one open to each other, in memory.
+//
+// A sideways swipe on the phone (hooks/use-message-swipe.ts) notes its
+// gesture just before it opens the neighbour (noteSwipeCommit); the open
+// that follows at once is then a `swipe` open timed from the finger's
+// release when the page saw it (a touch that started outside the body
+// frame: WebKit runs no listener inside it), else from the track settling.
 
-export type OpenSource = 'list' | 'tap' | 'link';
+export type OpenSource = 'list' | 'tap' | 'link' | 'swipe';
+
+/**
+ * What the swipe's neighbour pane showed when the swipe was released:
+ * `full` the neighbour's own rendered body (its message was in memory),
+ * `lite` its sender, subject and first lines, `none` nothing of it yet.
+ */
+export type SwipePreload = 'full' | 'lite' | 'none';
 
 /**
  * Stages, in the order they normally happen. `data`: the message is in memory; `painted`: its body is on screen.
@@ -21,7 +34,11 @@ export type OpenSource = 'list' | 'tap' | 'link';
  * started, `hyd` the server's markup hydrated, `session` signed in; `sw` when a service worker took part in
  * loading the document (its workerStart, absent when none did).
  */
-export type OpenStage = 'msg' | 'ttfb' | 'html' | 'fcp' | 'dcl' | 'boot' | 'hyd' | 'sw' | 'session' | 'data' | 'painted';
+/**
+ * A swipe (`swipe`, from the release): `snap` the track settled, `data` / `painted` as above, `done` the new
+ * message at rest on screen (no animation left).
+ */
+export type OpenStage = 'msg' | 'ttfb' | 'html' | 'fcp' | 'dcl' | 'boot' | 'hyd' | 'sw' | 'session' | 'snap' | 'data' | 'painted' | 'done';
 
 /** User Timing marks of the page start (lib/start-marks.ts). */
 export const START_MARK_BOOT = 'mm:start:boot';
@@ -35,6 +52,18 @@ interface OpenRun {
   unread: boolean | null;
   stages: Partial<Record<OpenStage, number>>;
   done: boolean;
+  /** The beacon left: nothing more is recorded. */
+  sent?: boolean;
+  pre?: SwipePreload;
+}
+
+interface SwipeNote {
+  /** performance.now() of the finger's release, when the page saw it. */
+  release?: number;
+  /** performance.now() when the track settled on the neighbour. */
+  snap: number;
+  pre: SwipePreload;
+  at: number;
 }
 
 export const OPEN_BODY_PAINTED_EVENT = 'mm-open-body-painted';
@@ -43,6 +72,9 @@ const BEACON_URL = `${(process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, 
 const MAX_OPEN_MS = 60_000;
 
 let current: OpenRun | null = null;
+let swipeNote: SwipeNote | null = null;
+/** A swipe note counts for an open that begins this soon after it. */
+const SWIPE_NOTE_MS = 100;
 const listeners = new Set<(emailId: string) => void>();
 let lastPaintedId: string | null = null;
 
@@ -62,10 +94,42 @@ function mark(name: string, at?: number) {
  * time (default: now). A later open replaces an unfinished one.
  */
 export function beginOpen(emailId: string, source: OpenSource, opts: { t0?: number; unread?: boolean | null } = {}): void {
+  const note = swipeNote;
+  swipeNote = null;
+  if (note && source === 'list' && now() - note.at <= SWIPE_NOTE_MS) {
+    // The open a swipe set off: timed from its release (or its settling).
+    const t0 = note.release !== undefined && note.release <= note.snap ? note.release : note.snap;
+    current = { emailId, source: 'swipe', t0, unread: opts.unread ?? null, stages: {}, done: false, pre: note.pre };
+    lastPaintedId = null;
+    mark('mm:open:start:swipe', t0);
+    if (t0 !== note.snap) markOpen(emailId, 'snap', note.snap);
+    return;
+  }
   const t0 = opts.t0 ?? now();
   current = { emailId, source, t0, unread: opts.unread ?? null, stages: {}, done: false };
   lastPaintedId = null;
   mark(`mm:open:start:${source}`, t0);
+}
+
+/**
+ * A swipe is about to open its neighbour (hooks/use-message-swipe.ts): the
+ * open that begins right after is timed as a `swipe` from `release` (or
+ * `snap`). Times are performance.now() values.
+ */
+export function noteSwipeCommit(note: { release?: number; snap: number; pre: SwipePreload }): void {
+  swipeNote = { ...note, at: now() };
+}
+
+/**
+ * The swiped-to message is at rest on screen (stage `done`; a swipe open
+ * only). Counts after the paint, until the beacon leaves.
+ */
+export function markSwipeDone(emailId: string, at: number = now()): void {
+  const run = current;
+  if (!run || run.sent || run.source !== 'swipe' || run.emailId !== emailId || run.stages.done !== undefined) return;
+  if (at - run.t0 > MAX_OPEN_MS) return;
+  run.stages.done = Math.max(0, Math.round(at - run.t0));
+  mark('mm:open:done', at);
 }
 
 /** Records a stage of the open of `emailId`, if that is the open being timed. */
@@ -147,7 +211,7 @@ export function deviceClass(): { dev: 'phone' | 'tablet' | 'desktop'; pwa: boole
 
 function scheduleBeacon(run: OpenRun) {
   // Sent a second later, so it never competes with the open it measures.
-  setTimeout(() => sendBeacon(run), 1000);
+  setTimeout(() => { run.sent = true; sendBeacon(run); }, 1000);
 }
 
 /** The page's own start stages (ms from its navigation start), for an open timed from the page start. */
@@ -188,6 +252,7 @@ function sendBeacon(run: OpenRun) {
     ...deviceClass(),
     unread: run.unread,
     st: run.stages,
+    ...(run.source === 'swipe' && run.pre ? { pre: run.pre } : {}),
     build: (process.env.NEXT_PUBLIC_GIT_COMMIT ?? '').slice(0, 8) || undefined,
   });
   try {
@@ -202,6 +267,7 @@ function sendBeacon(run: OpenRun) {
 /** Tests only. */
 export function __resetOpenTiming(): void {
   current = null;
+  swipeNote = null;
   lastPaintedId = null;
   listeners.clear();
 }

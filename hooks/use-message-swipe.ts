@@ -11,6 +11,7 @@ import {
   type GutterModes,
   type SwipeDirection,
 } from "@/lib/message-swipe";
+import { markSwipeDone, noteSwipeCommit } from "@/lib/open-timing";
 
 /**
  * Swipe between messages on the phone: finger left opens the next message,
@@ -140,6 +141,13 @@ export function useMessageSwipe({
   const snapFrame = useRef(0);
   const guardUntil = useRef(0);
   const timers = useRef<number[]>([]);
+  // The swipe's timing (lib/open-timing.ts): when this gesture's scrolling
+  // began, when a finger last left the track (WebKit reports no touch that
+  // started on the body frame), and when the track settled.
+  const gestureAt = useRef(0);
+  const releaseAt = useRef(-1);
+  const resetKeyRef = useRef(resetKey);
+  resetKeyRef.current = resetKey;
 
   const later = useCallback((fn: () => void, ms: number) => {
     const id = window.setTimeout(() => {
@@ -242,20 +250,27 @@ export function useMessageSwipe({
     if (!root) return;
     const pane = paneRef?.current;
     if (pane) pane.scrollTop = 0;
+    const shownId = resetKeyRef.current;
     if (!p || p.reduced || !root.style.transform) {
       clearSurface(root);
+      if (p && shownId) markSwipeDone(shownId);
       return;
     }
     root.dataset.swipe = "enter";
     root.style.transition = `transform ${IN_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity ${IN_MS}ms ease-out`;
     root.style.transform = "translate3d(0,0,0)";
     root.style.opacity = "1";
-    later(() => { if (root.dataset.swipe === "enter") clearSurface(root); }, IN_MS + 20);
+    later(() => {
+      if (root.dataset.swipe === "enter") clearSurface(root);
+      if (shownId) markSwipeDone(shownId);
+    }, IN_MS + 20);
   }, [trackRef, pageRef, paneRef, center, setHints, clearSurface, later]);
 
   /** `sign`: the way the message moved (+1 right, -1 left). */
   const commit = useCallback((direction: SwipeDirection, sign: number) => {
     const nav = direction === "next" ? live.current.onNext : live.current.onPrev;
+    const snapAt = performance.now();
+    const release = releaseAt.current >= gestureAt.current && releaseAt.current <= snapAt ? releaseAt.current : undefined;
     setHints(null, 0);
     if (!nav) { center(); return; }
     const track = trackRef.current;
@@ -278,6 +293,7 @@ export function useMessageSwipe({
       }
       const timer = later(() => enter(), ENTER_FALLBACK_MS);
       pendingEnter.current = { timer, reduced };
+      noteSwipeCommit({ release, snap: snapAt, pre: "none" });
       nav();
     };
     if (reduced || !root) { go(); return; }
@@ -322,6 +338,7 @@ export function useMessageSwipe({
   }, [gutters, commit, setHints, trackRef, pageRef]);
 
   const onScroll = useCallback(() => {
+    if (!scrolling.current) gestureAt.current = performance.now();
     scrolling.current = true;
     if (!hasScrollEnd()) {
       window.clearTimeout(settleTimer.current);
@@ -421,7 +438,11 @@ export function useMessageSwipe({
       }
     };
     const end = (e: TouchEvent) => {
-      if (e.touches.length === 0) unlock();
+      if (e.touches.length !== 0) return;
+      unlock();
+      const nowMs = performance.now();
+      // Event.timeStamp is on the performance.now() clock in current engines.
+      releaseAt.current = e.timeStamp > 0 && e.timeStamp <= nowMs ? e.timeStamp : nowMs;
     };
     const opts: AddEventListenerOptions = { passive: true };
     track.addEventListener("touchstart", start, opts);
