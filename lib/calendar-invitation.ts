@@ -1,6 +1,7 @@
 import { parseISO } from 'date-fns';
 import type { Email, Attachment, CalendarEvent, CalendarParticipant, EmailBodyPart } from '@/lib/jmap/types';
 import { normalizeCalendarEventLike } from '@/lib/calendar-event-normalization';
+import { senderTrustCheck } from '@/lib/email-headers';
 
 export type InvitationMethod =
   | 'publish'
@@ -200,13 +201,15 @@ function getOrganizerEmail(event: Partial<CalendarEvent>): string | null {
   return null;
 }
 
-function hasVerifiedAuthentication(email?: Pick<Email, 'authenticationResults'>): boolean {
-  const authenticationResults = email?.authenticationResults;
-  return Boolean(
-    authenticationResults?.dmarc?.result === 'pass'
-    || authenticationResults?.dkim?.result === 'pass'
-    || authenticationResults?.spf?.result === 'pass'
-  );
+/**
+ * Whether the server's checks tie the message to its From domain. Only an
+ * aligned pass counts (upstream 8ed62191): a sender passes SPF for their own
+ * envelope domain, or signs with their own DKIM key, and still writes the
+ * organizer's address in From. Fork: the trust gate's rule (senderTrustCheck),
+ * so a HELO-only pass does not count either.
+ */
+function hasVerifiedAuthentication(email?: Pick<Email, 'from' | 'authenticationResults'>): boolean {
+  return senderTrustCheck(email?.authenticationResults, getPrimaryAddressEmail(email?.from) ?? undefined) === 'authenticated';
 }
 
 function hasAuthenticationFailure(email?: Pick<Email, 'authenticationResults'>): boolean {

@@ -468,12 +468,49 @@ describe('getInvitationTrustAssessment', () => {
     const result = getInvitationTrustAssessment(event, makeEmail({
       from: [{ email: 'organizer@example.com' }],
       authenticationResults: {
-        spf: { result: 'pass', domain: 'example.com', ip: '203.0.113.5' },
+        // As parseAuthenticationResults records an smtp.mailfrom result.
+        spf: { result: 'pass', domain: 'example.com', identity: 'mailfrom', ip: '203.0.113.5' },
       },
     }), 'request');
 
     expect(result.level).toBe('trusted');
     expect(result.reason).toBeNull();
+  });
+
+  // Upstream 8ed62191's case, plus the fork's HELO rule.
+  it('does not trust an SPF or DKIM pass for a domain other than the From domain', () => {
+    const event: Partial<CalendarEvent> = {
+      participants: {
+        org: makeParticipant({ roles: { owner: true }, email: 'organizer@example.com' }),
+      },
+    };
+    const email = (authenticationResults: NonNullable<ReturnType<typeof makeEmail>['authenticationResults']>) =>
+      makeEmail({ from: [{ email: 'organizer@example.com' }], authenticationResults });
+
+    const spf = getInvitationTrustAssessment(event, email({
+      spf: { result: 'pass', domain: 'attacker.example', identity: 'mailfrom', ip: '203.0.113.5' },
+      dmarc: { result: 'none', domain: 'example.com' },
+    }), 'request');
+    expect(spf.level).toBe('caution');
+    expect(spf.reason).toBe('authentication_missing');
+
+    const dkim = getInvitationTrustAssessment(event, email({
+      dkim: { result: 'pass', domain: 'attacker.example', selector: 's1' },
+      dmarc: { result: 'none', domain: 'example.com' },
+    }), 'request');
+    expect(dkim.level).toBe('caution');
+    expect(dkim.reason).toBe('authentication_missing');
+
+    const helo = getInvitationTrustAssessment(event, email({
+      spf: { result: 'pass', domain: 'mx.example.com', identity: 'helo', ip: '203.0.113.5' },
+    }), 'request');
+    expect(helo.level).toBe('caution');
+    expect(helo.reason).toBe('authentication_missing');
+
+    const aligned = getInvitationTrustAssessment(event, email({
+      dkim: { result: 'pass', domain: 'mail.example.com', selector: 's1' },
+    }), 'request');
+    expect(aligned.level).toBe('trusted');
   });
 });
 

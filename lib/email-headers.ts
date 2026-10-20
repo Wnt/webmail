@@ -76,18 +76,18 @@ export function getSenderVerification(
   const domain = domainOf(fromEmail);
   if (!domain) return null;
 
-  // DMARC only counts the MAIL FROM identity; a HELO pass proves nothing
-  // about who wrote the message.
   const mailFrom = auth.spf?.all?.find((entry) => entry.identity === 'mailfrom');
-  const spfPass = auth.spf?.all
-    ? mailFrom?.result === 'pass'
-    : auth.spf?.identity !== 'helo' && auth.spf?.result === 'pass';
   const envelope = mailFrom?.domain ?? auth.spf?.domain;
   const envelopeDomain = envelope ? domainOf(envelope) : undefined;
   const sentFrom = envelopeDomain && envelopeDomain !== domain ? envelopeDomain : undefined;
 
   if (isAuthenticationSpoofed(auth)) return { status: 'failed', domain, sentFrom };
-  if (auth.dmarc?.result === 'pass' || spfPass || hasDkimPass(auth)) return null;
+  // Only a pass that aligns with the From domain counts (upstream 8ed62191):
+  // an SPF pass for the sender's own envelope domain, or a DKIM signature by
+  // a third domain, under someone else's From is what this notice is for.
+  // Fork: the same rule as the trust gate (senderTrustCheck), so a HELO-only
+  // pass still warns and the notice and remote-content trust agree.
+  if (senderTrustCheck(auth, fromEmail) === 'authenticated') return null;
   return { status: 'unverified', domain, sentFrom };
 }
 
@@ -122,8 +122,9 @@ export function authenticationResultsValues(headers: unknown): string[] | null {
 /**
  * Fork (Wnt/webmail): whether the receiving server's checks authenticate the
  * visible From address well enough for the trusted-sender list or book to
- * apply to it (lib/email-content-cache.ts shouldBlockExternalFor). Stricter
- * than getSenderVerification, which only decides whether to warn:
+ * apply to it (lib/email-content-cache.ts shouldBlockExternalFor). The
+ * sender-verification notice (getSenderVerification) and the calendar
+ * invitation banner use the same rule:
  * - `none`: no SPF, DKIM or DMARC results to judge by (mail the server did
  *   not check, such as the user's own); trust applies as before.
  * - `authenticated`: DMARC passes for the From domain, or a DKIM signature or
