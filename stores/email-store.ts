@@ -535,7 +535,7 @@ function shouldClearPendingUndoSend(pending: PendingUndoSend | null, scheduledEm
 // in-flight request still ends up seeing fresh data. Keyed per client so two
 // accounts' refreshes never collapse into each other.
 // ---------------------------------------------------------------------------
-type InFlightRefresh = { promise: Promise<void>; rerun: boolean };
+type InFlightRefresh = { promise: Promise<void>; rerun: boolean; epoch: number };
 const inFlightRefreshes = new WeakMap<object, Map<string, InFlightRefresh>>();
 
 /**
@@ -565,17 +565,19 @@ function coalesceRefresh(client: IJMAPClient, key: string, run: () => Promise<vo
     byKey = new Map();
     inFlightRefreshes.set(client, byKey);
   }
+  // Fork (Wnt/webmail): runs are joined within one account epoch only. A run
+  // queued in one epoch never starts in the next (it would fetch with the old
+  // account's client and land in the stores the next account is filling); a
+  // caller in a new epoch - the same client back after a switch - gets a run
+  // of its own instead of joining one whose answer will be dropped.
+  const epoch = currentStoreEpoch();
   const existing = byKey.get(key);
-  if (existing) {
+  if (existing && existing.epoch === epoch) {
     existing.rerun = true;
     return existing.promise;
   }
-  const entry: InFlightRefresh = { promise: Promise.resolve(), rerun: false };
+  const entry: InFlightRefresh = { promise: Promise.resolve(), rerun: false, epoch };
   const registry = byKey;
-  // Fork (Wnt/webmail): a run queued in one account epoch never starts in the
-  // next: it would fetch with the old account's client and land in the stores
-  // the new account is filling (each run checks the epoch it starts in).
-  const epoch = currentStoreEpoch();
   entry.promise = (async () => {
     try {
       await run();
@@ -584,7 +586,7 @@ function coalesceRefresh(client: IJMAPClient, key: string, run: () => Promise<vo
         await run();
       }
     } finally {
-      registry.delete(key);
+      if (registry.get(key) === entry) registry.delete(key);
     }
   })();
   registry.set(key, entry);
@@ -664,13 +666,13 @@ function catchUpAfterRead(get: StoreGet, fetchSeq: number): void {
     readCatchUp = null;
     return;
   }
+  // Not a plain folder list, more changed than a delta resolves, or the delta
+  // failed: re-query the list (a fetch numbered after the write, so it is not
+  // caught up again), as the push handler does.
+  const refresh = () => { if (current()) void get().refreshCurrentMailbox(c.client); };
   void get().applyEmailDelta(c.client, AFTER_OWN_WRITE).then(
-    (applied) => {
-      // Not a plain folder list, or more changed than a delta resolves: re-query
-      // it (a fetch numbered after the write, so it is not caught up again).
-      if (!applied && current()) void get().refreshCurrentMailbox(c.client);
-    },
-    () => {},
+    (applied) => { if (!applied) refresh(); },
+    refresh,
   );
 }
 
@@ -696,21 +698,27 @@ function settleReadOutsideList(
   set: StoreSet,
   client: IJMAPClient,
   email: Email,
+  writtenAccount: string | null,
   read: boolean,
   epoch: number,
 ): void {
   const withSeen = (e: Email): Email => ({ ...e, keywords: { ...e.keywords, $seen: read } });
+  // The very message written: its id and stamps, and the JMAP account the
+  // write went to (an unstamped copy is reached in the folder on screen, so a
+  // same-id message of another shared folder opened meanwhile is not it).
+  const isWritten = (e: Email) => sameMessage(e, email)
+    && (resolveEmailActionContext(e, client).accountId ?? null) === writtenAccount;
   set((state) => {
     let threadEmailsCache = state.threadEmailsCache;
     for (const [tid, cached] of state.threadEmailsCache) {
-      if (!cached.some((e) => sameMessage(e, email) && (e.keywords?.$seen ?? false) !== read)) continue;
+      if (!cached.some((e) => isWritten(e) && (e.keywords?.$seen ?? false) !== read)) continue;
       if (threadEmailsCache === state.threadEmailsCache) threadEmailsCache = new Map(state.threadEmailsCache);
-      threadEmailsCache.set(tid, cached.map((e) => (sameMessage(e, email) ? withSeen(e) : e)));
+      threadEmailsCache.set(tid, cached.map((e) => (isWritten(e) ? withSeen(e) : e)));
     }
-    const stale = state.emails.some((e) => sameMessage(e, email) && (e.keywords?.$seen ?? false) !== read);
+    const stale = state.emails.some((e) => isWritten(e) && (e.keywords?.$seen ?? false) !== read);
     return {
-      selectedEmail: state.selectedEmail && sameMessage(state.selectedEmail, email) ? withSeen(state.selectedEmail) : state.selectedEmail,
-      emails: stale ? state.emails.map((e) => (sameMessage(e, email) ? withSeen(e) : e)) : state.emails,
+      selectedEmail: state.selectedEmail && isWritten(state.selectedEmail) ? withSeen(state.selectedEmail) : state.selectedEmail,
+      emails: stale ? state.emails.map((e) => (isWritten(e) ? withSeen(e) : e)) : state.emails,
       threadEmailsCache,
     };
   });
@@ -738,11 +746,13 @@ function settleReadOutsideList(
     if (tagged && (Object.keys(s.tagCounts).length > 0 || inFlight?.has('tagCounts'))) void s.fetchTagCounts(activeClient);
     return;
   }
-  // Another connected login's message (an aggregate view): its own cached folders.
+  // Another connected login's message (an aggregate view): its own folders,
+  // when they are cached or on their way (a run in flight queues one more).
   const ownerClient = auth.getClientForAccount(owner);
-  if (ownerClient && s.accountMailboxes[owner]) void s.fetchAccountMailboxes(ownerClient, owner);
-  if (ownerClient && email.sourceAccountId && email.sourceAccountId !== owner && s.accountMailboxes[email.sourceAccountId]) {
-    void s.fetchAccountMailboxes(ownerClient, email.sourceAccountId);
+  if (!ownerClient) return;
+  const ownerInFlight = inFlightRefreshes.get(ownerClient);
+  for (const id of new Set([owner, email.sourceAccountId ?? owner])) {
+    if (s.accountMailboxes[id] || ownerInFlight?.has(`accountMailboxes:${id}`)) void s.fetchAccountMailboxes(ownerClient, id);
   }
 }
 
@@ -758,6 +768,11 @@ async function applyEmailDeltaNow(client: IJMAPClient, newState: string, get: St
   const s = get();
   const sync = s.emailListSync;
   if (!sync) return false;
+  // Fork (Wnt/webmail): the answers below belong to this account epoch and to
+  // this list (its delta baseline). After a switch, a sign-out or a new list
+  // they change nothing: that list is caught up on its own.
+  const epoch = currentStoreEpoch();
+  const obsolete = () => currentStoreEpoch() !== epoch || get().emailListSync !== sync;
   // Anything but the plain folder list the baseline was taken for is
   // refreshed the old way: a server-side filter (search, tag, category tab)
   // cannot be re-evaluated from a list of changed ids, and the unified /
@@ -783,6 +798,7 @@ async function applyEmailDeltaNow(client: IJMAPClient, newState: string, get: St
 
   const accountArg = mailbox?.isShared ? mailbox.accountId : undefined;
   const delta = await effectiveClient.getEmailChanges(sync.state, accountArg, EMAIL_DELTA_MAX_CHANGES);
+  if (obsolete()) return true;
   if (!delta || delta.hasMoreChanges) return false;
 
   const listIds = new Set(s.emails.map((e) => e.id));
@@ -796,11 +812,13 @@ async function applyEmailDeltaNow(client: IJMAPClient, newState: string, get: St
   if (candidates.length > EMAIL_DELTA_MAX_CANDIDATES) return false;
   if (candidates.length > 0) {
     const arrived = await effectiveClient.getSomeEmails(candidates, accountArg);
+    if (obsolete()) return true;
     if (arrived.some((e) => e.mailboxIds?.[sync.mailboxId])) return false;
   }
 
   const removed = new Set(destroyedInList);
   const updatedEmails = updatedInList.length > 0 ? await effectiveClient.getSomeEmails(updatedInList, accountArg) : [];
+  if (obsolete()) return true;
   const updatedById = new Map(updatedEmails.map((e) => [e.id, e]));
   // Another client changed the read/star/tag state a keyword order (#718)
   // sorts on: the row may now belong past the loaded part of the list and an
@@ -825,12 +843,22 @@ async function applyEmailDeltaNow(client: IJMAPClient, newState: string, get: St
   const replacementById = new Map(
     annotateScheduledEmails(replacements, get().scheduledSubmissionByEmailId).map((e) => [e.id, e]),
   );
+  if (obsolete()) return true;
 
   // Re-read the list: the requests above may have overlapped a user action.
+  // Fork (Wnt/webmail): a row whose keywords changed here meanwhile (read,
+  // unread, a star) keeps them; the server's answer above may predate that
+  // write, and the change it raises is caught up by the next push.
   const current = get().emails;
+  const keywordsAtStart = new Map(s.emails.map((e) => [e.id, JSON.stringify(e.keywords ?? {})]));
   const next = current
     .filter((e) => !removed.has(e.id))
-    .map((e) => replacementById.get(e.id) ?? e);
+    .map((e) => {
+      const fresh = replacementById.get(e.id);
+      if (!fresh) return e;
+      const changedHere = keywordsAtStart.has(e.id) && keywordsAtStart.get(e.id) !== JSON.stringify(e.keywords ?? {});
+      return changedHere ? { ...fresh, keywords: e.keywords } : fresh;
+    });
   const changedThreadIds = new Set<string>();
   for (const e of current) {
     if (removed.has(e.id) || replacementById.has(e.id)) changedThreadIds.add(threadKeyFor(e));
@@ -2038,7 +2066,10 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     unifiedRole: null,
     crossView: null,
   })),
-  fetchAccountMailboxes: async (client, accountId) => {
+  // Fork (Wnt/webmail): one run per client and account at a time, a later
+  // call queues one more (coalesceRefresh), so an older answer never lands
+  // after a newer one.
+  fetchAccountMailboxes: (client, accountId) => coalesceRefresh(client, `accountMailboxes:${accountId}`, async () => {
     try {
       // `accountId` is overloaded across callers:
       //  - a real login (AccountEntry.id, e.g. per-account sidebar / cross-account
@@ -2065,7 +2096,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     } catch (error) {
       console.error(`Failed to fetch mailboxes for account ${accountId}:`, error);
     }
-  },
+  }),
   selectEmail: (email) => {
     const prev = get().selectedEmail;
     set({ selectedEmail: email, lastSelectedEmailKey: email ? emailKeyFor(email) : get().lastSelectedEmailKey });
@@ -2099,6 +2130,9 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     crossView: null,
   })),
   fetchTagCounts: (client) => coalesceRefresh(client, 'tagCounts', async () => {
+    // Fork (Wnt/webmail): counts answered after an account switch or a
+    // sign-out are the previous account's.
+    const epoch = currentStoreEpoch();
     try {
       const keywords = useSettingsStore.getState().emailKeywords;
       if (keywords.length === 0) {
@@ -2122,6 +2156,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
           counts[id] = { total: cur.total + c.total, unread: cur.unread + c.unread };
         }
       }
+      if (currentStoreEpoch() !== epoch) return;
       set({ tagCounts: counts });
     } catch (error) {
       console.error('Failed to fetch tag counts:', error);
@@ -2518,6 +2553,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   },
 
   loadMoreEmails: async (client) => {
+    const fetchSeq = nextListFetchSeq();
     const { isLoadingMore, hasMoreEmails, emails, selectedMailbox, searchQuery, selectedKeyword, isUnifiedView, unifiedRole, crossView } = get();
     const isCurrentView = captureEmailListView();
 
@@ -2551,6 +2587,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
           isLoadingMore: false,
           unifiedErrors: result.errors,
         });
+        catchUpAfterRead(get, fetchSeq);
       } catch (error) {
         if (!isCurrentView()) return;
         console.error('Failed to load more cross-account emails:', error);
@@ -2597,6 +2634,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
           isLoadingMore: false,
           unifiedErrors: result.errors,
         });
+        catchUpAfterRead(get, fetchSeq);
       } catch (error) {
         if (!isCurrentView()) return;
         console.error('Failed to load more unified emails:', error);
@@ -2727,6 +2765,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         totalEmails: result.total,
         isLoadingMore: false
       });
+      catchUpAfterRead(get, fetchSeq);
       // Fetch full thread counts for newly loaded threads in the background
       if (enrichedNewEmails.length > 0) {
         void get().fetchThreadEmailCounts(client);
@@ -2966,16 +3005,18 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     let processingKey: string | null = null;
     try {
       // Get the email to check its current state and mailboxes
-      const listEmail = get().emails.find(e => e.id === emailId);
       // Fork (Wnt/webmail): the message on screen may not be in the loaded
       // list. A notification tap opens its message before the folder list and
       // the Inbox page are fetched (a cold start loads them once the body is
       // on screen), or while the list still lacks a message that came in with
       // the app in the background - and the read mark, also sent once the
       // body is on screen, was dropped here: the message stayed unread.
-      // Only the open message qualifies, never a kept or prepared copy.
-      const selected = get().selectedEmail;
-      const email = listEmail ?? (selected?.id === emailId ? selected : undefined);
+      // Only the open message qualifies, never a kept or prepared copy. A
+      // list row with the open message's id that is another account's message
+      // is not the one meant.
+      const selected = get().selectedEmail?.id === emailId ? get().selectedEmail : null;
+      const listEmail = get().emails.find(e => e.id === emailId && (!selected || sameMessage(e, selected)));
+      const email = listEmail ?? selected ?? undefined;
       if (!email) return;
 
       // Check if already in the desired state
@@ -3012,7 +3053,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       if (currentStoreEpoch() !== epoch) return;
 
       if (!listEmail) {
-        settleReadOutsideList(get, set, client, email, read, epoch);
+        settleReadOutsideList(get, set, client, email, accountId ?? null, read, epoch);
         return;
       }
 
@@ -3524,6 +3565,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   },
 
   searchEmails: async (client, query) => {
+    const fetchSeq = nextListFetchSeq();
     const { searchAbortController } = get();
 
     if (searchAbortController) {
@@ -3633,6 +3675,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         searchFailed: result.emails.length === 0 && (unifiedErrors?.size ?? 0) > 0,
         ...(unifiedErrors ? { unifiedErrors } : {})
       });
+      catchUpAfterRead(get, fetchSeq);
     } catch (error) {
       if (controller.signal.aborted) return;
       set({
@@ -3649,6 +3692,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   },
 
   advancedSearch: async (client) => {
+    const fetchSeq = nextListFetchSeq();
     const { searchQuery, searchFilters, searchMailboxId, searchAbortController, isUnifiedView, unifiedRole, crossView, selectedKeyword } = get();
     const mailboxes = resolveActionMailboxes();
 
@@ -3762,6 +3806,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         searchFailed: result.emails.length === 0 && (unifiedErrors?.size ?? 0) > 0,
         ...(unifiedErrors ? { unifiedErrors } : {})
       });
+      catchUpAfterRead(get, fetchSeq);
     } catch (error) {
       if (controller.signal.aborted) return;
       set({
@@ -5650,6 +5695,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
 
   // Unified mailbox operations
   fetchUnifiedEmails: async (accounts, role) => {
+    const fetchSeq = nextListFetchSeq();
     const token = get().viewToken + 1;
     set({
       isLoading: true,
@@ -5677,6 +5723,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         isLoading: false,
         unifiedErrors: result.errors,
       });
+      catchUpAfterRead(get, fetchSeq);
     } catch (error) {
       if (get().viewToken !== token) return;
       console.error('Failed to fetch unified emails:', error);
@@ -5691,6 +5738,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   },
 
   loadMoreUnifiedEmails: async (accounts) => {
+    const fetchSeq = nextListFetchSeq();
     const { isLoadingMore, hasMoreEmails, emails, unifiedRole } = get();
     if (isLoadingMore || !hasMoreEmails || !unifiedRole) return;
 
@@ -5711,6 +5759,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         isLoadingMore: false,
         unifiedErrors: result.errors,
       });
+      catchUpAfterRead(get, fetchSeq);
     } catch (error) {
       console.error('Failed to load more unified emails:', error);
       set({
@@ -5735,6 +5784,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   },
 
   fetchCrossView: async (accounts, view) => {
+    const fetchSeq = nextListFetchSeq();
     const token = get().viewToken + 1;
     set({
       isLoading: true,
@@ -5760,6 +5810,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         isLoading: false,
         unifiedErrors: result.errors,
       });
+      catchUpAfterRead(get, fetchSeq);
     } catch (error) {
       if (get().viewToken !== token) return;
       console.error('Failed to fetch cross-account view:', error);

@@ -318,3 +318,167 @@ describe('marking the open message read when the loaded list does not hold it', 
     expect(client.getEmailChanges).not.toHaveBeenCalled();
   });
 });
+
+// Astra r2 (audit/reviews/notif-mark-read-r2.md): the catch-up and the counts
+// it refreshes stay within their account epoch and list, a newer write wins
+// over an answer that predates it, other list publishers are caught up too,
+// and a failed catch-up re-queries the list.
+describe('after the write: account epochs, identity, newer writes, every list', () => {
+  const sharedBox = (id: string, accountId: string): Mailbox => ({ ...inbox(1), id, name: id, role: null, isShared: true, accountId } as unknown as Mailbox);
+  const realStore = () => useEmailStore.getInitialState();
+
+  it('a catch-up answered after an account switch changes nothing in the next account', async () => {
+    seed({
+      selectedEmail: mail('m-tapped'), emails: [mail('m-other')], mailboxes: [inbox(2)],
+      emailListSync: { state: 's-before', accountId: 'acc', mailboxId: 'inbox' },
+    });
+    client.getEmailChanges.mockResolvedValue({ ...noChanges('s-before'), newState: 's-after', updated: ['m-other'] });
+    const answer = deferred<Email[]>();
+    client.getSomeEmails.mockReturnValueOnce(answer.promise);
+    await useEmailStore.getState().markAsRead(client, 'm-tapped', true);
+    await vi.waitFor(() => expect(client.getSomeEmails).toHaveBeenCalled());
+    // Switched: the next account shows its own "m-other".
+    bumpStoreEpoch();
+    useAuthStore.setState({ activeAccountId: 'login-b', client: makeClient() as never } as never);
+    const sync = { state: 'b-state', accountId: 'acc-b', mailboxId: 'inbox' };
+    seed({ emails: [mail('m-other', {}, { subject: 'B private message' })], mailboxes: [inbox(5)], emailListSync: sync });
+    answer.resolve([mail('m-other', { $seen: true }, { subject: 'A private message' })]);
+    await settle();
+    await settle();
+    expect(useEmailStore.getState().emails[0].subject).toBe('B private message');
+    expect(seenRow('m-other')).toBeUndefined();
+    expect(useEmailStore.getState().emailListSync).toBe(sync);
+    expect(refreshCurrentMailbox).not.toHaveBeenCalled();
+  });
+
+  it('tag counts answered after an account switch are dropped', async () => {
+    useEmailStore.setState({ fetchTagCounts: realStore().fetchTagCounts } as never);
+    const { useSettingsStore } = await import('../settings-store');
+    useSettingsStore.setState({ emailKeywords: [{ id: 'work', name: 'Work' }] } as never);
+    const counts = deferred<Record<string, { total: number; unread: number }>>();
+    const tagClient = { ...makeClient(), getTagCounts: vi.fn().mockReturnValue(counts.promise) } as unknown as IJMAPClient;
+    useEmailStore.setState({ tagCounts: { work: { total: 7, unread: 7 } }, mailboxes: [inbox(1)] } as never);
+    const running = useEmailStore.getState().fetchTagCounts(tagClient);
+    bumpStoreEpoch();
+    useEmailStore.setState({ tagCounts: { work: { total: 7, unread: 7 } } } as never);
+    counts.resolve({ work: { total: 1, unread: 0 } });
+    await running;
+    expect(useEmailStore.getState().tagCounts).toEqual({ work: { total: 7, unread: 7 } });
+  });
+
+  it('an unstamped message of another shared folder, opened while the write was out, is not marked', async () => {
+    const write = deferred<void>();
+    client.markAsRead.mockReturnValueOnce(write.promise);
+    const boxes = [inbox(1), sharedBox('shared-a-box', 'shared-a'), sharedBox('shared-b-box', 'shared-b')];
+    seed({ selectedEmail: mail('m'), selectedMailbox: 'shared-a-box', mailboxes: boxes });
+    const marking = useEmailStore.getState().markAsRead(client, 'm', true);
+    expect(client.markAsRead).toHaveBeenCalledWith('m', true, 'shared-a');
+    // The user opens shared-b: its own unstamped "m" is listed and opened.
+    useEmailStore.setState({ selectedMailbox: 'shared-b-box', emails: [mail('m')], selectedEmail: mail('m') } as never);
+    write.resolve();
+    await marking;
+    expect(seenRow('m')).toBeUndefined();
+    expect(useEmailStore.getState().selectedEmail?.keywords?.$seen).toBeUndefined();
+  });
+
+  it('the open message is written, not a list row of another account with the same id', async () => {
+    seed({
+      selectedEmail: mail('m', {}, { sourceClientAccountId: 'login', sourceAccountId: 'shared-a' }),
+      emails: [mail('m', { $seen: true }, { sourceClientAccountId: 'login', sourceAccountId: 'shared-b' })],
+      mailboxes: [inbox(2)],
+    });
+    await useEmailStore.getState().markAsRead(client, 'm', true);
+    expect(client.markAsRead).toHaveBeenCalledWith('m', true, 'shared-a');
+    expect(useEmailStore.getState().selectedEmail?.keywords?.$seen).toBe(true);
+    expect(useEmailStore.getState().emails[0].keywords?.$seen).toBe(true); // shared-b's own state, untouched
+  });
+
+  it('marked unread while the catch-up is out: the newer state stays', async () => {
+    seed({ selectedEmail: mail('m-tapped'), mailboxes: [inbox(3)] });
+    const write = deferred<void>();
+    client.markAsRead.mockReturnValueOnce(write.promise);
+    const marking = useEmailStore.getState().markAsRead(client, 'm-tapped', true);
+    // The row arrives before the write is confirmed; the list is a plain folder.
+    useEmailStore.setState({ emails: [mail('m-tapped')], emailListSync: { state: 's-before', accountId: 'acc', mailboxId: 'inbox' } } as never);
+    client.getEmailChanges.mockResolvedValue({ ...noChanges('s-before'), newState: 's-after', updated: ['m-tapped'] });
+    const snapshot = deferred<Email[]>();
+    client.getSomeEmails.mockReturnValueOnce(snapshot.promise);
+    write.resolve();
+    await marking;
+    await vi.waitFor(() => expect(client.getSomeEmails).toHaveBeenCalled());
+    // The user marks it unread; then the catch-up's earlier snapshot (read) arrives.
+    await useEmailStore.getState().markAsRead(client, 'm-tapped', false);
+    expect(seenRow('m-tapped')).toBe(false);
+    snapshot.resolve([mail('m-tapped', { $seen: true })]);
+    await settle();
+    await settle();
+    expect(seenRow('m-tapped')).toBe(false);
+  });
+
+  it('a next page fetched before the write is caught up when it lands', async () => {
+    seed({
+      selectedEmail: mail('m-old'), emails: [mail('m-1', { $seen: true })], mailboxes: [inbox(3)], hasMoreEmails: true,
+      emailListSync: { state: 's-before', accountId: 'acc', mailboxId: 'inbox' },
+    } as never);
+    useEmailStore.setState({ loadMoreEmails: realStore().loadMoreEmails, isLoadingMore: false } as never);
+    const page2 = deferred<ReturnType<typeof page>>();
+    client.getEmails.mockReturnValueOnce(page2.promise);
+    const loading = useEmailStore.getState().loadMoreEmails(client);
+    client.getEmailChanges.mockResolvedValue(noChanges('s-before'));
+    await useEmailStore.getState().markAsRead(client, 'm-old', true);
+    await settle();
+    client.getEmailChanges.mockClear();
+    client.getEmailChanges.mockResolvedValue({ ...noChanges('s-before'), newState: 's-after', updated: ['m-old'] });
+    client.getSomeEmails.mockResolvedValue([mail('m-old', { $seen: true })]);
+    page2.resolve({ ...page([mail('m-old')]), hasMore: false });
+    await loading;
+    await vi.waitFor(() => expect(seenRow('m-old')).toBe(true));
+    expect(client.getEmailChanges).toHaveBeenCalled();
+  });
+
+  it('a failed catch-up re-queries the list', async () => {
+    seed({
+      selectedEmail: mail('m-new'), emails: [mail('m-old', { $seen: true })], mailboxes: [inbox(2)],
+      emailListSync: { state: 's-before', accountId: 'acc', mailboxId: 'inbox' },
+    });
+    client.getEmailChanges.mockResolvedValue({ ...noChanges('s-before'), newState: 's-after', updated: ['m-old'] });
+    client.getSomeEmails.mockRejectedValue(new Error('Email/get failed'));
+    await useEmailStore.getState().markAsRead(client, 'm-new', true);
+    await vi.waitFor(() => expect(refreshCurrentMailbox).toHaveBeenCalledWith(client));
+  });
+
+  it('another login\'s folders: one request at a time, the last answer is the newest', async () => {
+    useEmailStore.setState({ fetchAccountMailboxes: realStore().fetchAccountMailboxes } as never);
+    const other = makeClient() as MockClient & { getMailboxes: ReturnType<typeof vi.fn> };
+    const first = deferred<Mailbox[]>();
+    other.getMailboxes = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue([inbox(0)]);
+    useAuthStore.setState({ getClientForAccount: (id: string) => (id === 'login-b' ? other : client) as never } as never);
+    seed({
+      fetchAccountMailboxes: realStore().fetchAccountMailboxes,
+      selectedEmail: mail('m-b', {}, { sourceClientAccountId: 'login-b', sourceAccountId: 'acc-b' }),
+      accountMailboxes: { 'login-b': [inbox(1)] }, mailboxes: [inbox(5)],
+    });
+    // A load of login-b's folders is already out (from before the write).
+    const earlier = useEmailStore.getState().fetchAccountMailboxes(other, 'login-b');
+    await useEmailStore.getState().markAsRead(client, 'm-b', true);
+    first.resolve([inbox(1)]);
+    await earlier;
+    await vi.waitFor(() => expect(other.getMailboxes).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(useEmailStore.getState().accountMailboxes['login-b'][0].unreadEmails).toBe(0));
+  });
+
+  it('the same client back in a new account epoch gets its own folder-list run', async () => {
+    useEmailStore.setState({ fetchMailboxes: realStore().fetchMailboxes, mailboxes: [] } as never);
+    const old = deferred<{ mailboxes: Mailbox[]; states: Record<string, string> }>();
+    client.getAllMailboxesWithState.mockReturnValueOnce(old.promise).mockResolvedValue({ mailboxes: [inbox(4)], states: {} });
+    const first = useEmailStore.getState().fetchMailboxes(client);
+    bumpStoreEpoch(); // away and back: the same connected client
+    const second = useEmailStore.getState().fetchMailboxes(client);
+    await second;
+    expect(client.getAllMailboxesWithState).toHaveBeenCalledTimes(2);
+    expect(useEmailStore.getState().mailboxes[0]?.unreadEmails).toBe(4);
+    old.resolve({ mailboxes: [inbox(1)], states: {} });
+    await first;
+    expect(useEmailStore.getState().mailboxes[0]?.unreadEmails).toBe(4);
+  });
+});
